@@ -1,0 +1,128 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: links
+    description: Link checking operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /check-links:
+    post:
+      operationId: checkLinks
+      tags: [links]
+      summary: Check links from a URL
+      description: Fetches a webpage and checks the status of all links found on it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckLinksRequest"
+      responses:
+        "200":
+          description: Link check results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckLinksResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    CheckLinksRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          description: The URL of the page to check links on
+      required:
+        - url
+    LinkResult:
+      type: object
+      properties:
+        url:
+          type: string
+          description: The URL of the link
+        text:
+          type: string
+          description: The anchor text of the link
+        status:
+          type: integer
+          nullable: true
+          description: HTTP status code (null if request failed)
+        active:
+          type: boolean
+          description: Whether the link is active (status 200-399)
+        error:
+          type: string
+          nullable: true
+          description: Error message if the request failed
+      required:
+        - url
+        - text
+        - status
+        - active
+        - error
+    CheckLinksResponse:
+      type: object
+      properties:
+        pageUrl:
+          type: string
+          description: The URL of the page that was checked
+        totalLinks:
+          type: integer
+          description: Total number of links found
+        activeLinks:
+          type: integer
+          description: Number of active links
+        brokenLinks:
+          type: integer
+          description: Number of broken links
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkResult"
+      required:
+        - pageUrl
+        - totalLinks
+        - activeLinks
+        - brokenLinks
+        - results
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
