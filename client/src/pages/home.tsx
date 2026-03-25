@@ -584,7 +584,7 @@ export default function Home() {
 
             <div className="p-3 bg-muted rounded-lg flex items-start gap-2 text-xs text-muted-foreground">
               <Shield className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
-              <span>يُستخدم تأخير عشوائي بين 0.5 و1.2 ثانية بين كل رابط للحماية من الحظر التلقائي</span>
+              <span>يُستخدم تأخير عشوائي بين 1 و1.5 ثانية بين كل رابط للحماية من الحظر التلقائي</span>
             </div>
           </div>
         )}

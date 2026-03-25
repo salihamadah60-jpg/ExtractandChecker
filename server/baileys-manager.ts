@@ -225,7 +225,7 @@ class BaileysManager extends EventEmitter {
     try {
       const info = await this.sock.groupGetInviteInfo(inviteCode);
       if (info && (info.subject || info.id)) {
-        const name: string = (info.subject ?? "").trim() || undefined!;
+        const name: string = ((info.subject ?? "").trim().split(/\s+/).slice(0, 3).join(" ")) || undefined!;
         const members: number | undefined =
           typeof info.size === "number" ? info.size :
           Array.isArray(info.participants) ? info.participants.length :
@@ -326,7 +326,7 @@ class BaileysManager extends EventEmitter {
       this.emit("session", session);
 
       if (i < session.links.length - 1) {
-        const delay = 500 + Math.random() * 700;
+        const delay = 1000 + Math.random() * 500;
         await new Promise((r) => setTimeout(r, delay));
       }
     }
