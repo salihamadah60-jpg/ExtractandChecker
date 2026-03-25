@@ -169,6 +169,18 @@ class BaileysManager extends EventEmitter {
           this.qrCodeDataUrl = null;
           this.pairingCodeValue = null;
           this.setStatus("connected");
+
+          // Auto-resume checking if there's a paused session with pending links
+          const session = linkStore.checkSession;
+          if (
+            session &&
+            (session.status === "idle" || session.status === "running") &&
+            session.results.some((r) => r.status === "pending")
+          ) {
+            const remaining = session.results.filter((r) => r.status === "pending").length;
+            console.log(`[Baileys] Auto-resuming check session — ${remaining} links remaining`);
+            setTimeout(() => this.startLinkChecking().catch(console.error), 2000);
+          }
         }
       });
 
@@ -218,6 +230,20 @@ class BaileysManager extends EventEmitter {
 
   isConnected(): boolean {
     return this.status === "connected" && this.sock !== null;
+  }
+
+  // ── Auto-connect on startup using saved credentials ────────────────────────
+  async autoConnect(): Promise<void> {
+    try {
+      const credsFile = `${AUTH_DIR}/creds.json`;
+      await fs.access(credsFile);
+      // Credentials file exists — reconnect silently without clearing auth
+      console.log("[Baileys] Saved credentials found — auto-connecting...");
+      await this.connect(false, undefined, true);
+    } catch {
+      // No credentials saved yet — wait for manual connect
+      console.log("[Baileys] No saved credentials — waiting for manual connect");
+    }
   }
 
   // ── Link checking ─────────────────────────────────────────────────────────

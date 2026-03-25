@@ -111,6 +111,8 @@ export async function registerRoutes(
       if (!extracted.whatsapp.length && !extracted.telegram.length)
         return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
       linkStore.setExtracted(extracted);
+      // Save links to a JSON file named after the uploaded file
+      linkStore.saveLinksToFile(req.file.originalname, extracted).catch(console.error);
       res.json({ success: true, whatsapp: extracted.whatsapp.length, telegram: extracted.telegram.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message ?? "خطأ في معالجة الملف" });

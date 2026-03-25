@@ -31,6 +31,7 @@ export interface CheckSession {
 interface PersistedState {
   extractedLinks: ExtractedLinks;
   checkSession: CheckSession | null;
+  uploadedFileName?: string;
 }
 
 function linksMatch(a: string[], b: string[]): boolean {
@@ -40,6 +41,7 @@ function linksMatch(a: string[], b: string[]): boolean {
 class LinkStore {
   extractedLinks: ExtractedLinks = { whatsapp: [], telegram: [] };
   checkSession: CheckSession | null = null;
+  uploadedFileName: string = "";
 
   // ── Load saved state from disk on startup ──────────────────────────────────
   async loadFromDisk(): Promise<void> {
@@ -47,6 +49,7 @@ class LinkStore {
       const raw = await fs.readFile(STATE_FILE, "utf-8");
       const saved: PersistedState = JSON.parse(raw);
       this.extractedLinks = saved.extractedLinks ?? { whatsapp: [], telegram: [] };
+      this.uploadedFileName = saved.uploadedFileName ?? "";
       if (saved.checkSession) {
         // If the session was mid-run when the app died, mark it paused so it can resume
         if (saved.checkSession.status === "running") {
@@ -73,12 +76,32 @@ class LinkStore {
       const state: PersistedState = {
         extractedLinks: this.extractedLinks,
         checkSession: this.checkSession,
+        uploadedFileName: this.uploadedFileName,
       };
       const json = JSON.stringify(state, null, 2);
       await fs.writeFile(STATE_FILE_TMP, json, "utf-8");
       await fs.rename(STATE_FILE_TMP, STATE_FILE);
     } catch (err) {
       console.error("[LinkStore] Failed to save state:", err);
+    }
+  }
+
+  // ── Save extracted links to a named JSON file (same name as uploaded file) ─
+  async saveLinksToFile(originalFileName: string, links: ExtractedLinks): Promise<void> {
+    try {
+      const baseName = originalFileName.replace(/\.docx?$/i, "");
+      this.uploadedFileName = baseName;
+      const filePath = path.resolve(`${baseName}.json`);
+      const data = {
+        fileName: baseName,
+        savedAt: new Date().toISOString(),
+        whatsapp: links.whatsapp,
+        telegram: links.telegram,
+      };
+      await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+      console.log(`[LinkStore] Links saved to ${baseName}.json (${links.whatsapp.length} WA, ${links.telegram.length} TG)`);
+    } catch (err) {
+      console.error("[LinkStore] Failed to save links to file:", err);
     }
   }
 
