@@ -47,6 +47,8 @@ interface JoinSession {
   startedAt: string;
   completedAt?: string;
   currentLink?: string;
+  joinedLinks: string[];
+  failedLinks: string[];
 }
 interface WAStatusRes {
   status: WAStatus;
@@ -125,7 +127,7 @@ export default function Home() {
 
   const { data: joinProgressData } = useQuery<{ joinSession: JoinSession | null }>({
     queryKey: ["/api/whatsapp/join-progress"],
-    refetchInterval: extraPanelMode === "join" ? 1000 : false,
+    refetchInterval: extraPanelMode === "join" ? 1000 : 10000,
   });
 
   const { data: previousResults } = useQuery<PreviousResultsRes>({
@@ -411,6 +413,26 @@ export default function Home() {
                       عرض النتائج الكاملة
                     </Button>
                   </div>
+
+                  {/* Previous join session info */}
+                  {joinSession && (joinSession.status === "done" || joinSession.status === "paused") && (
+                    <div className="mt-3 pt-3 border-t flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-muted-foreground">
+                          آخر جلسة انضمام:
+                          <span className={`mr-1 font-medium ${joinSession.status === "done" ? "text-green-600" : "text-orange-600"}`}>
+                            {joinSession.joined} ناجح، {joinSession.failed} فشل
+                          </span>
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline"
+                        onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}
+                        data-testid="button-prev-download-join">
+                        <Download className="w-3.5 h-3.5 ml-1.5" />
+                        نتائج الانضمام
+                      </Button>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -884,31 +906,83 @@ export default function Home() {
                   {/* Join sub-panel */}
                   {extraPanelMode === "join" && (
                     <div className="space-y-3 border-t pt-3">
-                      {(!joinSession || joinSession.status === "done" || joinSession.status === "paused") && (
+                      {/* Completed session summary (persistent across refresh) */}
+                      {joinSession?.status === "done" && (
                         <div className="space-y-3">
+                          <div className="flex items-center gap-2 text-xs bg-green-50 dark:bg-green-900/20 rounded-lg p-3 border border-green-200 dark:border-green-800">
+                            <CheckCheck className="w-4 h-4 text-green-600 flex-shrink-0" />
+                            <span className="text-green-700 dark:text-green-400 font-medium">اكتمل الانضمام — {joinSession.joined} ناجح، {joinSession.failed} فشل</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2.5 text-center border border-green-200 dark:border-green-800">
+                              <p className="font-bold text-xl text-green-600">{joinSession.joined}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">انضمام ناجح</p>
+                            </div>
+                            <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2.5 text-center border border-red-200 dark:border-red-800">
+                              <p className="font-bold text-xl text-red-600">{joinSession.failed}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">فشل</p>
+                            </div>
+                          </div>
+                          <Button className="w-full" variant="outline"
+                            onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}
+                            data-testid="button-download-join-results">
+                            <Download className="w-4 h-4 ml-2" />
+                            تحميل نتائج الانضمام (DOCX)
+                          </Button>
                           <div className="flex items-start gap-2 text-xs bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3">
                             <Clock className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
                             <div>
-                              <p className="font-medium text-yellow-700 dark:text-yellow-400">تأخير آمن: 2–5 ثانية بين كل انضمام، و دقيقة راحة كل 30 مجموعة</p>
+                              <p className="font-medium text-yellow-700 dark:text-yellow-400">تأخير آمن: 2–5 ثانية بين كل انضمام، ودقيقة راحة كل 30 مجموعة</p>
                               <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validResults.length} مجموعة صالحة</p>
                             </div>
                           </div>
-                          {joinSession?.status === "done" && (
-                            <div className="flex items-center gap-2 text-xs bg-green-50 dark:bg-green-900/20 rounded-lg p-3 border border-green-200 dark:border-green-800">
-                              <CheckCheck className="w-4 h-4 text-green-600 flex-shrink-0" />
-                              <span className="text-green-700 dark:text-green-400">اكتمل الانضمام — {joinSession.joined} ناجح، {joinSession.failed} فشل</span>
-                            </div>
-                          )}
                           <Button className="w-full" onClick={() => joinGroupsMutation.mutate()}
                             disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validResults.length}
                             data-testid="button-start-join">
                             {joinGroupsMutation.isPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <UserPlus className="w-4 h-4 ml-2" />}
-                            {joinSession?.status === "done" ? "إعادة الانضمام" : "بدء الانضمام للمجموعات"}
+                            إعادة الانضمام
                           </Button>
                           {waStatus !== "connected" && <p className="text-xs text-destructive text-center">واتساب غير متصل</p>}
                         </div>
                       )}
 
+                      {/* Not started / paused */}
+                      {(!joinSession || joinSession.status === "paused") && (
+                        <div className="space-y-3">
+                          {joinSession?.status === "paused" && (
+                            <div className="flex items-center gap-2 text-xs bg-orange-50 dark:bg-orange-900/20 rounded-lg p-3 border border-orange-200 dark:border-orange-800">
+                              <AlertCircle className="w-4 h-4 text-orange-600 flex-shrink-0" />
+                              <span className="text-orange-700 dark:text-orange-400">
+                                تم إيقاف الانضمام مؤقتاً — {joinSession.joined} ناجح، {joinSession.failed} فشل من أصل {joinSession.total}
+                              </span>
+                            </div>
+                          )}
+                          {joinSession?.status === "paused" && (
+                            <Button className="w-full" variant="outline"
+                              onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}
+                              data-testid="button-download-join-results-paused">
+                              <Download className="w-4 h-4 ml-2" />
+                              تحميل نتائج جزئية (DOCX)
+                            </Button>
+                          )}
+                          <div className="flex items-start gap-2 text-xs bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3">
+                            <Clock className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
+                            <div>
+                              <p className="font-medium text-yellow-700 dark:text-yellow-400">تأخير آمن: 2–5 ثانية بين كل انضمام، ودقيقة راحة كل 30 مجموعة</p>
+                              <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validResults.length} مجموعة صالحة</p>
+                            </div>
+                          </div>
+                          <Button className="w-full" onClick={() => joinGroupsMutation.mutate()}
+                            disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validResults.length}
+                            data-testid="button-start-join">
+                            {joinGroupsMutation.isPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <UserPlus className="w-4 h-4 ml-2" />}
+                            {joinSession?.status === "paused" ? "استئناف الانضمام" : "بدء الانضمام للمجموعات"}
+                          </Button>
+                          {waStatus !== "connected" && <p className="text-xs text-destructive text-center">واتساب غير متصل</p>}
+                        </div>
+                      )}
+
+                      {/* Running */}
                       {joinSession?.status === "running" && (
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">

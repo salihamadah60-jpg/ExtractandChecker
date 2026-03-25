@@ -323,6 +323,8 @@ class BaileysManager extends EventEmitter {
       progress: 0,
       joined: 0,
       failed: 0,
+      joinedLinks: [],
+      failedLinks: [],
       startedAt: new Date().toISOString(),
     };
     linkStore.saveToDisk().catch(console.error);
@@ -352,9 +354,11 @@ class BaileysManager extends EventEmitter {
       try {
         await this.sock.groupAcceptInvite(match[1]);
         linkStore.joinSession.joined++;
+        linkStore.joinSession.joinedLinks.push(g.link);
         console.log(`[Join] ✓ Joined: ${g.name ?? g.link}`);
       } catch (err: any) {
         linkStore.joinSession.failed++;
+        linkStore.joinSession.failedLinks.push(g.link);
         console.log(`[Join] ✗ Failed: ${g.name ?? g.link} — ${err.message}`);
       }
 
@@ -449,7 +453,7 @@ class BaileysManager extends EventEmitter {
       this.emit("session", session);
 
       if (i < session.links.length - 1) {
-        const delay = 1000 + Math.random() * 500;
+        const delay = 200 + Math.random() * 400;
         await new Promise((r) => setTimeout(r, delay));
       }
     }

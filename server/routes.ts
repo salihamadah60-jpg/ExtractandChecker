@@ -358,6 +358,63 @@ export async function registerRoutes(
     res.json({ joinSession: linkStore.joinSession });
   });
 
+  // ── Download join results as DOCX ─────────────────────────────────────────
+  app.get("/api/whatsapp/download-join-results", async (_req, res) => {
+    const js = linkStore.joinSession;
+    if (!js) return res.status(404).json({ error: "لا توجد جلسة انضمام" });
+
+    const children: any[] = [
+      new Paragraph({
+        text: "نتائج الانضمام للمجموعات",
+        heading: HeadingLevel.HEADING_1,
+      }),
+      new Paragraph({
+        text: `إجمالي: ${js.total} · منضمة: ${js.joined} · فشل: ${js.failed}`,
+        spacing: { after: 300 },
+      }),
+    ];
+
+    if (js.joinedLinks.length > 0) {
+      children.push(
+        new Paragraph({
+          children: [new TextRun({ text: `✓ المجموعات المنضم إليها (${js.joinedLinks.length})`, bold: true, color: "16a34a" })],
+          spacing: { after: 100 },
+        })
+      );
+      for (const link of js.joinedLinks) {
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: link, color: "1a73e8" })],
+            spacing: { after: 80 },
+          })
+        );
+      }
+    }
+
+    if (js.failedLinks.length > 0) {
+      children.push(
+        new Paragraph({
+          children: [new TextRun({ text: `✗ المجموعات الفاشلة (${js.failedLinks.length})`, bold: true, color: "dc2626" })],
+          spacing: { before: 300, after: 100 },
+        })
+      );
+      for (const link of js.failedLinks) {
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: link, color: "dc2626" })],
+            spacing: { after: 80 },
+          })
+        );
+      }
+    }
+
+    const doc = new Document({ sections: [{ children }] });
+    const buf = (await Packer.toBuffer(doc)) as unknown as Buffer;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="join-results.docx"`);
+    res.send(buf);
+  });
+
   // ── Start HTTP link check (no login required) ──────────────────────────────
   app.post("/api/check-http", async (_req, res) => {
     const links = linkStore.extractedLinks.whatsapp;
@@ -421,9 +478,13 @@ export async function registerRoutes(
   // ── Filtered summary (groups + ads + description links) ────────────────────
   app.get("/api/whatsapp/filtered-summary", (_req, res) => {
     const summary = linkStore.getFilteredSummary();
-    // Auto-save description links when summary is requested after completion
-    if (linkStore.checkSession?.status === "done" && summary.descriptionLinks.length > 0) {
-      linkStore.saveDescriptionLinks(summary.descriptionLinks).catch(console.error);
+    if (linkStore.checkSession?.status === "done") {
+      // Auto-save description links when summary is requested after completion
+      if (summary.descriptionLinks.length > 0) {
+        linkStore.saveDescriptionLinks(summary.descriptionLinks).catch(console.error);
+      }
+      // Auto-save filtered results to LinksjsonEndRe
+      linkStore.saveFilteredResults(summary).catch(console.error);
     }
     res.json({
       groups: summary.groups.length,

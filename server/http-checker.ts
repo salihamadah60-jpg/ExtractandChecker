@@ -99,9 +99,9 @@ export async function checkLinksHTTP(
     const done = results.filter((r) => r.status !== "pending").length;
     onProgress([...results], done);
 
-    // Respect WhatsApp's rate limits
+    // Small delay to avoid hammering the server
     if (i < results.length - 1) {
-      const delay = 1000 + Math.random() * 1500;
+      const delay = 300 + Math.random() * 500;
       await new Promise((r) => setTimeout(r, delay));
     }
   }

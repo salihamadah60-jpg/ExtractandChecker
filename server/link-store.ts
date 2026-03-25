@@ -5,6 +5,14 @@ const STATE_FILE = path.resolve(".session-state.json");
 const STATE_FILE_TMP = STATE_FILE + ".tmp";
 const DESC_LINKS_FILE = path.resolve("description-links.json");
 
+const LINKS_JSON_DIR = path.resolve("Linksjson");
+const LINKS_JSON_END_DIR = path.resolve("LinksjsonEndRe");
+
+async function ensureDirs() {
+  await fs.mkdir(LINKS_JSON_DIR, { recursive: true }).catch(() => {});
+  await fs.mkdir(LINKS_JSON_END_DIR, { recursive: true }).catch(() => {});
+}
+
 export interface ExtractedLinks {
   whatsapp: string[];
   telegram: string[];
@@ -39,6 +47,8 @@ export interface JoinSession {
   startedAt: string;
   completedAt?: string;
   currentLink?: string;
+  joinedLinks: string[];
+  failedLinks: string[];
 }
 
 export interface FilteredGroup {
@@ -83,13 +93,23 @@ class LinkStore {
   uploadedFileName: string = "";
 
   async loadFromDisk(): Promise<void> {
+    await ensureDirs();
     try {
       const raw = await fs.readFile(STATE_FILE, "utf-8");
       const saved: PersistedState = JSON.parse(raw);
       this.extractedLinks = saved.extractedLinks ?? { whatsapp: [], telegram: [] };
       this.uploadedFileName = saved.uploadedFileName ?? "";
       this.newRoundLinks = saved.newRoundLinks ?? { whatsapp: [], telegram: [] };
-      this.joinSession = saved.joinSession ?? null;
+      // Migrate old joinSession without joinedLinks/failedLinks
+      if (saved.joinSession) {
+        this.joinSession = {
+          joinedLinks: [],
+          failedLinks: [],
+          ...saved.joinSession,
+        };
+      } else {
+        this.joinSession = null;
+      }
       if (saved.checkSession) {
         if (saved.checkSession.status === "running") {
           saved.checkSession.status = "idle";
@@ -128,9 +148,11 @@ class LinkStore {
 
   async saveLinksToFile(originalFileName: string, links: ExtractedLinks): Promise<void> {
     try {
+      await ensureDirs();
       const baseName = originalFileName.replace(/\.docx?$/i, "");
       this.uploadedFileName = baseName;
-      const filePath = path.resolve(`${baseName}.json`);
+      // Save to Linksjson folder
+      const filePath = path.join(LINKS_JSON_DIR, `${baseName}.json`);
       const data = {
         fileName: baseName,
         savedAt: new Date().toISOString(),
@@ -138,9 +160,35 @@ class LinkStore {
         telegram: links.telegram,
       };
       await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
-      console.log(`[LinkStore] Links saved to ${baseName}.json (${links.whatsapp.length} WA, ${links.telegram.length} TG)`);
+      console.log(`[LinkStore] Links saved to Linksjson/${baseName}.json (${links.whatsapp.length} WA, ${links.telegram.length} TG)`);
     } catch (err) {
       console.error("[LinkStore] Failed to save links to file:", err);
+    }
+  }
+
+  async saveFilteredResults(summary: FilteredSummary): Promise<void> {
+    try {
+      await ensureDirs();
+      const baseName = this.uploadedFileName || "results";
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const fileName = `${baseName}-filtered-${timestamp}.json`;
+      const filePath = path.join(LINKS_JSON_END_DIR, fileName);
+      const data = {
+        fileName: baseName,
+        savedAt: new Date().toISOString(),
+        groups: summary.groups,
+        ads: summary.ads,
+        descriptionLinks: summary.descriptionLinks,
+        totals: {
+          groups: summary.groups.length,
+          ads: summary.ads.length,
+          descriptionLinks: summary.descriptionLinks.length,
+        },
+      };
+      await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+      console.log(`[LinkStore] Filtered results saved to LinksjsonEndRe/${fileName}`);
+    } catch (err) {
+      console.error("[LinkStore] Failed to save filtered results:", err);
     }
   }
 
@@ -222,13 +270,15 @@ class LinkStore {
 
     const baseName = originalFileName.replace(/\.docx?$/i, "");
     const roundNum = this.getRoundNumber();
-    const filePath = path.resolve(`${baseName}-round${roundNum}.json`);
-    fs.writeFile(filePath, JSON.stringify({
-      fileName: `${baseName}-round${roundNum}`,
-      savedAt: new Date().toISOString(),
-      whatsapp: uniqueWhatsapp,
-      telegram: uniqueTelegram,
-    }, null, 2), "utf-8").catch(console.error);
+    const roundFileName = `${baseName}-round${roundNum}.json`;
+    ensureDirs().then(() => {
+      fs.writeFile(path.join(LINKS_JSON_DIR, roundFileName), JSON.stringify({
+        fileName: `${baseName}-round${roundNum}`,
+        savedAt: new Date().toISOString(),
+        whatsapp: uniqueWhatsapp,
+        telegram: uniqueTelegram,
+      }, null, 2), "utf-8").catch(console.error);
+    }).catch(console.error);
 
     this.saveToDisk().catch(console.error);
     return { uniqueWhatsapp, uniqueTelegram, skipped };
