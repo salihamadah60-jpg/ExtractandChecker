@@ -258,12 +258,14 @@ export async function registerRoutes(
   });
 
   // ── WhatsApp status ────────────────────────────────────────────────────────
-  app.get("/api/whatsapp/status", (_req, res) => {
+  app.get("/api/whatsapp/status", async (_req, res) => {
+    const hasSaved = await baileysManager.hasSavedCredentials();
     res.json({
       status: baileysManager.getStatus(),
       qrCode: baileysManager.getQrCode(),
       pairingCode: baileysManager.getPairingCode(),
       session: linkStore.checkSession,
+      hasSavedSession: hasSaved,
     });
   });
 
@@ -301,6 +303,16 @@ export async function registerRoutes(
     }
   });
 
+  // ── Connect using saved credentials ──────────────────────────────────────
+  app.post("/api/whatsapp/use-saved-session", async (_req, res) => {
+    try {
+      baileysManager.connectWithSavedCredentials().catch(console.error);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Disconnect ─────────────────────────────────────────────────────────────
   app.post("/api/whatsapp/disconnect", async (_req, res) => {
     try {
@@ -329,6 +341,21 @@ export async function registerRoutes(
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
+  });
+
+  // ── Start joining groups ─────────────────────────────────────────────────
+  app.post("/api/whatsapp/join-groups", async (_req, res) => {
+    try {
+      await baileysManager.startJoiningGroups();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // ── Join progress ─────────────────────────────────────────────────────────
+  app.get("/api/whatsapp/join-progress", (_req, res) => {
+    res.json({ joinSession: linkStore.joinSession });
   });
 
   // ── Start HTTP link check (no login required) ──────────────────────────────

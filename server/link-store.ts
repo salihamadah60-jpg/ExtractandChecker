@@ -30,6 +30,17 @@ export interface CheckSession {
   completedAt?: string;
 }
 
+export interface JoinSession {
+  status: "running" | "done" | "error" | "paused";
+  total: number;
+  progress: number;
+  joined: number;
+  failed: number;
+  startedAt: string;
+  completedAt?: string;
+  currentLink?: string;
+}
+
 export interface FilteredGroup {
   link: string;
   name?: string;
@@ -46,6 +57,7 @@ export interface FilteredSummary {
 interface PersistedState {
   extractedLinks: ExtractedLinks;
   checkSession: CheckSession | null;
+  joinSession: JoinSession | null;
   uploadedFileName?: string;
   newRoundLinks?: ExtractedLinks;
 }
@@ -66,6 +78,7 @@ function extractLinksFromText(text: string): string[] {
 class LinkStore {
   extractedLinks: ExtractedLinks = { whatsapp: [], telegram: [] };
   checkSession: CheckSession | null = null;
+  joinSession: JoinSession | null = null;
   newRoundLinks: ExtractedLinks = { whatsapp: [], telegram: [] };
   uploadedFileName: string = "";
 
@@ -76,6 +89,7 @@ class LinkStore {
       this.extractedLinks = saved.extractedLinks ?? { whatsapp: [], telegram: [] };
       this.uploadedFileName = saved.uploadedFileName ?? "";
       this.newRoundLinks = saved.newRoundLinks ?? { whatsapp: [], telegram: [] };
+      this.joinSession = saved.joinSession ?? null;
       if (saved.checkSession) {
         if (saved.checkSession.status === "running") {
           saved.checkSession.status = "idle";
@@ -85,6 +99,10 @@ class LinkStore {
         console.log(`[LinkStore] Loaded saved state — ${done}/${saved.checkSession.total} links already checked`);
       } else {
         console.log("[LinkStore] Loaded saved state (no previous session)");
+      }
+      // Pause any running join session on reload
+      if (this.joinSession?.status === "running") {
+        this.joinSession.status = "paused";
       }
     } catch {
       // No saved state yet
@@ -96,6 +114,7 @@ class LinkStore {
       const state: PersistedState = {
         extractedLinks: this.extractedLinks,
         checkSession: this.checkSession,
+        joinSession: this.joinSession,
         uploadedFileName: this.uploadedFileName,
         newRoundLinks: this.newRoundLinks,
       };
@@ -183,13 +202,11 @@ class LinkStore {
     return this.checkSession;
   }
 
-  // ── Add new round links (dedup against already-checked links) ──────────────
   prepareNewRound(newWhatsapp: string[], newTelegram: string[], originalFileName: string): {
     uniqueWhatsapp: string[];
     uniqueTelegram: string[];
     skipped: number;
   } {
-    // Collect all previously checked/known links
     const known = new Set<string>();
     for (const r of this.checkSession?.results ?? []) {
       known.add(r.link);
@@ -203,7 +220,6 @@ class LinkStore {
 
     this.newRoundLinks = { whatsapp: uniqueWhatsapp, telegram: uniqueTelegram };
 
-    // Save the new round links to a JSON file
     const baseName = originalFileName.replace(/\.docx?$/i, "");
     const roundNum = this.getRoundNumber();
     const filePath = path.resolve(`${baseName}-round${roundNum}.json`);
@@ -218,13 +234,11 @@ class LinkStore {
     return { uniqueWhatsapp, uniqueTelegram, skipped };
   }
 
-  // ── Start checking new round — EXTENDS the existing session ───────────────
   startNewRoundSession(): CheckSession {
     const newLinks = this.newRoundLinks.whatsapp;
     if (!newLinks.length) throw new Error("لا توجد روابط جديدة للفحص");
 
     if (this.checkSession) {
-      // Extend existing session — keep all old results, add new pending ones
       const existingLinkSet = new Set(this.checkSession.results.map((r) => r.link));
       const trulyNew = newLinks.filter((l) => !existingLinkSet.has(l));
       if (!trulyNew.length) throw new Error("جميع الروابط تم فحصها مسبقاً");
@@ -240,7 +254,6 @@ class LinkStore {
       this.checkSession.completedAt = undefined;
       console.log(`[LinkStore] Extended session with ${trulyNew.length} new links (total: ${this.checkSession.total})`);
     } else {
-      // No previous session — start fresh
       this.checkSession = {
         id: Date.now().toString(),
         links: newLinks,
@@ -258,8 +271,14 @@ class LinkStore {
   }
 
   private getRoundNumber(): number {
-    // Count how many times a new round has started based on the total/links ratio
     return Math.floor((this.checkSession?.total ?? 0) / Math.max(this.extractedLinks.whatsapp.length, 1)) + 2;
+  }
+
+  // ── Get valid group links for joining ─────────────────────────────────────
+  getValidGroupLinks(): CheckResult[] {
+    return (this.checkSession?.results ?? []).filter(
+      (r) => r.status === "valid" && r.link.includes("chat.whatsapp.com")
+    );
   }
 
   // ── Compute filtered summary ───────────────────────────────────────────────
@@ -269,35 +288,40 @@ class LinkStore {
       (r) => r.status === "valid" && r.link.includes("chat.whatsapp.com")
     );
 
-    // Groups: >50 members, sorted by name then member count
+    // Groups file: >50 members  OR  (10 < members ≤ 50 AND no description)
     const groups: FilteredGroup[] = validGroups
-      .filter((r) => (r.members ?? 0) > 50)
+      .filter((r) => {
+        const m = r.members ?? 0;
+        if (m > 50) return true;
+        if (m > 10 && m <= 50 && !r.description?.trim()) return true;
+        return false;
+      })
       .map((r) => ({ link: r.link, name: r.name, members: r.members!, description: r.description }))
       .sort((a, b) => {
-        const nameA = (a.name ?? "").toLowerCase();
-        const nameB = (b.name ?? "").toLowerCase();
-        if (nameA !== nameB) return nameA.localeCompare(nameB, "ar");
+        // Sort by first word of name (directory grouping), then member count
+        const dirA = (a.name ?? "").trim().split(/\s+/)[0] ?? "";
+        const dirB = (b.name ?? "").trim().split(/\s+/)[0] ?? "";
+        if (dirA !== dirB) return dirA.localeCompare(dirB, "ar");
         return a.members - b.members;
       });
 
-    // Ads: 10 < members <= 50 with non-empty description
+    // Ads file: 10 < members ≤ 50 AND has non-empty description
     const ads: FilteredGroup[] = validGroups
       .filter((r) => {
         const m = r.members ?? 0;
-        return m > 10 && m <= 50 && r.description && r.description.trim().length > 0;
+        return m > 10 && m <= 50 && !!r.description?.trim();
       })
       .map((r) => ({ link: r.link, name: r.name, members: r.members!, description: r.description }));
 
     // Extract links from descriptions of groups>50
     const descLinkSet = new Set<string>();
-    for (const g of groups) {
+    for (const g of groups.filter((g) => g.members > 50)) {
       if (g.description) {
         for (const l of extractLinksFromText(g.description)) {
           descLinkSet.add(l);
         }
       }
     }
-    // Remove links already in the session
     const sessionLinkSet = new Set(results.map((r) => r.link));
     const descriptionLinks = [...descLinkSet].filter((l) => !sessionLinkSet.has(l));
 

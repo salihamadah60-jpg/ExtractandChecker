@@ -232,18 +232,33 @@ class BaileysManager extends EventEmitter {
     return this.status === "connected" && this.sock !== null;
   }
 
+  // ── Check if saved credentials exist ──────────────────────────────────────
+  async hasSavedCredentials(): Promise<boolean> {
+    try {
+      await fs.access(`${AUTH_DIR}/creds.json`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // ── Auto-connect on startup using saved credentials ────────────────────────
   async autoConnect(): Promise<void> {
     try {
       const credsFile = `${AUTH_DIR}/creds.json`;
       await fs.access(credsFile);
-      // Credentials file exists — reconnect silently without clearing auth
       console.log("[Baileys] Saved credentials found — auto-connecting...");
       await this.connect(false, undefined, true);
     } catch {
-      // No credentials saved yet — wait for manual connect
       console.log("[Baileys] No saved credentials — waiting for manual connect");
     }
+  }
+
+  // ── Connect using saved credentials (called from UI) ─────────────────────
+  async connectWithSavedCredentials(): Promise<void> {
+    if (this.isConnected()) return; // Already connected
+    if (this.isStarting || this.sock) return;
+    await this.connect(false, undefined, true);
   }
 
   // ── Link checking ─────────────────────────────────────────────────────────
@@ -294,6 +309,80 @@ class BaileysManager extends EventEmitter {
     if (!this.isConnected()) throw new Error("WhatsApp غير متصل");
     const session = linkStore.startNewRoundSession();
     this.runChecks(session).catch(console.error);
+  }
+
+  // ── Join valid groups ──────────────────────────────────────────────────────
+  async startJoiningGroups(): Promise<void> {
+    if (!this.isConnected()) throw new Error("WhatsApp غير متصل");
+    const validGroups = linkStore.getValidGroupLinks();
+    if (!validGroups.length) throw new Error("لا توجد مجموعات صالحة للانضمام");
+
+    linkStore.joinSession = {
+      status: "running",
+      total: validGroups.length,
+      progress: 0,
+      joined: 0,
+      failed: 0,
+      startedAt: new Date().toISOString(),
+    };
+    linkStore.saveToDisk().catch(console.error);
+
+    this.runJoin(validGroups).catch(console.error);
+  }
+
+  private async runJoin(groups: { link: string; name?: string }[]): Promise<void> {
+    let batchCount = 0;
+    for (let i = 0; i < groups.length; i++) {
+      if (!linkStore.joinSession || linkStore.joinSession.status !== "running") break;
+      if (!this.isConnected()) {
+        if (linkStore.joinSession) linkStore.joinSession.status = "paused";
+        linkStore.saveToDisk().catch(console.error);
+        return;
+      }
+
+      const g = groups[i];
+      const match = g.link.match(/chat\.whatsapp\.com\/([A-Za-z0-9]+)/);
+      if (!match) {
+        linkStore.joinSession.progress++;
+        continue;
+      }
+
+      linkStore.joinSession.currentLink = g.link;
+
+      try {
+        await this.sock.groupAcceptInvite(match[1]);
+        linkStore.joinSession.joined++;
+        console.log(`[Join] ✓ Joined: ${g.name ?? g.link}`);
+      } catch (err: any) {
+        linkStore.joinSession.failed++;
+        console.log(`[Join] ✗ Failed: ${g.name ?? g.link} — ${err.message}`);
+      }
+
+      linkStore.joinSession.progress++;
+      batchCount++;
+      linkStore.saveToDisk().catch(console.error);
+
+      // 1 minute rest every 30 joins
+      if (batchCount % 30 === 0 && i < groups.length - 1) {
+        console.log("[Join] Resting 60 seconds after 30 joins...");
+        for (let t = 0; t < 60; t++) {
+          if (!linkStore.joinSession || linkStore.joinSession.status !== "running") return;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      } else if (i < groups.length - 1) {
+        // 2–5 second delay between each join
+        const delay = 2000 + Math.random() * 3000;
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+
+    if (linkStore.joinSession) {
+      linkStore.joinSession.status = "done";
+      linkStore.joinSession.completedAt = new Date().toISOString();
+      linkStore.joinSession.currentLink = undefined;
+      linkStore.saveToDisk().catch(console.error);
+      console.log(`[Join] Completed — joined: ${linkStore.joinSession.joined}, failed: ${linkStore.joinSession.failed}`);
+    }
   }
 
   private async runChecks(
