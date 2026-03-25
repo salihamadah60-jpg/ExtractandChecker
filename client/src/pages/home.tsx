@@ -72,7 +72,12 @@ interface NewRoundRes {
 }
 interface PreviousResultsRes {
   hasPreviousSession: boolean;
+  extractedWA?: number;
+  extractedTG?: number;
   uploadedFileName?: string;
+  sessionStatus?: "idle" | "running" | "done" | "error" | null;
+  sessionProgress?: number;
+  sessionTotal?: number;
   completedAt?: string;
   startedAt?: string;
   total?: number;
@@ -134,6 +139,32 @@ export default function Home() {
     queryKey: ["/api/previous-results"],
     refetchInterval: false,
   });
+
+  // Restore session state on page refresh — runs once when data arrives
+  const hasRestoredRef = useRef(false);
+  useEffect(() => {
+    if (hasRestoredRef.current || previousResults === undefined) return;
+    hasRestoredRef.current = true;
+
+    const { extractedWA = 0, extractedTG = 0, sessionStatus, hasPreviousSession } = previousResults;
+
+    // Restore link counts whenever there are extracted links
+    if (extractedWA > 0 || extractedTG > 0) {
+      setLinkCounts({ whatsapp: extractedWA, telegram: extractedTG });
+    }
+
+    if (hasPreviousSession && sessionStatus === "done") {
+      // Completed session → jump to results
+      setStep("results");
+    } else if (sessionStatus === "running" || sessionStatus === "idle") {
+      // Active or paused session → resume checking view
+      setStep("checking");
+    } else if (extractedWA > 0) {
+      // File was uploaded but checking hasn't started → links step
+      setStep("links");
+    }
+    // else → stay at upload (default)
+  }, [previousResults]);
 
   const waStatus = waData?.status ?? "disconnected";
   const qrCode = waData?.qrCode ?? null;

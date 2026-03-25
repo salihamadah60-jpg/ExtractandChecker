@@ -453,16 +453,46 @@ export async function registerRoutes(
   // ── Previous results summary (shown on upload screen) ─────────────────────
   app.get("/api/previous-results", (_req, res) => {
     const session = linkStore.checkSession;
-    if (!session || session.status !== "done") {
-      return res.json({ hasPreviousSession: false });
+    // Always return extracted link counts so the frontend can restore state
+    const extractedWA = linkStore.extractedLinks.whatsapp.length;
+    const extractedTG = linkStore.extractedLinks.telegram.length;
+    const uploadedFileName = linkStore.uploadedFileName || null;
+
+    if (!session) {
+      return res.json({
+        hasPreviousSession: false,
+        extractedWA,
+        extractedTG,
+        uploadedFileName,
+        sessionStatus: null,
+      });
     }
+
+    const sessionStatus = session.status;
+
+    if (session.status !== "done") {
+      // Session exists but not yet completed (running, idle, error)
+      return res.json({
+        hasPreviousSession: false,
+        extractedWA,
+        extractedTG,
+        uploadedFileName,
+        sessionStatus,
+        sessionProgress: session.progress,
+        sessionTotal: session.total,
+      });
+    }
+
     const summary = linkStore.getFilteredSummary();
     const valid = session.results.filter((r) => r.status === "valid").length;
     const invalid = session.results.filter((r) => r.status === "invalid").length;
     const errors = session.results.filter((r) => r.status === "error").length;
     res.json({
       hasPreviousSession: true,
-      uploadedFileName: linkStore.uploadedFileName || null,
+      extractedWA,
+      extractedTG,
+      uploadedFileName,
+      sessionStatus,
       completedAt: session.completedAt,
       startedAt: session.startedAt,
       total: session.total,
