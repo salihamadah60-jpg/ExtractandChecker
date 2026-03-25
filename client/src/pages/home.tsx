@@ -140,7 +140,7 @@ export default function Home() {
     refetchInterval: false,
   });
 
-  // Restore session state on page refresh — runs once when data arrives
+  // Restore check session state on page refresh — runs once when data arrives
   const hasRestoredRef = useRef(false);
   useEffect(() => {
     if (hasRestoredRef.current || previousResults === undefined) return;
@@ -154,17 +154,26 @@ export default function Home() {
     }
 
     if (hasPreviousSession && sessionStatus === "done") {
-      // Completed session → jump to results
       setStep("results");
     } else if (sessionStatus === "running" || sessionStatus === "idle") {
-      // Active or paused session → resume checking view
       setStep("checking");
     } else if (extractedWA > 0) {
-      // File was uploaded but checking hasn't started → links step
       setStep("links");
     }
-    // else → stay at upload (default)
   }, [previousResults]);
+
+  // Restore join panel on page refresh — runs once when join data arrives
+  const hasRestoredJoinRef = useRef(false);
+  useEffect(() => {
+    if (hasRestoredJoinRef.current || joinProgressData === undefined) return;
+    hasRestoredJoinRef.current = true;
+
+    const js = joinProgressData.joinSession;
+    if (js && (js.status === "done" || js.status === "running" || js.status === "paused" || js.status === "error")) {
+      setShowExtraPanel(true);
+      setExtraPanelMode("join");
+    }
+  }, [joinProgressData]);
 
   const waStatus = waData?.status ?? "disconnected";
   const qrCode = waData?.qrCode ?? null;

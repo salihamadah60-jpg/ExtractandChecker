@@ -153,10 +153,10 @@ class BaileysManager extends EventEmitter {
             setTimeout(() => this.connect(usePairing, phoneNumber, true /* keepAuth */), 2000);
 
           } else if (code === 428 || code === 408 || !code) {
-            // Transient network error — fresh reconnect
+            // Transient network error — reconnect but NEVER wipe saved credentials
             this.pairingCodeValue = null;
             this.setStatus("connecting");
-            setTimeout(() => this.connect(usePairing, phoneNumber, false), 3000);
+            setTimeout(() => this.connect(usePairing, phoneNumber, true /* keepAuth */), 3000);
 
           } else {
             this.pairingCodeValue = null;
