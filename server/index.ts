@@ -92,32 +92,18 @@ const initServer = async () => {
 
 const initPromise = initServer();
 
-if (!process.env.VERCEL) {
-  initPromise.then(() => {
-    const port = parseInt(process.env.PORT || "5000", 10);
-    httpServer.listen(
-      {
-        port,
-        host: "0.0.0.0",
-        reusePort: true,
-      },
-      () => {
-        log(`serving on port ${port}`);
-      },
-    );
-  });
-}
-
-const handler = async (req: any, res: any) => {
-  await initPromise;
-  return app(req, res);
-};
-
-export default handler;
-
-// For CommonJS environments (e.g. Vercel @vercel/node with cjs mode), use direct module.exports
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = handler;
-}
+initPromise.then(() => {
+  const port = parseInt(process.env.PORT || "5000", 10);
+  httpServer.listen(
+    {
+      port,
+      host: "0.0.0.0",
+      reusePort: true,
+    },
+    () => {
+      log(`serving on port ${port}`);
+    },
+  );
+});
 
 
