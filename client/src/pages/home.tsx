@@ -21,6 +21,8 @@ interface CheckResult {
   link: string;
   status: "pending" | "valid" | "invalid" | "error";
   info?: string;
+  name?: string;
+  members?: number;
 }
 interface CheckSession {
   id: string;
@@ -565,10 +567,12 @@ export default function Home() {
                         {r.status === "invalid" && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
                         {r.status === "error" && <AlertCircle className="w-3.5 h-3.5 text-orange-500 flex-shrink-0" />}
                         <span className="font-mono truncate text-muted-foreground flex-1">{r.link}</span>
-                        <span className={`flex-shrink-0 ${
+                        <span className={`flex-shrink-0 text-right ${
                           r.status === "valid" ? "text-green-600" :
                           r.status === "invalid" ? "text-red-600" : "text-orange-600"
-                        }`}>{r.info ?? r.status}</span>
+                        }`}>
+                          {r.name ? `${r.name}${r.members !== undefined ? ` ${r.members} عضو` : ""}` : (r.info ?? r.status)}
+                        </span>
                       </div>
                     ))}
                   {session.results.filter((r) => r.status !== "pending").length === 0 && (
@@ -580,7 +584,7 @@ export default function Home() {
 
             <div className="p-3 bg-muted rounded-lg flex items-start gap-2 text-xs text-muted-foreground">
               <Shield className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
-              <span>يُستخدم تأخير عشوائي بين 2 و5 ثوانٍ بين كل رابط للحماية من الحظر التلقائي</span>
+              <span>يُستخدم تأخير عشوائي بين 0.5 و1.2 ثانية بين كل رابط للحماية من الحظر التلقائي</span>
             </div>
           </div>
         )}
@@ -634,7 +638,14 @@ export default function Home() {
                       {r.status === "invalid" && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
                       {r.status === "error" && <AlertCircle className="w-3.5 h-3.5 text-orange-500 flex-shrink-0" />}
                       {r.status === "pending" && <Loader2 className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0 animate-spin" />}
-                      <span className="font-mono text-xs truncate flex-1 text-muted-foreground">{r.link}</span>
+                      <div className="flex-1 min-w-0">
+                        <span className="font-mono text-xs truncate block text-muted-foreground">{r.link}</span>
+                        {r.name && (
+                          <span className="text-xs text-foreground font-medium">
+                            {r.name}{r.members !== undefined ? ` — ${r.members} عضو` : ""}
+                          </span>
+                        )}
+                      </div>
                       <Badge variant={r.status === "valid" ? "default" : "secondary"}
                         className="text-xs flex-shrink-0">
                         {r.status === "valid" ? "صالح" : r.status === "invalid" ? "منتهٍ" : "خطأ"}

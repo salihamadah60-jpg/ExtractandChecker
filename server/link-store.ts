@@ -14,6 +14,7 @@ export interface CheckResult {
   status: "pending" | "valid" | "invalid" | "error";
   info?: string;
   name?: string;
+  members?: number;
 }
 
 export interface CheckSession {

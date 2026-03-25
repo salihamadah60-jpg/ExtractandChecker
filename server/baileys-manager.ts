@@ -221,13 +221,16 @@ class BaileysManager extends EventEmitter {
   }
 
   // ── Link checking ─────────────────────────────────────────────────────────
-  async checkGroupLink(inviteCode: string): Promise<{ status: "valid" | "invalid"; name?: string }> {
+  async checkGroupLink(inviteCode: string): Promise<{ status: "valid" | "invalid"; name?: string; members?: number }> {
     try {
       const info = await this.sock.groupGetInviteInfo(inviteCode);
       if (info && (info.subject || info.id)) {
-        const rawName: string = info.subject ?? "";
-        const name = rawName.split(/\s+/).slice(0, 3).join(" ") || undefined;
-        return { status: "valid", name };
+        const name: string = (info.subject ?? "").trim() || undefined!;
+        const members: number | undefined =
+          typeof info.size === "number" ? info.size :
+          Array.isArray(info.participants) ? info.participants.length :
+          undefined;
+        return { status: "valid", name: name || undefined, members };
       }
       return { status: "invalid" };
     } catch (e: any) {
@@ -283,29 +286,39 @@ class BaileysManager extends EventEmitter {
         const phoneMatch =
           link.match(/wa\.me\/([\d+]+)/) ?? link.match(/phone=([\d+]+)/);
 
+        const t0 = Date.now();
         if (groupMatch) {
           const checkResult = await this.checkGroupLink(groupMatch[1]);
+          const elapsed = Date.now() - t0;
           result.status = checkResult.status;
           result.name = checkResult.name;
+          result.members = checkResult.members;
           result.info =
             result.status === "valid"
               ? "مجموعة نشطة"
               : "الرابط منتهٍ أو غير موجود";
+          console.log(
+            `[Check] ${result.status.toUpperCase()} | ${elapsed}ms | ${link}${result.name ? ` | ${result.name}` : ""}${result.members !== undefined ? ` | ${result.members} عضو` : ""}`
+          );
         } else if (phoneMatch) {
           result.status = await this.checkPhoneNumber(
             phoneMatch[1].replace(/\D/g, "")
           );
+          const elapsed = Date.now() - t0;
           result.info =
             result.status === "valid"
               ? "رقم مسجل في واتساب"
               : "رقم غير مسجل";
+          console.log(`[Check] ${result.status.toUpperCase()} | ${elapsed}ms | ${link}`);
         } else {
           result.status = "error";
           result.info = "صيغة رابط غير معروفة";
+          console.log(`[Check] ERROR | unknown format | ${link}`);
         }
       } catch (err: any) {
         result.status = "error";
         result.info = err.message ?? "خطأ في الفحص";
+        console.log(`[Check] ERROR | ${err.message} | ${link}`);
       }
 
       session.progress = session.results.filter((r) => r.status !== "pending").length;
@@ -313,7 +326,7 @@ class BaileysManager extends EventEmitter {
       this.emit("session", session);
 
       if (i < session.links.length - 1) {
-        const delay = 2000 + Math.random() * 3000;
+        const delay = 500 + Math.random() * 700;
         await new Promise((r) => setTimeout(r, delay));
       }
     }
