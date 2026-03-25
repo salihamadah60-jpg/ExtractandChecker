@@ -68,6 +68,19 @@ interface NewRoundRes {
   skipped: number;
   total: number;
 }
+interface PreviousResultsRes {
+  hasPreviousSession: boolean;
+  uploadedFileName?: string;
+  completedAt?: string;
+  startedAt?: string;
+  total?: number;
+  valid?: number;
+  invalid?: number;
+  errors?: number;
+  groups?: number;
+  ads?: number;
+  descriptionLinks?: number;
+}
 
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "رفع الملف" },
@@ -113,6 +126,11 @@ export default function Home() {
   const { data: joinProgressData } = useQuery<{ joinSession: JoinSession | null }>({
     queryKey: ["/api/whatsapp/join-progress"],
     refetchInterval: extraPanelMode === "join" ? 1000 : false,
+  });
+
+  const { data: previousResults } = useQuery<PreviousResultsRes>({
+    queryKey: ["/api/previous-results"],
+    refetchInterval: false,
   });
 
   const waStatus = waData?.status ?? "disconnected";
@@ -328,6 +346,75 @@ export default function Home() {
         {/* ── Step: Upload ── */}
         {step === "upload" && (
           <div className="space-y-4">
+
+            {/* Previous session card */}
+            {previousResults?.hasPreviousSession && (
+              <Card className="border-primary/40 bg-primary/5">
+                <CardContent className="pt-4 pb-4">
+                  <div className="flex items-start gap-3 mb-3">
+                    <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <History className="w-4 h-4 text-primary" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm">نتائج سابقة محفوظة</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {previousResults.uploadedFileName && (
+                          <span className="font-mono bg-muted px-1.5 py-0.5 rounded ml-1">{previousResults.uploadedFileName}</span>
+                        )}
+                        {previousResults.completedAt && (
+                          <span>· اكتمل {formatDate(previousResults.completedAt)}</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Stats row */}
+                  <div className="grid grid-cols-4 gap-2 mb-3">
+                    <div className="bg-background rounded-lg p-2 text-center border">
+                      <p className="font-bold text-base leading-none">{previousResults.total ?? 0}</p>
+                      <p className="text-xs text-muted-foreground mt-1">إجمالي</p>
+                    </div>
+                    <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2 text-center border border-green-100 dark:border-green-900">
+                      <p className="font-bold text-base leading-none text-green-600">{previousResults.valid ?? 0}</p>
+                      <p className="text-xs text-muted-foreground mt-1">صالحة</p>
+                    </div>
+                    <div className="bg-background rounded-lg p-2 text-center border">
+                      <p className="font-bold text-base leading-none text-primary">{previousResults.groups ?? 0}</p>
+                      <p className="text-xs text-muted-foreground mt-1">مجموعات</p>
+                    </div>
+                    <div className="bg-background rounded-lg p-2 text-center border">
+                      <p className="font-bold text-base leading-none text-orange-500">{previousResults.ads ?? 0}</p>
+                      <p className="text-xs text-muted-foreground mt-1">إعلانات</p>
+                    </div>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" className="flex-1 min-w-0"
+                      onClick={() => window.open("/api/whatsapp/download-groups", "_blank")}
+                      disabled={!previousResults.groups}
+                      data-testid="button-prev-download-groups">
+                      <Download className="w-3.5 h-3.5 ml-1.5" />
+                      <span className="truncate">ملف المجموعات ({previousResults.groups ?? 0})</span>
+                    </Button>
+                    <Button size="sm" variant="outline" className="flex-1 min-w-0"
+                      onClick={() => window.open("/api/whatsapp/download-ads", "_blank")}
+                      disabled={!previousResults.ads}
+                      data-testid="button-prev-download-ads">
+                      <Download className="w-3.5 h-3.5 ml-1.5" />
+                      <span className="truncate">ملف الإعلانات ({previousResults.ads ?? 0})</span>
+                    </Button>
+                    <Button size="sm" className="flex-1 min-w-0"
+                      onClick={() => { setStep("results"); refetchSummary(); }}
+                      data-testid="button-prev-view-results">
+                      <CheckCheck className="w-3.5 h-3.5 ml-1.5" />
+                      عرض النتائج الكاملة
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             <Card className="border-2 border-dashed transition-colors"
               style={{ borderColor: isDragging ? "hsl(var(--primary))" : undefined }}
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -925,6 +1012,15 @@ function WAStatusCard({ status }: { status: WAStatus }) {
       {c.label}<p className="text-xs text-muted-foreground font-normal mt-0.5">{c.desc}</p>
     </div>
   );
+}
+
+function formatDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return iso;
+  }
 }
 
 function StatBox({ color, icon, label, value, large }: { color: "green"|"red"|"orange"; icon: JSX.Element; label: string; value: number; large?: boolean }) {

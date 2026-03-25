@@ -393,6 +393,31 @@ export async function registerRoutes(
     res.json({ session: linkStore.checkSession });
   });
 
+  // ── Previous results summary (shown on upload screen) ─────────────────────
+  app.get("/api/previous-results", (_req, res) => {
+    const session = linkStore.checkSession;
+    if (!session || session.status !== "done") {
+      return res.json({ hasPreviousSession: false });
+    }
+    const summary = linkStore.getFilteredSummary();
+    const valid = session.results.filter((r) => r.status === "valid").length;
+    const invalid = session.results.filter((r) => r.status === "invalid").length;
+    const errors = session.results.filter((r) => r.status === "error").length;
+    res.json({
+      hasPreviousSession: true,
+      uploadedFileName: linkStore.uploadedFileName || null,
+      completedAt: session.completedAt,
+      startedAt: session.startedAt,
+      total: session.total,
+      valid,
+      invalid,
+      errors,
+      groups: summary.groups.length,
+      ads: summary.ads.length,
+      descriptionLinks: summary.descriptionLinks.length,
+    });
+  });
+
   // ── Filtered summary (groups + ads + description links) ────────────────────
   app.get("/api/whatsapp/filtered-summary", (_req, res) => {
     const summary = linkStore.getFilteredSummary();
