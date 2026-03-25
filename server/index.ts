@@ -92,18 +92,35 @@ const initServer = async () => {
 
 const initPromise = initServer();
 
-initPromise.then(() => {
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
-});
+// Start a real HTTP server when running locally (Replit, local dev, etc.)
+// On Vercel, the app is served as a serverless function via the exported handler below.
+if (!process.env.VERCEL) {
+  initPromise.then(() => {
+    const port = parseInt(process.env.PORT || "5000", 10);
+    httpServer.listen(
+      {
+        port,
+        host: "0.0.0.0",
+        reusePort: true,
+      },
+      () => {
+        log(`serving on port ${port}`);
+      },
+    );
+  });
+}
+
+// Vercel serverless handler — each incoming request is passed directly to Express
+const handler = async (req: any, res: any) => {
+  await initPromise;
+  return app(req, res);
+};
+
+export default handler;
+
+// Support CommonJS environments (Vercel @vercel/node in cjs mode)
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = handler;
+}
 
 
