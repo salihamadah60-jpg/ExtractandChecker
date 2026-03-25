@@ -247,7 +247,7 @@ class BaileysManager extends EventEmitter {
   }
 
   // ── Link checking ─────────────────────────────────────────────────────────
-  async checkGroupLink(inviteCode: string): Promise<{ status: "valid" | "invalid"; name?: string; members?: number }> {
+  async checkGroupLink(inviteCode: string): Promise<{ status: "valid" | "invalid"; name?: string; members?: number; description?: string }> {
     try {
       const info = await this.sock.groupGetInviteInfo(inviteCode);
       if (info && (info.subject || info.id)) {
@@ -256,7 +256,8 @@ class BaileysManager extends EventEmitter {
           typeof info.size === "number" ? info.size :
           Array.isArray(info.participants) ? info.participants.length :
           undefined;
-        return { status: "valid", name: name || undefined, members };
+        const description: string | undefined = (info.desc ?? "").trim() || undefined;
+        return { status: "valid", name: name || undefined, members, description };
       }
       return { status: "invalid" };
     } catch (e: any) {
@@ -286,6 +287,12 @@ class BaileysManager extends EventEmitter {
     const { whatsapp } = linkStore.extractedLinks;
     if (!whatsapp.length) throw new Error("لا توجد روابط واتساب للفحص");
     const session = linkStore.startSession(whatsapp);
+    this.runChecks(session).catch(console.error);
+  }
+
+  async startNewRoundChecking(): Promise<void> {
+    if (!this.isConnected()) throw new Error("WhatsApp غير متصل");
+    const session = linkStore.startNewRoundSession();
     this.runChecks(session).catch(console.error);
   }
 
@@ -319,6 +326,7 @@ class BaileysManager extends EventEmitter {
           result.status = checkResult.status;
           result.name = checkResult.name;
           result.members = checkResult.members;
+          result.description = checkResult.description;
           result.info =
             result.status === "valid"
               ? "مجموعة نشطة"

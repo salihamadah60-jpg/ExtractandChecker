@@ -10,7 +10,8 @@ import { apiRequest } from "@/lib/queryClient";
 import {
   Upload, FileText, Download, CheckCircle2, XCircle, AlertCircle,
   Loader2, Wifi, WifiOff, Smartphone, LogOut, RefreshCw, Shield,
-  Link2, ChevronRight, QrCode, Hash, ArrowRight,
+  Link2, ChevronRight, QrCode, Hash, ArrowRight, Users, Megaphone,
+  FolderOpen, PlusCircle, FileJson,
 } from "lucide-react";
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
@@ -23,6 +24,7 @@ interface CheckResult {
   info?: string;
   name?: string;
   members?: number;
+  description?: string;
 }
 interface CheckSession {
   id: string;
@@ -39,6 +41,19 @@ interface WAStatusRes {
   qrCode: string | null;
   pairingCode: string | null;
   session: CheckSession | null;
+}
+interface FilteredSummaryRes {
+  groups: number;
+  ads: number;
+  descriptionLinks: number;
+  descriptionLinksData: string[];
+}
+interface NewRoundRes {
+  success: boolean;
+  newWhatsapp: number;
+  newTelegram: number;
+  skipped: number;
+  total: number;
 }
 
 const STEPS: { key: Step; label: string }[] = [
@@ -57,9 +72,12 @@ export default function Home() {
   const [connectMode, setConnectMode] = useState<"qr" | "pair">("qr");
   const [phone, setPhone] = useState("");
   const [isDragging, setIsDragging] = useState(false);
+  const [isNewRoundDragging, setIsNewRoundDragging] = useState(false);
+  const [newRoundData, setNewRoundData] = useState<NewRoundRes | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const newRoundFileRef = useRef<HTMLInputElement>(null);
 
-  const { data: waData, refetch: refetchWA } = useQuery<WAStatusRes>({
+  const { data: waData } = useQuery<WAStatusRes>({
     queryKey: ["/api/whatsapp/status"],
     refetchInterval: step === "connect" || step === "checking" ? 2000 : false,
   });
@@ -67,6 +85,12 @@ export default function Home() {
   const { data: progressData } = useQuery<{ session: CheckSession | null }>({
     queryKey: ["/api/whatsapp/progress"],
     refetchInterval: step === "checking" ? 1000 : false,
+  });
+
+  const { data: filteredSummary, refetch: refetchSummary } = useQuery<FilteredSummaryRes>({
+    queryKey: ["/api/whatsapp/filtered-summary"],
+    enabled: step === "results",
+    refetchInterval: false,
   });
 
   const waStatus = waData?.status ?? "disconnected";
@@ -87,6 +111,29 @@ export default function Home() {
       setLinkCounts({ whatsapp: data.whatsapp, telegram: data.telegram });
       setStep("links");
       toast({ title: "تم استخراج الروابط بنجاح" });
+    },
+    onError: (err: any) => {
+      toast({ title: "خطأ", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const newRoundUploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload-new-round", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
+      return data as NewRoundRes;
+    },
+    onSuccess: (data) => {
+      setNewRoundData(data);
+      if (data.total === 0) {
+        toast({ title: "لا روابط جديدة", description: "جميع الروابط تم فحصها مسبقاً", variant: "destructive" });
+      } else {
+        toast({ title: `تم العثور على ${data.total} رابط جديد`, description: `تم تجاهل ${data.skipped} رابط مكرر` });
+      }
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/filtered-summary"] });
     },
     onError: (err: any) => {
       toast({ title: "خطأ", description: err.message, variant: "destructive" });
@@ -139,6 +186,18 @@ export default function Home() {
     },
   });
 
+  const checkNewRoundMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/check-new-round", {}),
+    onSuccess: () => {
+      setNewRoundData(null);
+      setStep("checking");
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/progress"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "خطأ", description: err.message, variant: "destructive" });
+    },
+  });
+
   const disconnectMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/disconnect", {}),
     onSuccess: () => {
@@ -159,6 +218,7 @@ export default function Home() {
   useEffect(() => {
     if (session?.status === "done" && step === "checking") {
       setStep("results");
+      refetchSummary();
     }
   }, [session?.status, step]);
 
@@ -170,12 +230,27 @@ export default function Home() {
     uploadMutation.mutate(file);
   }, [uploadMutation, toast]);
 
+  const handleNewRoundFile = useCallback((file: File) => {
+    if (!file.name.match(/\.docx?$/i)) {
+      toast({ title: "خطأ", description: "يجب أن يكون الملف بصيغة DOCX", variant: "destructive" });
+      return;
+    }
+    newRoundUploadMutation.mutate(file);
+  }, [newRoundUploadMutation, toast]);
+
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
     if (file) handleFile(file);
   }, [handleFile]);
+
+  const onNewRoundDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsNewRoundDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleNewRoundFile(file);
+  }, [handleNewRoundFile]);
 
   const progressPct = session ? Math.round((session.progress / session.total) * 100) : 0;
   const validResults = session?.results.filter((r) => r.status === "valid") ?? [];
@@ -304,7 +379,6 @@ export default function Home() {
         {step === "links" && (
           <div className="space-y-5">
             <div className="grid sm:grid-cols-2 gap-4">
-              {/* WhatsApp card */}
               <Card>
                 <CardContent className="pt-5">
                   <div className="flex items-center gap-3 mb-4">
@@ -326,7 +400,6 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              {/* Telegram card */}
               <Card>
                 <CardContent className="pt-5">
                   <div className="flex items-center gap-3 mb-4">
@@ -349,7 +422,6 @@ export default function Home() {
               </Card>
             </div>
 
-            {/* Check links section */}
             {linkCounts.whatsapp > 0 && (
               <Card className="border-primary/30 bg-primary/5">
                 <CardHeader className="pb-3">
@@ -363,7 +435,6 @@ export default function Home() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid sm:grid-cols-2 gap-3">
-                    {/* QR mode */}
                     <div className={`border rounded-lg p-3 cursor-pointer transition-colors ${
                       connectMode === "qr" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
                     }`} onClick={() => setConnectMode("qr")} data-testid="select-qr-mode">
@@ -373,7 +444,6 @@ export default function Home() {
                       </div>
                       <p className="text-xs text-muted-foreground">امسح الرمز من تطبيق واتساب</p>
                     </div>
-                    {/* Pairing mode */}
                     <div className={`border rounded-lg p-3 cursor-pointer transition-colors ${
                       connectMode === "pair" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
                     }`} onClick={() => setConnectMode("pair")} data-testid="select-pair-mode">
@@ -433,10 +503,8 @@ export default function Home() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col items-center gap-4">
-                {/* Status indicator */}
                 <WAStatusCard status={waStatus} />
 
-                {/* QR Code */}
                 {connectMode === "qr" && (
                   <>
                     {qrCode ? (
@@ -451,7 +519,6 @@ export default function Home() {
                   </>
                 )}
 
-                {/* Pairing Code */}
                 {connectMode === "pair" && (
                   <>
                     {pairingCode ? (
@@ -461,10 +528,7 @@ export default function Home() {
                           data-testid="text-pairing-code">
                           {pairingCode}
                         </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full"
+                        <Button variant="outline" size="sm" className="w-full"
                           onClick={() => resendPairMutation.mutate()}
                           disabled={resendPairMutation.isPending}
                           data-testid="button-resend-pair">
@@ -550,7 +614,6 @@ export default function Home() {
               </CardContent>
             </Card>
 
-            {/* Live feed */}
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm">آخر النتائج</CardTitle>
@@ -592,6 +655,7 @@ export default function Home() {
         {/* ── Step: Results ── */}
         {step === "results" && session && (
           <div className="space-y-5">
+            {/* Overall stats */}
             <div className="grid grid-cols-3 gap-4">
               <StatBox color="green" icon={<CheckCircle2 className="w-5 h-5" />}
                 label="روابط صالحة" value={validResults.length} large />
@@ -601,26 +665,79 @@ export default function Home() {
                 label="أخطاء" value={errorResults.length} large />
             </div>
 
-            {validResults.length > 0 ? (
-              <Card className="border-primary/30 bg-primary/5">
+            {/* ── Filtered output files ── */}
+            <div className="grid sm:grid-cols-2 gap-4">
+              {/* Groups file */}
+              <Card className="border-green-200 dark:border-green-900/40">
                 <CardContent className="pt-5 space-y-3">
                   <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-5 h-5 text-primary" />
-                    <p className="font-semibold">تم العثور على {validResults.length} رابط صالح</p>
+                    <div className="w-9 h-9 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                      <Users className="w-4 h-4 text-green-600 dark:text-green-400" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-sm">ملف المجموعات</p>
+                      <p className="text-xs text-muted-foreground">أكثر من 50 عضواً · مرتّب تصاعدياً</p>
+                    </div>
+                    {filteredSummary && (
+                      <Badge variant="secondary" className="mr-auto">{filteredSummary.groups}</Badge>
+                    )}
                   </div>
-                  <Button className="w-full" size="lg"
-                    onClick={() => window.open("/api/whatsapp/download-valid", "_blank")}
-                    data-testid="button-download-valid">
+                  <p className="text-xs text-muted-foreground">
+                    المجموعات النشطة ذات العضوية العالية، مرتّبة حسب الاسم ثم عدد الأعضاء من الأقل للأكثر.
+                  </p>
+                  <Button className="w-full" variant="outline"
+                    onClick={() => window.open("/api/whatsapp/download-groups", "_blank")}
+                    disabled={!filteredSummary || filteredSummary.groups === 0}
+                    data-testid="button-download-groups">
                     <Download className="w-4 h-4 ml-2" />
-                    تحميل الروابط الصالحة (.docx)
+                    تحميل ملف المجموعات (.docx)
                   </Button>
                 </CardContent>
               </Card>
-            ) : (
-              <Card>
-                <CardContent className="pt-5 text-center text-muted-foreground">
-                  <XCircle className="w-10 h-10 mx-auto mb-2 text-muted-foreground/50" />
-                  <p>لم يتم العثور على روابط صالحة</p>
+
+              {/* Ads file */}
+              <Card className="border-orange-200 dark:border-orange-900/40">
+                <CardContent className="pt-5 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-9 h-9 rounded-full bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center">
+                      <Megaphone className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-sm">ملف الإعلانات</p>
+                      <p className="text-xs text-muted-foreground">10–50 عضواً · مع وصف إعلاني</p>
+                    </div>
+                    {filteredSummary && (
+                      <Badge variant="secondary" className="mr-auto">{filteredSummary.ads}</Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    مجموعات بعدد أعضاء بين 11 و50 تحتوي وصفاً إعلانياً أو ترويجياً.
+                  </p>
+                  <Button className="w-full" variant="outline"
+                    onClick={() => window.open("/api/whatsapp/download-ads", "_blank")}
+                    disabled={!filteredSummary || filteredSummary.ads === 0}
+                    data-testid="button-download-ads">
+                    <Download className="w-4 h-4 ml-2" />
+                    تحميل ملف الإعلانات (.docx)
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Description links info */}
+            {filteredSummary && filteredSummary.descriptionLinks > 0 && (
+              <Card className="border-blue-200 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-900/10">
+                <CardContent className="pt-4 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center flex-shrink-0">
+                    <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">روابط من أوصاف المجموعات</p>
+                    <p className="text-xs text-muted-foreground">
+                      تم العثور على {filteredSummary.descriptionLinks} رابط في أوصاف المجموعات ذات الأعضاء العالية — يمكنك إضافتها للجولة التالية.
+                    </p>
+                  </div>
+                  <Badge className="flex-shrink-0">{filteredSummary.descriptionLinks}</Badge>
                 </CardContent>
               </Card>
             )}
@@ -648,7 +765,7 @@ export default function Home() {
                       </div>
                       <Badge variant={r.status === "valid" ? "default" : "secondary"}
                         className="text-xs flex-shrink-0">
-                        {r.status === "valid" ? "صالح" : r.status === "invalid" ? "منتهٍ" : "خطأ"}
+                        {r.status === "valid" ? "صالح" : r.status === "invalid" ? "منتهٍ" : r.status === "error" ? "خطأ" : "معلق"}
                       </Badge>
                     </div>
                   ))}
@@ -656,20 +773,98 @@ export default function Home() {
               </CardContent>
             </Card>
 
-            <div className="flex gap-3">
-              <Button variant="outline" className="flex-1" onClick={() => {
-                setStep("links");
-                disconnectMutation.mutate();
-              }} data-testid="button-new-check">
-                <RefreshCw className="w-4 h-4 ml-2" />
-                فحص جديد
-              </Button>
-              <Button variant="outline" className="flex-1" onClick={() => setStep("upload")}
-                data-testid="button-upload-new">
-                <Upload className="w-4 h-4 ml-2" />
-                رفع ملف جديد
-              </Button>
-            </div>
+            {/* ── New Round Section ── */}
+            <Card className="border-2 border-dashed border-primary/30">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <PlusCircle className="w-5 h-5 text-primary" />
+                  جولة فحص جديدة
+                </CardTitle>
+                <CardDescription>
+                  ارفع ملف DOCX جديد — سيتم إزالة الروابط المكررة تلقائياً، حفظها كـ JSON جديد، وبدء الفحص مباشرةً باستخدام الجلسة المحفوظة دون الحاجة لإعادة الاتصال.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Upload area */}
+                {!newRoundData ? (
+                  <div
+                    className={`border-2 border-dashed rounded-lg p-6 flex flex-col items-center gap-3 cursor-pointer transition-colors ${
+                      isNewRoundDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"
+                    }`}
+                    onDragOver={(e) => { e.preventDefault(); setIsNewRoundDragging(true); }}
+                    onDragLeave={() => setIsNewRoundDragging(false)}
+                    onDrop={onNewRoundDrop}
+                    onClick={() => newRoundFileRef.current?.click()}
+                    data-testid="dropzone-new-round">
+                    {newRoundUploadMutation.isPending ? (
+                      <>
+                        <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                        <p className="text-sm text-muted-foreground">جاري استخراج الروابط وإزالة المكررات...</p>
+                      </>
+                    ) : (
+                      <>
+                        <FolderOpen className={`w-8 h-8 ${isNewRoundDragging ? "text-primary" : "text-muted-foreground"}`} />
+                        <div className="text-center">
+                          <p className="text-sm font-medium">اسحب ملف DOCX الجديد هنا</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">أو اضغط لاختيار الملف</p>
+                        </div>
+                      </>
+                    )}
+                    <input ref={newRoundFileRef} type="file" accept=".docx,.doc" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleNewRoundFile(f); }}
+                      data-testid="input-new-round-file" />
+                  </div>
+                ) : (
+                  /* New round summary after upload */
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-3 text-center">
+                        <p className="font-bold text-lg text-green-600 dark:text-green-400">{newRoundData.newWhatsapp}</p>
+                        <p className="text-xs text-muted-foreground">واتساب جديد</p>
+                      </div>
+                      <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 text-center">
+                        <p className="font-bold text-lg text-blue-600 dark:text-blue-400">{newRoundData.newTelegram}</p>
+                        <p className="text-xs text-muted-foreground">تيليغرام جديد</p>
+                      </div>
+                      <div className="bg-muted rounded-lg p-3 text-center">
+                        <p className="font-bold text-lg text-muted-foreground">{newRoundData.skipped}</p>
+                        <p className="text-xs text-muted-foreground">مكررة تم تجاهلها</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-lg p-2.5">
+                      <FileJson className="w-4 h-4 flex-shrink-0" />
+                      <span>تم حفظ الروابط الجديدة في ملف JSON جديد تلقائياً</span>
+                    </div>
+
+                    <div className="flex gap-3">
+                      <Button
+                        className="flex-1"
+                        onClick={() => checkNewRoundMutation.mutate()}
+                        disabled={checkNewRoundMutation.isPending || newRoundData.total === 0 || waStatus !== "connected"}
+                        data-testid="button-start-new-round">
+                        {checkNewRoundMutation.isPending ? (
+                          <Loader2 className="w-4 h-4 ml-2 animate-spin" />
+                        ) : (
+                          <SiWhatsapp className="w-4 h-4 ml-2" />
+                        )}
+                        بدء فحص الجولة الجديدة ({newRoundData.total})
+                      </Button>
+                      <Button variant="outline" onClick={() => setNewRoundData(null)}
+                        data-testid="button-cancel-new-round">
+                        إلغاء
+                      </Button>
+                    </div>
+
+                    {waStatus !== "connected" && (
+                      <p className="text-xs text-destructive text-center">
+                        واتساب غير متصل. يرجى الاتصال أولاً.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </div>
         )}
       </main>

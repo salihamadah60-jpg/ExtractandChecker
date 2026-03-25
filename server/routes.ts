@@ -2,8 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import multer from "multer";
 import mammoth from "mammoth";
-import { Document, Paragraph, TextRun, HeadingLevel, Packer } from "docx";
-import { linkStore } from "./link-store.js";
+import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } from "docx";
+import { linkStore, type FilteredGroup } from "./link-store.js";
 import { baileysManager } from "./baileys-manager.js";
 import { checkLinksHTTP } from "./http-checker.js";
 
@@ -33,6 +33,99 @@ function extractLinks(text: string, html: string) {
   return { whatsapp: dedup(waRaw), telegram: dedup(tgRaw) };
 }
 
+// ── Build DOCX for valid filtered groups ─────────────────────────────────────
+async function buildGroupsDocx(groups: FilteredGroup[]): Promise<Buffer> {
+  const children: any[] = [
+    new Paragraph({
+      text: "ملف المجموعات النشطة (أكثر من 50 عضواً)",
+      heading: HeadingLevel.HEADING_1,
+    }),
+    new Paragraph({
+      text: `إجمالي المجموعات: ${groups.length}`,
+      spacing: { after: 300 },
+    }),
+  ];
+
+  let lastDirKey = "";
+  for (const g of groups) {
+    // Compute "directory" = first significant word of name
+    const dirKey = (g.name ?? "").trim().split(/\s+/)[0] ?? "";
+    if (dirKey && dirKey !== lastDirKey) {
+      // Add a section separator when the directory group changes
+      if (lastDirKey) {
+        children.push(new Paragraph({ text: "", spacing: { after: 200 } }));
+      }
+      lastDirKey = dirKey;
+    }
+
+    if (g.name) {
+      children.push(
+        new Paragraph({
+          children: [
+            new TextRun({ text: g.name, bold: true }),
+            new TextRun({ text: `  —  ${g.members} عضو`, color: "666666", size: 20 }),
+          ],
+          spacing: { after: 40 },
+        })
+      );
+    }
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: g.link, color: "1a73e8" })],
+        spacing: { after: 140 },
+      })
+    );
+  }
+
+  const doc = new Document({ sections: [{ children }] });
+  return (await Packer.toBuffer(doc)) as unknown as Buffer;
+}
+
+// ── Build DOCX for ads groups ─────────────────────────────────────────────────
+async function buildAdsDocx(ads: FilteredGroup[]): Promise<Buffer> {
+  const children: any[] = [
+    new Paragraph({
+      text: "ملف الإعلانات (10–50 عضواً مع وصف)",
+      heading: HeadingLevel.HEADING_1,
+    }),
+    new Paragraph({
+      text: `إجمالي المجموعات: ${ads.length}`,
+      spacing: { after: 300 },
+    }),
+  ];
+
+  for (const g of ads) {
+    if (g.name) {
+      children.push(
+        new Paragraph({
+          children: [
+            new TextRun({ text: g.name, bold: true }),
+            new TextRun({ text: `  —  ${g.members} عضو`, color: "666666", size: 20 }),
+          ],
+          spacing: { after: 40 },
+        })
+      );
+    }
+    if (g.description) {
+      children.push(
+        new Paragraph({
+          children: [new TextRun({ text: g.description, color: "444444", italics: true, size: 20 })],
+          spacing: { after: 40 },
+        })
+      );
+    }
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: g.link, color: "1a73e8" })],
+        spacing: { after: 160 },
+      })
+    );
+  }
+
+  const doc = new Document({ sections: [{ children }] });
+  return (await Packer.toBuffer(doc)) as unknown as Buffer;
+}
+
 async function buildValidDocx(results: { link: string; name?: string }[]): Promise<Buffer> {
   const BATCH = 40;
   const children: any[] = [
@@ -44,11 +137,9 @@ async function buildValidDocx(results: { link: string; name?: string }[]): Promi
   ];
 
   results.forEach((r, idx) => {
-    // Add blank separator paragraph between every group of 40
     if (idx > 0 && idx % BATCH === 0) {
       children.push(new Paragraph({ text: "", spacing: { after: 400 } }));
     }
-    // Group name (max 3 words already enforced upstream)
     if (r.name) {
       children.push(
         new Paragraph({
@@ -57,7 +148,6 @@ async function buildValidDocx(results: { link: string; name?: string }[]): Promi
         })
       );
     }
-    // Link
     children.push(
       new Paragraph({
         children: [new TextRun({ text: r.link, color: "1a73e8" })],
@@ -111,9 +201,38 @@ export async function registerRoutes(
       if (!extracted.whatsapp.length && !extracted.telegram.length)
         return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
       linkStore.setExtracted(extracted);
-      // Save links to a JSON file named after the uploaded file
       linkStore.saveLinksToFile(req.file.originalname, extracted).catch(console.error);
       res.json({ success: true, whatsapp: extracted.whatsapp.length, telegram: extracted.telegram.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? "خطأ في معالجة الملف" });
+    }
+  });
+
+  // ── Upload new round DOCX (dedup against existing session) ─────────────────
+  app.post("/api/upload-new-round", upload.single("file"), async (req: any, res: any) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "لم يتم إرسال ملف" });
+      const [htmlResult, textResult] = await Promise.all([
+        mammoth.convertToHtml({ buffer: req.file.buffer }),
+        mammoth.extractRawText({ buffer: req.file.buffer }),
+      ]);
+      const extracted = extractLinks(textResult.value, htmlResult.value);
+      if (!extracted.whatsapp.length && !extracted.telegram.length)
+        return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
+
+      const { uniqueWhatsapp, uniqueTelegram, skipped } = linkStore.prepareNewRound(
+        extracted.whatsapp,
+        extracted.telegram,
+        req.file.originalname
+      );
+
+      res.json({
+        success: true,
+        newWhatsapp: uniqueWhatsapp.length,
+        newTelegram: uniqueTelegram.length,
+        skipped,
+        total: uniqueWhatsapp.length + uniqueTelegram.length,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message ?? "خطأ في معالجة الملف" });
     }
@@ -202,17 +321,23 @@ export async function registerRoutes(
     }
   });
 
+  // ── Start new round check (extends existing session) ──────────────────────
+  app.post("/api/whatsapp/check-new-round", async (_req, res) => {
+    try {
+      await baileysManager.startNewRoundChecking();
+      res.json({ success: true, sessionId: linkStore.checkSession?.id });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   // ── Start HTTP link check (no login required) ──────────────────────────────
   app.post("/api/check-http", async (_req, res) => {
     const links = linkStore.extractedLinks.whatsapp;
     if (!links.length)
       return res.status(400).json({ error: "لا توجد روابط واتساب للفحص" });
-
-    // startSession will resume an existing paused session if links match
     const session = linkStore.startSession(links);
     res.json({ success: true, sessionId: session.id });
-
-    // Run checks in background — checkLinksHTTP skips already-done items
     checkLinksHTTP(session.results, (updatedResults, progress) => {
       if (linkStore.checkSession?.id !== session.id) return;
       linkStore.checkSession!.results = updatedResults;
@@ -241,7 +366,42 @@ export async function registerRoutes(
     res.json({ session: linkStore.checkSession });
   });
 
-  // ── Download valid links ───────────────────────────────────────────────────
+  // ── Filtered summary (groups + ads + description links) ────────────────────
+  app.get("/api/whatsapp/filtered-summary", (_req, res) => {
+    const summary = linkStore.getFilteredSummary();
+    // Auto-save description links when summary is requested after completion
+    if (linkStore.checkSession?.status === "done" && summary.descriptionLinks.length > 0) {
+      linkStore.saveDescriptionLinks(summary.descriptionLinks).catch(console.error);
+    }
+    res.json({
+      groups: summary.groups.length,
+      ads: summary.ads.length,
+      descriptionLinks: summary.descriptionLinks.length,
+      descriptionLinksData: summary.descriptionLinks,
+    });
+  });
+
+  // ── Download groups file (>50 members, sorted) ─────────────────────────────
+  app.get("/api/whatsapp/download-groups", async (_req, res) => {
+    const { groups } = linkStore.getFilteredSummary();
+    if (!groups.length) return res.status(404).json({ error: "لا توجد مجموعات بأكثر من 50 عضواً" });
+    const buf = await buildGroupsDocx(groups);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="groups-50plus.docx"`);
+    res.send(buf);
+  });
+
+  // ── Download ads file (10-50 members with description) ─────────────────────
+  app.get("/api/whatsapp/download-ads", async (_req, res) => {
+    const { ads } = linkStore.getFilteredSummary();
+    if (!ads.length) return res.status(404).json({ error: "لا توجد مجموعات إعلانية" });
+    const buf = await buildAdsDocx(ads);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="ads-groups.docx"`);
+    res.send(buf);
+  });
+
+  // ── Download valid links (legacy - all valid) ──────────────────────────────
   app.get("/api/whatsapp/download-valid", async (_req, res) => {
     const session = linkStore.checkSession;
     if (!session) return res.status(404).json({ error: "لا توجد جلسة فحص" });
