@@ -33,6 +33,43 @@ function extractLinks(text: string, html: string) {
   return { whatsapp: dedup(waRaw), telegram: dedup(tgRaw) };
 }
 
+async function buildValidDocx(results: { link: string; name?: string }[]): Promise<Buffer> {
+  const BATCH = 40;
+  const children: any[] = [
+    new Paragraph({ text: "روابط واتساب الصالحة", heading: HeadingLevel.HEADING_1 }),
+    new Paragraph({
+      text: `إجمالي الروابط: ${results.length}`,
+      spacing: { after: 300 },
+    }),
+  ];
+
+  results.forEach((r, idx) => {
+    // Add blank separator paragraph between every group of 40
+    if (idx > 0 && idx % BATCH === 0) {
+      children.push(new Paragraph({ text: "", spacing: { after: 400 } }));
+    }
+    // Group name (max 3 words already enforced upstream)
+    if (r.name) {
+      children.push(
+        new Paragraph({
+          children: [new TextRun({ text: r.name, bold: true })],
+          spacing: { after: 60 },
+        })
+      );
+    }
+    // Link
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: r.link, color: "1a73e8" })],
+        spacing: { after: 160 },
+      })
+    );
+  });
+
+  const doc = new Document({ sections: [{ children }] });
+  return (await Packer.toBuffer(doc)) as unknown as Buffer;
+}
+
 async function buildDocx(title: string, links: string[]): Promise<Buffer> {
   const doc = new Document({
     sections: [
@@ -169,27 +206,31 @@ export async function registerRoutes(
     if (!links.length)
       return res.status(400).json({ error: "لا توجد روابط واتساب للفحص" });
 
-    // Create session immediately so the frontend can start polling
+    // startSession will resume an existing paused session if links match
     const session = linkStore.startSession(links);
     res.json({ success: true, sessionId: session.id });
 
-    // Run checks in background; push updates into the shared session
-    checkLinksHTTP(links, (results, progress) => {
+    // Run checks in background — checkLinksHTTP skips already-done items
+    checkLinksHTTP(session.results, (updatedResults, progress) => {
       if (linkStore.checkSession?.id !== session.id) return;
-      linkStore.checkSession!.results = results;
+      linkStore.checkSession!.results = updatedResults;
       linkStore.checkSession!.progress = progress;
+      linkStore.updateProgress();
     })
       .then((results) => {
         if (linkStore.checkSession?.id !== session.id) return;
         linkStore.checkSession!.results = results;
-        linkStore.checkSession!.progress = results.length;
+        linkStore.checkSession!.progress = results.filter((r) => r.status !== "pending").length;
         linkStore.checkSession!.status = "done";
         linkStore.checkSession!.completedAt = new Date().toISOString();
+        linkStore.updateProgress();
       })
       .catch((err) => {
         console.error("[HTTP Check] Error:", err);
-        if (linkStore.checkSession?.id === session.id)
-          linkStore.checkSession!.status = "error";
+        if (linkStore.checkSession?.id === session.id) {
+          linkStore.checkSession!.status = "idle";
+          linkStore.updateProgress();
+        }
       });
   });
 
@@ -202,12 +243,10 @@ export async function registerRoutes(
   app.get("/api/whatsapp/download-valid", async (_req, res) => {
     const session = linkStore.checkSession;
     if (!session) return res.status(404).json({ error: "لا توجد جلسة فحص" });
-    const validLinks = session.results
-      .filter((r) => r.status === "valid")
-      .map((r) => r.link);
-    if (!validLinks.length)
+    const validResults = session.results.filter((r) => r.status === "valid");
+    if (!validResults.length)
       return res.status(404).json({ error: "لا توجد روابط صالحة" });
-    const buf = await buildDocx("روابط واتساب الصالحة", validLinks);
+    const buf = await buildValidDocx(validResults);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.setHeader("Content-Disposition", `attachment; filename="valid-whatsapp-links.docx"`);
     res.send(buf);

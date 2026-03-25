@@ -221,11 +221,15 @@ class BaileysManager extends EventEmitter {
   }
 
   // ── Link checking ─────────────────────────────────────────────────────────
-  async checkGroupLink(inviteCode: string): Promise<"valid" | "invalid"> {
+  async checkGroupLink(inviteCode: string): Promise<{ status: "valid" | "invalid"; name?: string }> {
     try {
       const info = await this.sock.groupGetInviteInfo(inviteCode);
-      if (info && (info.subject || info.id)) return "valid";
-      return "invalid";
+      if (info && (info.subject || info.id)) {
+        const rawName: string = info.subject ?? "";
+        const name = rawName.split(/\s+/).slice(0, 3).join(" ") || undefined;
+        return { status: "valid", name };
+      }
+      return { status: "invalid" };
     } catch (e: any) {
       const msg = (e?.message ?? "").toLowerCase();
       if (
@@ -235,7 +239,7 @@ class BaileysManager extends EventEmitter {
         msg.includes("gone") ||
         msg.includes("bad")
       ) {
-        return "invalid";
+        return { status: "invalid" };
       }
       throw e;
     }
@@ -260,14 +264,19 @@ class BaileysManager extends EventEmitter {
     session: ReturnType<typeof linkStore.startSession>
   ): Promise<void> {
     for (let i = 0; i < session.links.length; i++) {
+      const result = session.results[i];
+
+      // Skip links already processed in a previous run
+      if (result.status !== "pending") continue;
+
       if (!this.isConnected()) {
-        session.status = "error";
+        session.status = "idle";
+        linkStore.updateProgress();
         this.emit("session", session);
         return;
       }
 
       const link = session.links[i];
-      const result = session.results[i];
 
       try {
         const groupMatch = link.match(/chat\.whatsapp\.com\/([A-Za-z0-9]+)/);
@@ -275,7 +284,9 @@ class BaileysManager extends EventEmitter {
           link.match(/wa\.me\/([\d+]+)/) ?? link.match(/phone=([\d+]+)/);
 
         if (groupMatch) {
-          result.status = await this.checkGroupLink(groupMatch[1]);
+          const checkResult = await this.checkGroupLink(groupMatch[1]);
+          result.status = checkResult.status;
+          result.name = checkResult.name;
           result.info =
             result.status === "valid"
               ? "مجموعة نشطة"
@@ -297,7 +308,8 @@ class BaileysManager extends EventEmitter {
         result.info = err.message ?? "خطأ في الفحص";
       }
 
-      session.progress = i + 1;
+      session.progress = session.results.filter((r) => r.status !== "pending").length;
+      linkStore.updateProgress();
       this.emit("session", session);
 
       if (i < session.links.length - 1) {
@@ -308,6 +320,7 @@ class BaileysManager extends EventEmitter {
 
     session.status = "done";
     session.completedAt = new Date().toISOString();
+    linkStore.updateProgress();
     this.emit("session", session);
   }
 }

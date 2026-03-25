@@ -12,11 +12,22 @@ export type LinkCheckResult = {
   link: string;
   status: "valid" | "invalid" | "error" | "pending";
   info?: string;
+  name?: string;
 };
+
+function extractOgTitle(html: string): string | undefined {
+  const match = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+    ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+  return match ? match[1].trim() : undefined;
+}
+
+function truncateTo3Words(name: string): string {
+  return name.split(/\s+/).slice(0, 3).join(" ");
+}
 
 export async function checkGroupLinkHTTP(
   code: string
-): Promise<"valid" | "invalid"> {
+): Promise<{ status: "valid" | "invalid"; name?: string }> {
   const url = `https://chat.whatsapp.com/${code}`;
   const res = await fetch(url, {
     headers: { "User-Agent": UA, Accept: "text/html" },
@@ -38,21 +49,26 @@ export async function checkGroupLinkHTTP(
     // When group doesn't exist, WA omits og:title entirely or sets it to error phrase
     (!html.includes('og:title') && !html.includes('og:image'));
 
-  return invalid ? "invalid" : "valid";
+  if (invalid) return { status: "invalid" };
+
+  const rawName = extractOgTitle(html);
+  const name = rawName ? truncateTo3Words(rawName) : undefined;
+  return { status: "valid", name };
 }
 
 export async function checkLinksHTTP(
-  links: string[],
+  existingResults: LinkCheckResult[],
   onProgress: (results: LinkCheckResult[], progress: number) => void
 ): Promise<LinkCheckResult[]> {
-  const results: LinkCheckResult[] = links.map((link) => ({
-    link,
-    status: "pending",
-  }));
+  const results: LinkCheckResult[] = existingResults.map((r) => ({ ...r }));
 
-  for (let i = 0; i < links.length; i++) {
-    const link = links[i];
+  for (let i = 0; i < results.length; i++) {
     const result = results[i];
+
+    // Skip links already processed in a previous (or current) run
+    if (result.status !== "pending") continue;
+
+    const link = result.link;
 
     try {
       const groupMatch = link.match(/chat\.whatsapp\.com\/([A-Za-z0-9]+)/);
@@ -60,7 +76,9 @@ export async function checkLinksHTTP(
         link.match(/wa\.me\/([\d+]+)/) ?? link.match(/phone=([\d+]+)/);
 
       if (groupMatch) {
-        result.status = await checkGroupLinkHTTP(groupMatch[1]);
+        const checkResult = await checkGroupLinkHTTP(groupMatch[1]);
+        result.status = checkResult.status;
+        result.name = checkResult.name;
         result.info =
           result.status === "valid"
             ? "مجموعة نشطة"
@@ -78,10 +96,11 @@ export async function checkLinksHTTP(
       result.info = "خطأ في الاتصال";
     }
 
-    onProgress([...results], i + 1);
+    const done = results.filter((r) => r.status !== "pending").length;
+    onProgress([...results], done);
 
     // Respect WhatsApp's rate limits
-    if (i < links.length - 1) {
+    if (i < results.length - 1) {
       const delay = 1000 + Math.random() * 1500;
       await new Promise((r) => setTimeout(r, delay));
     }
