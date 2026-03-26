@@ -214,8 +214,6 @@ export async function registerRoutes(
       const extracted = extractLinks(textResult.value, htmlResult.value);
       if (!extracted.whatsapp.length && !extracted.telegram.length)
         return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
-      // Full reset: new file = completely fresh session, no overlap with previous data
-      linkStore.fullReset();
       linkStore.setExtracted(extracted);
       linkStore.saveLinksToFile(req.file.originalname, extracted).catch(console.error);
       res.json({ success: true, whatsapp: extracted.whatsapp.length, telegram: extracted.telegram.length });
@@ -516,9 +514,36 @@ export async function registerRoutes(
       });
   });
 
-  // ── Progress ───────────────────────────────────────────────────────────────
+  // ── Progress (lightweight — summary + recent results only, no full array) ──
   app.get("/api/whatsapp/progress", (_req, res) => {
-    res.json({ session: linkStore.checkSession });
+    const session = linkStore.checkSession;
+    if (!session) return res.json({ session: null });
+
+    const validCount = session.results.filter((r) => r.status === "valid").length;
+    const invalidCount = session.results.filter((r) => r.status === "invalid").length;
+    const errorCount = session.results.filter((r) => r.status === "error").length;
+
+    // Return only the last 25 processed results for the live feed (strip description to reduce size)
+    const recentResults = session.results
+      .filter((r) => r.status !== "pending")
+      .slice(-25)
+      .map((r) => ({ link: r.link, status: r.status, name: r.name, members: r.members, info: r.info }));
+
+    res.json({
+      session: {
+        id: session.id,
+        total: session.total,
+        progress: session.progress,
+        status: session.status,
+        startedAt: session.startedAt,
+        completedAt: session.completedAt,
+        completedBatches: session.completedBatches,
+        validCount,
+        invalidCount,
+        errorCount,
+        recentResults,
+      },
+    });
   });
 
   // ── Previous results summary (shown on upload screen) ─────────────────────

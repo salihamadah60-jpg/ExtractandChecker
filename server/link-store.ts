@@ -291,6 +291,17 @@ class LinkStore {
 
   setExtracted(links: ExtractedLinks) {
     this.extractedLinks = links;
+    // Clear check session only if this is a different file (different links)
+    const sessionLinksMatch =
+      this.checkSession && linksMatch(this.checkSession.links, links.whatsapp);
+    if (!sessionLinksMatch) {
+      this.checkSession = null;
+      console.log("[LinkStore] New file detected — UI session cleared, disk data preserved");
+    } else if (this.checkSession) {
+      if (this.checkSession.status === "running") this.checkSession.status = "idle";
+      const done = this.checkSession.results.filter((r) => r.status !== "pending").length;
+      console.log(`[LinkStore] Same file re-uploaded — preserving session (${done}/${this.checkSession.total} already checked)`);
+    }
     this.saveToDisk().catch(console.error);
   }
 

@@ -10,7 +10,7 @@ import { apiRequest } from "@/lib/queryClient";
 import {
   Upload, FileText, Download, CheckCircle2, XCircle, AlertCircle,
   Loader2, Wifi, WifiOff, LogOut, RefreshCw, Shield,
-  Link2, QrCode, Hash, ArrowRight, Users, Megaphone,
+  Link2, QrCode, Hash, ArrowRight, ArrowLeft, Users, Megaphone,
   FolderOpen, PlusCircle, FileJson, History, ChevronDown,
   ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
 } from "lucide-react";

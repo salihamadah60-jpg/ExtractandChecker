@@ -261,8 +261,15 @@ class BaileysManager extends EventEmitter {
 
   // ── Link checking ─────────────────────────────────────────────────────────
   async checkGroupLink(inviteCode: string): Promise<{ status: "valid" | "invalid"; name?: string; members?: number; description?: string }> {
+    const LINK_TIMEOUT_MS = 8000; // 8s max per link — expired links return instantly anyway
+
+    const checkPromise = this.sock.groupGetInviteInfo(inviteCode);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("link-timeout")), LINK_TIMEOUT_MS)
+    );
+
     try {
-      const info = await this.sock.groupGetInviteInfo(inviteCode);
+      const info = await Promise.race([checkPromise, timeoutPromise]);
       if (info && (info.subject || info.id)) {
         const name: string = ((info.subject ?? "").trim().split(/\s+/).slice(0, 3).join(" ")) || undefined!;
         const members: number | undefined =
@@ -275,12 +282,18 @@ class BaileysManager extends EventEmitter {
       return { status: "invalid" };
     } catch (e: any) {
       const msg = (e?.message ?? "").toLowerCase();
+      // Instantly mark as invalid (skip without waiting) for all known dead-link patterns
       if (
+        msg === "link-timeout" ||
         msg.includes("invalid") ||
         msg.includes("not-authorized") ||
+        msg.includes("not found") ||
         msg.includes("404") ||
         msg.includes("gone") ||
-        msg.includes("bad")
+        msg.includes("bad request") ||
+        msg.includes("forbidden") ||
+        msg.includes("item-not-found") ||
+        msg.includes("expired")
       ) {
         return { status: "invalid" };
       }
