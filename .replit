@@ -26,7 +26,6 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "git remote set-url origin https://$GITHUB_TOKEN@github.com/salihamadah60-jpg/ExtractandChecker.git"
 args = "npm run dev"
 waitForPort = 5000
 
