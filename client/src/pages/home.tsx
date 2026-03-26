@@ -30,14 +30,18 @@ interface CheckResult {
 }
 interface CheckSession {
   id: string;
-  links: string[];
-  results: CheckResult[];
+  links?: string[];
+  results?: CheckResult[];
   progress: number;
   total: number;
   status: "idle" | "running" | "done" | "error";
   startedAt: string;
   completedAt?: string;
   completedBatches: number[];
+  validCount?: number;
+  invalidCount?: number;
+  errorCount?: number;
+  recentResults?: CheckResult[];
 }
 interface JoinSession {
   status: "running" | "done" | "error" | "paused";
@@ -117,12 +121,12 @@ export default function Home() {
 
   const { data: waData, refetch: refetchWA } = useQuery<WAStatusRes>({
     queryKey: ["/api/whatsapp/status"],
-    refetchInterval: step === "connect" || step === "checking" ? 2000 : 5000,
+    refetchInterval: step === "connect" ? 3000 : step === "checking" ? 4000 : 8000,
   });
 
   const { data: progressData } = useQuery<{ session: CheckSession | null }>({
     queryKey: ["/api/whatsapp/progress"],
-    refetchInterval: step === "checking" ? 1000 : false,
+    refetchInterval: step === "checking" ? 2000 : false,
   });
 
   const { data: filteredSummary, refetch: refetchSummary } = useQuery<FilteredSummaryRes>({
@@ -133,7 +137,7 @@ export default function Home() {
 
   const { data: joinProgressData } = useQuery<{ joinSession: JoinSession | null }>({
     queryKey: ["/api/whatsapp/join-progress"],
-    refetchInterval: extraPanelMode === "join" ? 1000 : 10000,
+    refetchInterval: extraPanelMode === "join" ? 2000 : 15000,
   });
 
   const { data: previousResults } = useQuery<PreviousResultsRes>({
@@ -336,12 +340,25 @@ export default function Home() {
 
   const isConnectPending = connectQRMutation.isPending || connectPairMutation.isPending || connectSavedMutation.isPending;
   const progressPct = session ? Math.round((session.progress / session.total) * 100) : 0;
-  const validResults = session?.results.filter((r) => r.status === "valid") ?? [];
-  const invalidResults = session?.results.filter((r) => r.status === "invalid") ?? [];
-  const errorResults = session?.results.filter((r) => r.status === "error") ?? [];
+  const validCount = session?.validCount ?? session?.results?.filter((r) => r.status === "valid").length ?? 0;
+  const invalidCount = session?.invalidCount ?? session?.results?.filter((r) => r.status === "invalid").length ?? 0;
+  const errorCount = session?.errorCount ?? session?.results?.filter((r) => r.status === "error").length ?? 0;
+  const recentResults: CheckResult[] = session?.recentResults ?? session?.results?.filter((r) => r.status !== "pending").slice(-20) ?? [];
   const joinPct = joinSession ? Math.round((joinSession.progress / joinSession.total) * 100) : 0;
 
   const currentStepIdx = STEPS.findIndex((s) => s.key === step);
+
+  const canNavigateTo = (target: Step): boolean => {
+    const hasLinks = linkCounts.whatsapp > 0 || linkCounts.telegram > 0;
+    switch (target) {
+      case "upload": return true;
+      case "links": return hasLinks;
+      case "connect": return linkCounts.whatsapp > 0;
+      case "checking": return !!session;
+      case "results": return session?.status === "done";
+      default: return false;
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background" dir="rtl">
@@ -379,27 +396,45 @@ export default function Home() {
       <main className="max-w-4xl mx-auto px-4 py-6">
         {/* Steps */}
         <div className="flex items-center justify-between mb-8 overflow-x-auto pb-1">
-          {STEPS.map((s, i) => (
-            <div key={s.key} className="flex items-center gap-1 flex-shrink-0">
-              <div className="flex flex-col items-center gap-1">
-                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
-                  i < currentStepIdx ? "bg-primary text-primary-foreground" :
-                  i === currentStepIdx ? "bg-primary text-primary-foreground ring-4 ring-primary/20" :
-                  "bg-muted text-muted-foreground"
-                }`}>
-                  {i < currentStepIdx ? <CheckCircle2 className="w-3.5 h-3.5" /> : i + 1}
+          {STEPS.map((s, i) => {
+            const navigable = canNavigateTo(s.key) && s.key !== step;
+            return (
+              <div key={s.key} className="flex items-center gap-1 flex-shrink-0">
+                <div className="flex flex-col items-center gap-1">
+                  <button
+                    onClick={() => navigable && setStep(s.key)}
+                    disabled={!navigable}
+                    data-testid={`step-bubble-${s.key}`}
+                    className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all focus:outline-none ${
+                      i < currentStepIdx ? "bg-primary text-primary-foreground" :
+                      i === currentStepIdx ? "bg-primary text-primary-foreground ring-4 ring-primary/20" :
+                      "bg-muted text-muted-foreground"
+                    } ${navigable ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
+                  >
+                    {i < currentStepIdx ? <CheckCircle2 className="w-3.5 h-3.5" /> : i + 1}
+                  </button>
+                  <span className={`text-xs whitespace-nowrap ${
+                    i === currentStepIdx ? "text-primary font-medium" :
+                    i < currentStepIdx ? "text-foreground" : "text-muted-foreground"
+                  }`}>{s.label}</span>
                 </div>
-                <span className={`text-xs whitespace-nowrap ${
-                  i === currentStepIdx ? "text-primary font-medium" :
-                  i < currentStepIdx ? "text-foreground" : "text-muted-foreground"
-                }`}>{s.label}</span>
+                {i < STEPS.length - 1 && (
+                  <div className={`w-8 sm:w-12 h-0.5 mx-1 mb-4 rounded ${i < currentStepIdx ? "bg-primary" : "bg-border"}`} />
+                )}
               </div>
-              {i < STEPS.length - 1 && (
-                <div className={`w-8 sm:w-12 h-0.5 mx-1 mb-4 rounded ${i < currentStepIdx ? "bg-primary" : "bg-border"}`} />
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
+
+        {/* Back button */}
+        {currentStepIdx > 0 && step !== "connect" && step !== "checking" && (
+          <div className="mb-4">
+            <Button variant="ghost" size="sm" onClick={() => setStep(STEPS[currentStepIdx - 1].key)}
+              data-testid="button-back">
+              <ArrowRight className="w-4 h-4 ml-1" />رجوع
+            </Button>
+          </div>
+        )}
 
         {/* ── Step: Upload ── */}
         {step === "upload" && (
@@ -728,9 +763,9 @@ export default function Home() {
                   <Progress value={progressPct} className="h-2" />
                 </div>
                 <div className="grid grid-cols-3 gap-3">
-                  <StatBox color="green" icon={<CheckCircle2 className="w-4 h-4" />} label="صالحة" value={validResults.length} />
-                  <StatBox color="red" icon={<XCircle className="w-4 h-4" />} label="منتهية" value={invalidResults.length} />
-                  <StatBox color="orange" icon={<AlertCircle className="w-4 h-4" />} label="خطأ" value={errorResults.length} />
+                  <StatBox color="green" icon={<CheckCircle2 className="w-4 h-4" />} label="صالحة" value={validCount} />
+                  <StatBox color="red" icon={<XCircle className="w-4 h-4" />} label="منتهية" value={invalidCount} />
+                  <StatBox color="orange" icon={<AlertCircle className="w-4 h-4" />} label="خطأ" value={errorCount} />
                 </div>
               </CardContent>
             </Card>
@@ -739,7 +774,7 @@ export default function Home() {
               <CardHeader className="pb-2"><CardTitle className="text-sm">آخر النتائج</CardTitle></CardHeader>
               <CardContent>
                 <div className="space-y-1.5 max-h-56 overflow-y-auto">
-                  {session.results.filter((r) => r.status !== "pending").slice(-20).reverse().map((r, i) => (
+                  {[...recentResults].reverse().map((r, i) => (
                     <div key={i} className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0">
                       {r.status === "valid" && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
                       {r.status === "invalid" && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
@@ -750,7 +785,7 @@ export default function Home() {
                       </span>
                     </div>
                   ))}
-                  {!session.results.filter((r) => r.status !== "pending").length && (
+                  {!recentResults.length && (
                     <p className="text-center text-muted-foreground py-4 text-sm">في انتظار النتائج...</p>
                   )}
                 </div>
@@ -799,9 +834,9 @@ export default function Home() {
           <div className="space-y-5">
             {/* Overall stats */}
             <div className="grid grid-cols-3 gap-4">
-              <StatBox color="green" icon={<CheckCircle2 className="w-5 h-5" />} label="صالحة" value={validResults.length} large />
-              <StatBox color="red" icon={<XCircle className="w-5 h-5" />} label="منتهية" value={invalidResults.length} large />
-              <StatBox color="orange" icon={<AlertCircle className="w-5 h-5" />} label="أخطاء" value={errorResults.length} large />
+              <StatBox color="green" icon={<CheckCircle2 className="w-5 h-5" />} label="صالحة" value={validCount} large />
+              <StatBox color="red" icon={<XCircle className="w-5 h-5" />} label="منتهية" value={invalidCount} large />
+              <StatBox color="orange" icon={<AlertCircle className="w-5 h-5" />} label="أخطاء" value={errorCount} large />
             </div>
 
             {/* Two output files */}
@@ -1040,11 +1075,11 @@ export default function Home() {
                             <Clock className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
                             <div>
                               <p className="font-medium text-yellow-700 dark:text-yellow-400">تأخير آمن: 2–5 ثانية بين كل انضمام، ودقيقة راحة كل 30 مجموعة</p>
-                              <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validResults.length} مجموعة صالحة</p>
+                              <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validCount} مجموعة صالحة</p>
                             </div>
                           </div>
                           <Button className="w-full" onClick={() => joinGroupsMutation.mutate()}
-                            disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validResults.length}
+                            disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validCount}
                             data-testid="button-start-join">
                             {joinGroupsMutation.isPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <UserPlus className="w-4 h-4 ml-2" />}
                             إعادة الانضمام
@@ -1076,11 +1111,11 @@ export default function Home() {
                             <Clock className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
                             <div>
                               <p className="font-medium text-yellow-700 dark:text-yellow-400">تأخير آمن: 2–5 ثانية بين كل انضمام، ودقيقة راحة كل 30 مجموعة</p>
-                              <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validResults.length} مجموعة صالحة</p>
+                              <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validCount} مجموعة صالحة</p>
                             </div>
                           </div>
                           <Button className="w-full" onClick={() => joinGroupsMutation.mutate()}
-                            disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validResults.length}
+                            disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validCount}
                             data-testid="button-start-join">
                             {joinGroupsMutation.isPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <UserPlus className="w-4 h-4 ml-2" />}
                             {joinSession?.status === "paused" ? "استئناف الانضمام" : "بدء الانضمام للمجموعات"}
@@ -1128,31 +1163,32 @@ export default function Home() {
               </Card>
             )}
 
-            {/* Full results list */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">جميع النتائج ({session.total})</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-1 max-h-72 overflow-y-auto">
-                  {session.results.map((r, i) => (
-                    <div key={i} className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0">
-                      {r.status === "valid" && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
-                      {r.status === "invalid" && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
-                      {r.status === "error" && <AlertCircle className="w-3.5 h-3.5 text-orange-500 flex-shrink-0" />}
-                      {r.status === "pending" && <Loader2 className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0 animate-spin" />}
-                      <div className="flex-1 min-w-0">
-                        <span className="font-mono text-xs truncate block text-muted-foreground">{r.link}</span>
-                        {r.name && <span className="text-xs font-medium">{r.name}{r.members !== undefined ? ` — ${r.members} عضو` : ""}</span>}
+            {/* Recent results list */}
+            {recentResults.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">آخر النتائج المفحوصة ({recentResults.length})</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-1 max-h-72 overflow-y-auto">
+                    {[...recentResults].reverse().map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0">
+                        {r.status === "valid" && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
+                        {r.status === "invalid" && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
+                        {r.status === "error" && <AlertCircle className="w-3.5 h-3.5 text-orange-500 flex-shrink-0" />}
+                        <div className="flex-1 min-w-0">
+                          <span className="font-mono text-xs truncate block text-muted-foreground">{r.link}</span>
+                          {r.name && <span className="text-xs font-medium">{r.name}{r.members !== undefined ? ` — ${r.members} عضو` : ""}</span>}
+                        </div>
+                        <Badge variant={r.status === "valid" ? "default" : "secondary"} className="text-xs flex-shrink-0">
+                          {r.status === "valid" ? "صالح" : r.status === "invalid" ? "منتهٍ" : "خطأ"}
+                        </Badge>
                       </div>
-                      <Badge variant={r.status === "valid" ? "default" : "secondary"} className="text-xs flex-shrink-0">
-                        {r.status === "valid" ? "صالح" : r.status === "invalid" ? "منتهٍ" : r.status === "error" ? "خطأ" : "معلق"}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
       </main>

@@ -274,11 +274,24 @@ export async function registerRoutes(
   // ── WhatsApp status ────────────────────────────────────────────────────────
   app.get("/api/whatsapp/status", async (_req, res) => {
     const hasSaved = await baileysManager.hasSavedCredentials();
+    const s = linkStore.checkSession;
+    const session = s ? {
+      id: s.id,
+      total: s.total,
+      progress: s.progress,
+      status: s.status,
+      startedAt: s.startedAt,
+      completedAt: s.completedAt,
+      completedBatches: s.completedBatches,
+      validCount: s.results.filter((r) => r.status === "valid").length,
+      invalidCount: s.results.filter((r) => r.status === "invalid").length,
+      errorCount: s.results.filter((r) => r.status === "error").length,
+    } : null;
     res.json({
       status: baileysManager.getStatus(),
       qrCode: baileysManager.getQrCode(),
       pairingCode: baileysManager.getPairingCode(),
-      session: linkStore.checkSession,
+      session,
       hasSavedSession: hasSaved,
     });
   });
