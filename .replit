@@ -21,13 +21,26 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
-[workflows.workflow.metadata]
-outputType = "webview"
-
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "npm run dev"
 waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow]]
+name = "push to github"
+mode = "sequential"
+author = 56612047
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "git remote set-url origin https://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@github.com/salihamadah60-jpg/ExtractandChecker.git"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "git push origin main"
 
 [[ports]]
 localPort = 5000

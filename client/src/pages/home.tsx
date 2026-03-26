@@ -12,7 +12,7 @@ import {
   Loader2, Wifi, WifiOff, LogOut, RefreshCw, Shield,
   Link2, QrCode, Hash, ArrowRight, Users, Megaphone,
   FolderOpen, PlusCircle, FileJson, History, ChevronDown,
-  ChevronUp, UserPlus, Clock, CheckCheck,
+  ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
 } from "lucide-react";
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
@@ -37,6 +37,7 @@ interface CheckSession {
   status: "idle" | "running" | "done" | "error";
   startedAt: string;
   completedAt?: string;
+  completedBatches: number[];
 }
 interface JoinSession {
   status: "running" | "done" | "error" | "paused";
@@ -276,6 +277,15 @@ export default function Home() {
     onSuccess: () => { setStep("links"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
   });
 
+  const clearCredsMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/clear-credentials", {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] });
+      toast({ title: "تم حذف بيانات الجلسة", description: "يجب مسح رمز QR من جديد للاتصال." });
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   // Auto-start checking when WhatsApp connects (from connect step)
   useEffect(() => {
     if (waStatus === "connected" && step === "connect") {
@@ -356,6 +366,12 @@ export default function Home() {
                 <span className="text-xs">قطع</span>
               </Button>
             )}
+            <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10 px-2"
+              onClick={() => { if (confirm("هل تريد حذف بيانات الجلسة؟ ستحتاج لمسح رمز QR مجدداً للاتصال.")) clearCredsMutation.mutate(); }}
+              disabled={clearCredsMutation.isPending} data-testid="button-clear-credentials"
+              title="حذف بيانات تسجيل الدخول">
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
           </div>
         </div>
       </header>
@@ -745,6 +761,36 @@ export default function Home() {
               <Shield className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
               <span>تأخير عشوائي بين 1 و1.5 ثانية لحماية الحساب</span>
             </div>
+
+            {/* Completed batch download buttons */}
+            {session.completedBatches && session.completedBatches.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Download className="w-4 h-4 text-primary" />
+                    تحميل الدفعات المكتملة
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-2">
+                    {session.completedBatches.map((batchNum) => (
+                      <a
+                        key={batchNum}
+                        href={`/api/whatsapp/download-batch/${batchNum}`}
+                        download={`batch-${batchNum}.docx`}
+                        data-testid={`link-download-batch-${batchNum}`}
+                      >
+                        <Button variant="outline" size="sm" className="gap-1.5">
+                          <Download className="w-3.5 h-3.5" />
+                          الدفعة {batchNum}
+                        </Button>
+                      </a>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">كل دفعة تحتوي على 1000 رابط مفحوص</p>
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
 

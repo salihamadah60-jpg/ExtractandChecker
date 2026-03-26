@@ -36,6 +36,7 @@ export interface CheckSession {
   status: "idle" | "running" | "done" | "error";
   startedAt: string;
   completedAt?: string;
+  completedBatches: number[];   // batch numbers (1-based) whose files are saved
 }
 
 export interface JoinSession {
@@ -114,7 +115,11 @@ class LinkStore {
         if (saved.checkSession.status === "running") {
           saved.checkSession.status = "idle";
         }
-        this.checkSession = saved.checkSession;
+        // Migrate old sessions without completedBatches
+        this.checkSession = {
+          completedBatches: [],
+          ...saved.checkSession,
+        };
         const done = saved.checkSession.results.filter((r) => r.status !== "pending").length;
         console.log(`[LinkStore] Loaded saved state — ${done}/${saved.checkSession.total} links already checked`);
       } else {
@@ -192,6 +197,57 @@ class LinkStore {
     }
   }
 
+  // ── Save a 1000-link batch result to LinksjsonEndRe/ ─────────────────────
+  async saveBatchResults(batchNum: number, batchResults: CheckResult[]): Promise<void> {
+    try {
+      await ensureDirs();
+      const baseName = this.uploadedFileName || "results";
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const fileName = `${baseName}-batch-${batchNum}-${timestamp}.json`;
+      const filePath = path.join(LINKS_JSON_END_DIR, fileName);
+
+      // Apply same filtering logic as getFilteredSummary but on batch results only
+      const validGroups = batchResults.filter(
+        (r) => r.status === "valid" && r.link.includes("chat.whatsapp.com")
+      );
+      const groups = validGroups
+        .filter((r) => { const m = r.members ?? 0; return m > 50 || (m > 10 && m <= 50 && !r.description?.trim()); })
+        .map((r) => ({ link: r.link, name: r.name, members: r.members, description: r.description }));
+      const ads = validGroups
+        .filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 50 && !!r.description?.trim(); })
+        .map((r) => ({ link: r.link, name: r.name, members: r.members, description: r.description }));
+
+      const data = {
+        batchNumber: batchNum,
+        batchSize: batchResults.length,
+        savedAt: new Date().toISOString(),
+        summary: {
+          total: batchResults.length,
+          valid: batchResults.filter((r) => r.status === "valid").length,
+          invalid: batchResults.filter((r) => r.status === "invalid").length,
+          errors: batchResults.filter((r) => r.status === "error").length,
+          groups: groups.length,
+          ads: ads.length,
+        },
+        groups,
+        ads,
+        allResults: batchResults,
+      };
+
+      await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+
+      // Mark batch as completed in the session
+      if (this.checkSession && !this.checkSession.completedBatches.includes(batchNum)) {
+        this.checkSession.completedBatches.push(batchNum);
+        this.saveToDisk().catch(console.error);
+      }
+
+      console.log(`[LinkStore] Batch ${batchNum} saved → LinksjsonEndRe/${fileName} (${batchResults.length} links, ${groups.length} groups, ${ads.length} ads)`);
+    } catch (err) {
+      console.error("[LinkStore] Failed to save batch results:", err);
+    }
+  }
+
   async saveDescriptionLinks(links: string[]): Promise<void> {
     try {
       const data = {
@@ -245,6 +301,7 @@ class LinkStore {
       total: links.length,
       status: "running",
       startedAt: new Date().toISOString(),
+      completedBatches: [],
     };
     this.saveToDisk().catch(console.error);
     return this.checkSession;
@@ -312,6 +369,7 @@ class LinkStore {
         total: newLinks.length,
         status: "running",
         startedAt: new Date().toISOString(),
+        completedBatches: [],
       };
     }
 

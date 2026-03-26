@@ -415,6 +415,61 @@ export async function registerRoutes(
     res.send(buf);
   });
 
+  // ── Download batch results as DOCX ────────────────────────────────────────
+  app.get("/api/whatsapp/download-batch/:batchNum", async (req, res) => {
+    const batchNum = parseInt(req.params.batchNum, 10);
+    const session = linkStore.checkSession;
+    if (!session) return res.status(404).json({ error: "لا توجد جلسة فحص" });
+
+    const BATCH_SIZE = 1000;
+    const batchStart = (batchNum - 1) * BATCH_SIZE;
+    const batchEnd = batchNum * BATCH_SIZE;
+    const checked = session.results.filter((r) => r.status !== "pending");
+    const batchResults = checked.slice(batchStart, batchEnd);
+    if (!batchResults.length) return res.status(404).json({ error: "الدفعة غير موجودة" });
+
+    const validGroups = batchResults.filter((r) => r.status === "valid" && r.link.includes("chat.whatsapp.com"));
+    const groups = validGroups.filter((r) => { const m = r.members ?? 0; return m > 50 || (m > 10 && m <= 50 && !r.description?.trim()); });
+    const ads = validGroups.filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 50 && !!r.description?.trim(); });
+
+    const children: Paragraph[] = [
+      new Paragraph({ children: [new TextRun({ text: `نتائج الدفعة ${batchNum} (${batchResults.length} رابط)`, bold: true, size: 32 })], heading: HeadingLevel.HEADING_1 }),
+      new Paragraph({ children: [new TextRun({ text: `صالح: ${batchResults.filter(r => r.status === "valid").length} | غير صالح: ${batchResults.filter(r => r.status === "invalid").length} | أخطاء: ${batchResults.filter(r => r.status === "error").length}`, size: 24 })] }),
+      new Paragraph({ children: [new TextRun({ text: `مجموعات: ${groups.length} | إعلانات: ${ads.length}`, size: 24 })] }),
+      new Paragraph({ text: "" }),
+    ];
+
+    if (groups.length) {
+      children.push(new Paragraph({ children: [new TextRun({ text: `✓ المجموعات (${groups.length})`, bold: true, color: "166534" })], spacing: { before: 200, after: 100 } }));
+      for (const r of groups) {
+        children.push(new Paragraph({ children: [new TextRun({ text: `${r.link}${r.name ? ` — ${r.name}` : ""}${r.members !== undefined ? ` (${r.members} عضو)` : ""}` })] }));
+      }
+    }
+    if (ads.length) {
+      children.push(new Paragraph({ children: [new TextRun({ text: `📢 الإعلانات (${ads.length})`, bold: true, color: "ea580c" })], spacing: { before: 200, after: 100 } }));
+      for (const r of ads) {
+        children.push(new Paragraph({ children: [new TextRun({ text: `${r.link}${r.name ? ` — ${r.name}` : ""}${r.members !== undefined ? ` (${r.members} عضو)` : ""}` })] }));
+      }
+    }
+
+    const doc = new Document({ sections: [{ children }] });
+    const buf = (await Packer.toBuffer(doc)) as unknown as Buffer;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="batch-${batchNum}.docx"`);
+    res.send(buf);
+  });
+
+  // ── Explicitly clear WhatsApp credentials (manual user action only) ────────
+  app.post("/api/whatsapp/clear-credentials", async (_req, res) => {
+    try {
+      await baileysManager.disconnect();
+      await baileysManager.clearCredentials();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Start HTTP link check (no login required) ──────────────────────────────
   app.post("/api/check-http", async (_req, res) => {
     const links = linkStore.extractedLinks.whatsapp;

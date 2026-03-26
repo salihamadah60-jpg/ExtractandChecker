@@ -63,11 +63,9 @@ class BaileysManager extends EventEmitter {
     this.isStarting = true;
     this.setStatus("connecting");
 
-    // Only clear auth on a truly fresh attempt; keep it when reconnecting
-    // after the phone has confirmed the pairing code (WhatsApp code 515/440).
-    if (!skipClearAuth) {
-      await clearAuthDir();
-    }
+    // Never auto-clear credentials — Baileys will overwrite them naturally
+    // when a new session is established via QR or pairing.
+    // Credentials are only cleared on explicit user request via clearCredentials().
 
     try {
       await loadBaileys();
@@ -138,8 +136,8 @@ class BaileysManager extends EventEmitter {
           // Keep pairingCodeValue visible until we know what happened
 
           if (code === 401 || code === 403) {
-            // Truly rejected — clear auth and tell the user
-            await clearAuthDir();
+            // Auth rejected by WhatsApp — notify user but preserve credentials
+            // (user must manually clear them if they want to re-authenticate)
             this.pairingCodeValue = null;
             this.setStatus("auth_failed");
 
@@ -213,7 +211,7 @@ class BaileysManager extends EventEmitter {
     return code;
   }
 
-  // ── Disconnect ────────────────────────────────────────────────────────────
+  // ── Disconnect (keeps credentials intact) ────────────────────────────────
   async disconnect(): Promise<void> {
     const s = this.sock;
     this.sock = null;
@@ -224,7 +222,7 @@ class BaileysManager extends EventEmitter {
     if (s) {
       try { s.end(undefined); } catch (_) {}
     }
-    await clearAuthDir();
+    // Credentials are intentionally NOT cleared here — user must call clearCredentials() explicitly
     this.setStatus("disconnected");
   }
 
@@ -392,6 +390,8 @@ class BaileysManager extends EventEmitter {
   private async runChecks(
     session: ReturnType<typeof linkStore.startSession>
   ): Promise<void> {
+    const BATCH_SIZE = 1000;
+
     for (let i = 0; i < session.links.length; i++) {
       const result = session.results[i];
 
@@ -452,6 +452,23 @@ class BaileysManager extends EventEmitter {
       linkStore.updateProgress();
       this.emit("session", session);
 
+      // ── Auto-save every 1000 completed links as a batch ──────────────────
+      const processedCount = session.progress;
+      if (processedCount > 0 && processedCount % BATCH_SIZE === 0) {
+        const batchNum = processedCount / BATCH_SIZE;
+        if (!session.completedBatches.includes(batchNum)) {
+          const batchStart = (batchNum - 1) * BATCH_SIZE;
+          const batchEnd = batchNum * BATCH_SIZE;
+          // Get all results up to this point (not just this batch window,
+          // in case some were already checked before a resume)
+          const batchResults = session.results
+            .filter((r) => r.status !== "pending")
+            .slice(batchStart, batchEnd);
+          linkStore.saveBatchResults(batchNum, batchResults).catch(console.error);
+          console.log(`[Check] Batch ${batchNum} complete (${processedCount} links done)`);
+        }
+      }
+
       if (i < session.links.length - 1) {
         const delay = 200 + Math.random() * 400;
         await new Promise((r) => setTimeout(r, delay));
@@ -462,6 +479,30 @@ class BaileysManager extends EventEmitter {
     session.completedAt = new Date().toISOString();
     linkStore.updateProgress();
     this.emit("session", session);
+
+    // ── Save final partial batch if there are remaining uncollected results ─
+    const total = session.results.filter((r) => r.status !== "pending").length;
+    const lastSavedBatch = session.completedBatches.length > 0
+      ? Math.max(...session.completedBatches)
+      : 0;
+    const alreadySaved = lastSavedBatch * BATCH_SIZE;
+    if (total > alreadySaved) {
+      const finalBatchNum = lastSavedBatch + 1;
+      const remaining = session.results
+        .filter((r) => r.status !== "pending")
+        .slice(alreadySaved);
+      if (remaining.length > 0) {
+        linkStore.saveBatchResults(finalBatchNum, remaining).catch(console.error);
+        console.log(`[Check] Final batch ${finalBatchNum} saved (${remaining.length} links)`);
+      }
+    }
+  }
+
+  // ── Explicitly clear saved credentials (called only on manual user request) ─
+  async clearCredentials(): Promise<void> {
+    await clearAuthDir();
+    this.setStatus("disconnected");
+    console.log("[Baileys] Credentials cleared by user request");
   }
 }
 
