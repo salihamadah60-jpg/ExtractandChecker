@@ -5,6 +5,23 @@ const STATE_FILE = path.resolve(".session-state.json");
 const STATE_FILE_TMP = STATE_FILE + ".tmp";
 const DESC_LINKS_FILE = path.resolve("description-links.json");
 
+const MEDICAL_KEYWORDS = [
+  "طب", "طبي", "طبية", "دكتور", "دكتورة", "صيدل", "مستشف", "عياد", "صح",
+  "طوارئ", "جراح", "أطفال", "اطفال", "نساء", "توليد", "عظام", "قلب",
+  "أعصاب", "اعصاب", "عيون", "أنف", "انف", "أذن", "اذن", "حلق", "جلد",
+  "نفس", "مختبر", "مخبر", "تمريض", "ممرض", "دواء", "أدوية", "ادوية",
+  "علاج", "مرض", "مريض", "أشعة", "اشعة", "تحاليل", "بروميتريك",
+  "بيطر", "أسنان", "اسنان", "فارما", "باطن", "جراح",
+  "medical", "health", "clinic", "hospital", "doctor", "nurse",
+  "dental", "pharma", "therapy", "physician", "prometric",
+];
+
+export function isMedicalGroup(name?: string): boolean {
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  return MEDICAL_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 const LINKS_JSON_DIR = path.resolve("Linksjson");
 const LINKS_JSON_END_DIR = path.resolve("LinksjsonEndRe");
 
@@ -262,21 +279,35 @@ class LinkStore {
     }
   }
 
+  fullReset(): void {
+    this.extractedLinks = { whatsapp: [], telegram: [] };
+    this.checkSession = null;
+    this.joinSession = null;
+    this.newRoundLinks = { whatsapp: [], telegram: [] };
+    this.uploadedFileName = "";
+    this.saveToDisk().catch(console.error);
+    console.log("[LinkStore] Full reset — all previous session data cleared");
+  }
+
   setExtracted(links: ExtractedLinks) {
     this.extractedLinks = links;
-    const sessionLinksMatch =
-      this.checkSession && linksMatch(this.checkSession.links, links.whatsapp);
-
-    if (!sessionLinksMatch) {
-      this.checkSession = null;
-    } else {
-      if (this.checkSession && this.checkSession.status === "running") {
-        this.checkSession.status = "idle";
-      }
-      const done = this.checkSession!.results.filter((r) => r.status !== "pending").length;
-      console.log(`[LinkStore] Same file re-uploaded — preserving session (${done}/${this.checkSession!.total} already checked)`);
-    }
     this.saveToDisk().catch(console.error);
+  }
+
+  injectDescriptionLinks(descriptionText: string, session: CheckSession): number {
+    const existingSet = new Set(session.links);
+    const waMatches = [...descriptionText.matchAll(WA_REGEX)].map((m) =>
+      m[0].replace(/[.,;)>\]'"]+$/, "").trim()
+    );
+    const newLinks = [...new Set(waMatches)].filter((l) => l && !existingSet.has(l));
+    if (!newLinks.length) return 0;
+    for (const link of newLinks) {
+      session.links.push(link);
+      session.results.push({ link, status: "pending" });
+    }
+    session.total = session.results.length;
+    console.log(`[LinkStore] Injected ${newLinks.length} description links into queue (total: ${session.total})`);
+    return newLinks.length;
   }
 
   startSession(links: string[]): CheckSession {
@@ -396,41 +427,59 @@ class LinkStore {
       (r) => r.status === "valid" && r.link.includes("chat.whatsapp.com")
     );
 
+    // Dedup valid groups by link
+    const seenLinks = new Set<string>();
+    const uniqueValidGroups = validGroups.filter((r) => {
+      const cleanLink = r.link.replace(/[.,;)>\]'"]+$/, "").trim();
+      if (seenLinks.has(cleanLink)) return false;
+      seenLinks.add(cleanLink);
+      return true;
+    });
+
     // Groups file: >50 members  OR  (10 < members ≤ 50 AND no description)
-    const groups: FilteredGroup[] = validGroups
+    const groupsRaw: FilteredGroup[] = uniqueValidGroups
       .filter((r) => {
         const m = r.members ?? 0;
         if (m > 50) return true;
         if (m > 10 && m <= 50 && !r.description?.trim()) return true;
         return false;
       })
-      .map((r) => ({ link: r.link, name: r.name, members: r.members!, description: r.description }))
-      .sort((a, b) => {
-        // Sort by first word of name (directory grouping), then member count
-        const dirA = (a.name ?? "").trim().split(/\s+/)[0] ?? "";
-        const dirB = (b.name ?? "").trim().split(/\s+/)[0] ?? "";
-        if (dirA !== dirB) return dirA.localeCompare(dirB, "ar");
-        return a.members - b.members;
-      });
+      .map((r) => ({ link: r.link.replace(/[.,;)>\]'"]+$/, "").trim(), name: r.name, members: r.members!, description: r.description }));
+
+    // Smart categorization: medical/health groups first, then by first word, then member count
+    const groups = groupsRaw.sort((a, b) => {
+      const aMed = isMedicalGroup(a.name) ? 0 : 1;
+      const bMed = isMedicalGroup(b.name) ? 0 : 1;
+      if (aMed !== bMed) return aMed - bMed;
+      const dirA = (a.name ?? "").trim().split(/\s+/)[0] ?? "";
+      const dirB = (b.name ?? "").trim().split(/\s+/)[0] ?? "";
+      if (dirA !== dirB) return dirA.localeCompare(dirB, "ar");
+      return b.members - a.members;
+    });
 
     // Ads file: 10 < members ≤ 50 AND has non-empty description
-    const ads: FilteredGroup[] = validGroups
+    const ads: FilteredGroup[] = uniqueValidGroups
       .filter((r) => {
         const m = r.members ?? 0;
         return m > 10 && m <= 50 && !!r.description?.trim();
       })
-      .map((r) => ({ link: r.link, name: r.name, members: r.members!, description: r.description }));
+      .map((r) => ({ link: r.link.replace(/[.,;)>\]'"]+$/, "").trim(), name: r.name, members: r.members!, description: r.description }))
+      .sort((a, b) => {
+        const aMed = isMedicalGroup(a.name) ? 0 : 1;
+        const bMed = isMedicalGroup(b.name) ? 0 : 1;
+        return aMed - bMed;
+      });
 
-    // Extract links from descriptions of groups>50
+    // Extract links from descriptions of all valid groups
     const descLinkSet = new Set<string>();
-    for (const g of groups.filter((g) => g.members > 50)) {
+    for (const g of groups) {
       if (g.description) {
         for (const l of extractLinksFromText(g.description)) {
           descLinkSet.add(l);
         }
       }
     }
-    const sessionLinkSet = new Set(results.map((r) => r.link));
+    const sessionLinkSet = new Set(results.map((r) => r.link.replace(/[.,;)>\]'"]+$/, "").trim()));
     const descriptionLinks = [...descLinkSet].filter((l) => !sessionLinkSet.has(l));
 
     return { groups, ads, descriptionLinks };

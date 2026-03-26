@@ -427,6 +427,13 @@ class BaileysManager extends EventEmitter {
           console.log(
             `[Check] ${result.status.toUpperCase()} | ${elapsed}ms | ${link}${result.name ? ` | ${result.name}` : ""}${result.members !== undefined ? ` | ${result.members} عضو` : ""}`
           );
+          // Real-time description link injection
+          if (result.status === "valid" && result.description) {
+            const injected = linkStore.injectDescriptionLinks(result.description, session);
+            if (injected > 0) {
+              console.log(`[Check] Injected ${injected} new links from description of "${result.name}"`);
+            }
+          }
         } else if (phoneMatch) {
           result.status = await this.checkPhoneNumber(
             phoneMatch[1].replace(/\D/g, "")

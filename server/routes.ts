@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import multer from "multer";
 import mammoth from "mammoth";
 import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } from "docx";
-import { linkStore, type FilteredGroup } from "./link-store.js";
+import { linkStore, isMedicalGroup, type FilteredGroup } from "./link-store.js";
 import { baileysManager } from "./baileys-manager.js";
 import { checkLinksHTTP } from "./http-checker.js";
 
@@ -33,11 +33,13 @@ function extractLinks(text: string, html: string) {
   return { whatsapp: dedup(waRaw), telegram: dedup(tgRaw) };
 }
 
+const BATCH_SIZE_EXPORT = 40;
+
 // ── Build DOCX for valid filtered groups ─────────────────────────────────────
 async function buildGroupsDocx(groups: FilteredGroup[]): Promise<Buffer> {
   const children: any[] = [
     new Paragraph({
-      text: "ملف المجموعات النشطة (أكثر من 50 عضواً)",
+      text: "ملف المجموعات النشطة",
       heading: HeadingLevel.HEADING_1,
     }),
     new Paragraph({
@@ -46,35 +48,53 @@ async function buildGroupsDocx(groups: FilteredGroup[]): Promise<Buffer> {
     }),
   ];
 
-  let lastDirKey = "";
-  for (const g of groups) {
-    // Compute "directory" = first significant word of name
-    const dirKey = (g.name ?? "").trim().split(/\s+/)[0] ?? "";
-    if (dirKey && dirKey !== lastDirKey) {
-      // Add a section separator when the directory group changes
-      if (lastDirKey) {
-        children.push(new Paragraph({ text: "", spacing: { after: 200 } }));
-      }
-      lastDirKey = dirKey;
-    }
+  // Section header: Medical groups
+  const medicalGroups = groups.filter((g) => isMedicalGroup(g.name));
+  const otherGroups = groups.filter((g) => !isMedicalGroup(g.name));
 
-    if (g.name) {
+  const renderGroups = (list: FilteredGroup[], sectionLabel?: string) => {
+    if (!list.length) return;
+    if (sectionLabel) {
       children.push(
         new Paragraph({
-          children: [
-            new TextRun({ text: g.name, bold: true }),
-            new TextRun({ text: `  —  ${g.members} عضو`, color: "666666", size: 20 }),
-          ],
-          spacing: { after: 40 },
+          children: [new TextRun({ text: sectionLabel, bold: true, size: 26, color: "1a5276" })],
+          spacing: { before: 300, after: 120 },
         })
       );
     }
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: g.link, color: "1a73e8" })],
-        spacing: { after: 140 },
-      })
-    );
+    list.forEach((g, idx) => {
+      // Batch separator every 40 entries
+      if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
+        children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
+      }
+      // Header line: Name + member count
+      const headerText = g.name
+        ? `${g.name} ${g.members} عضو`
+        : `${g.members} عضو`;
+      children.push(
+        new Paragraph({
+          children: [new TextRun({ text: headerText, bold: true })],
+          spacing: { after: 40 },
+        })
+      );
+      // Link line
+      children.push(
+        new Paragraph({
+          children: [new TextRun({ text: g.link, color: "1a73e8" })],
+          spacing: { after: 160 },
+        })
+      );
+    });
+  };
+
+  if (medicalGroups.length > 0) {
+    renderGroups(medicalGroups, `[ الطب والصحة — ${medicalGroups.length} مجموعة ]`);
+  }
+  if (otherGroups.length > 0) {
+    if (medicalGroups.length > 0) {
+      children.push(new Paragraph({ text: "", spacing: { before: 400, after: 200 } }));
+    }
+    renderGroups(otherGroups, otherGroups.length > 0 && medicalGroups.length > 0 ? `[ مجموعات أخرى — ${otherGroups.length} مجموعة ]` : undefined);
   }
 
   const doc = new Document({ sections: [{ children }] });
@@ -94,63 +114,62 @@ async function buildAdsDocx(ads: FilteredGroup[]): Promise<Buffer> {
     }),
   ];
 
-  for (const g of ads) {
-    if (g.name) {
-      children.push(
-        new Paragraph({
-          children: [
-            new TextRun({ text: g.name, bold: true }),
-            new TextRun({ text: `  —  ${g.members} عضو`, color: "666666", size: 20 }),
-          ],
-          spacing: { after: 40 },
-        })
-      );
+  ads.forEach((g, idx) => {
+    // Batch separator every 40 entries
+    if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
+      children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
     }
-    if (g.description) {
-      children.push(
-        new Paragraph({
-          children: [new TextRun({ text: g.description, color: "444444", italics: true, size: 20 })],
-          spacing: { after: 40 },
-        })
-      );
-    }
+    // Header line: Name + member count
+    const headerText = g.name ? `${g.name} ${g.members} عضو` : `${g.members} عضو`;
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: headerText, bold: true })],
+        spacing: { after: 40 },
+      })
+    );
+    // Link line
     children.push(
       new Paragraph({
         children: [new TextRun({ text: g.link, color: "1a73e8" })],
         spacing: { after: 160 },
       })
     );
-  }
+  });
 
   const doc = new Document({ sections: [{ children }] });
   return (await Packer.toBuffer(doc)) as unknown as Buffer;
 }
 
-async function buildValidDocx(results: { link: string; name?: string }[]): Promise<Buffer> {
-  const BATCH = 40;
+async function buildValidDocx(results: { link: string; name?: string; members?: number }[]): Promise<Buffer> {
+  // Dedup by link
+  const seen = new Set<string>();
+  const deduped = results.filter((r) => {
+    const clean = r.link.replace(/[.,;)>\]'"]+$/, "").trim();
+    if (seen.has(clean)) return false;
+    seen.add(clean);
+    return true;
+  });
+
   const children: any[] = [
     new Paragraph({ text: "روابط واتساب الصالحة", heading: HeadingLevel.HEADING_1 }),
-    new Paragraph({
-      text: `إجمالي الروابط: ${results.length}`,
-      spacing: { after: 300 },
-    }),
+    new Paragraph({ text: `إجمالي الروابط: ${deduped.length}`, spacing: { after: 300 } }),
   ];
 
-  results.forEach((r, idx) => {
-    if (idx > 0 && idx % BATCH === 0) {
-      children.push(new Paragraph({ text: "", spacing: { after: 400 } }));
+  deduped.forEach((r, idx) => {
+    if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
+      children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
     }
-    if (r.name) {
+    const headerText = r.name
+      ? `${r.name}${r.members !== undefined ? ` ${r.members} عضو` : ""}`
+      : null;
+    if (headerText) {
       children.push(
-        new Paragraph({
-          children: [new TextRun({ text: r.name, bold: true })],
-          spacing: { after: 60 },
-        })
+        new Paragraph({ children: [new TextRun({ text: headerText, bold: true })], spacing: { after: 40 } })
       );
     }
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: r.link, color: "1a73e8" })],
+        children: [new TextRun({ text: r.link.replace(/[.,;)>\]'"]+$/, "").trim(), color: "1a73e8" })],
         spacing: { after: 160 },
       })
     );
@@ -161,26 +180,21 @@ async function buildValidDocx(results: { link: string; name?: string }[]): Promi
 }
 
 async function buildDocx(title: string, links: string[]): Promise<Buffer> {
-  const doc = new Document({
-    sections: [
-      {
-        children: [
-          new Paragraph({ text: title, heading: HeadingLevel.HEADING_1 }),
-          new Paragraph({
-            text: `إجمالي الروابط: ${links.length}`,
-            spacing: { after: 300 },
-          }),
-          ...links.map(
-            (link) =>
-              new Paragraph({
-                children: [new TextRun({ text: link, color: "1a73e8" })],
-                spacing: { after: 100 },
-              })
-          ),
-        ],
-      },
-    ],
+  // Dedup links
+  const deduped = [...new Set(links.map((l) => l.replace(/[.,;)>\]'"]+$/, "").trim()).filter(Boolean))];
+  const children: any[] = [
+    new Paragraph({ text: title, heading: HeadingLevel.HEADING_1 }),
+    new Paragraph({ text: `إجمالي الروابط: ${deduped.length}`, spacing: { after: 300 } }),
+  ];
+  deduped.forEach((link, idx) => {
+    if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
+      children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
+    }
+    children.push(
+      new Paragraph({ children: [new TextRun({ text: link, color: "1a73e8" })], spacing: { after: 100 } })
+    );
   });
+  const doc = new Document({ sections: [{ children }] });
   return (await Packer.toBuffer(doc)) as unknown as Buffer;
 }
 
@@ -200,6 +214,8 @@ export async function registerRoutes(
       const extracted = extractLinks(textResult.value, htmlResult.value);
       if (!extracted.whatsapp.length && !extracted.telegram.length)
         return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
+      // Full reset: new file = completely fresh session, no overlap with previous data
+      linkStore.fullReset();
       linkStore.setExtracted(extracted);
       linkStore.saveLinksToFile(req.file.originalname, extracted).catch(console.error);
       res.json({ success: true, whatsapp: extracted.whatsapp.length, telegram: extracted.telegram.length });

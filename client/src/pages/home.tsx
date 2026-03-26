@@ -865,6 +865,27 @@ export default function Home() {
               </Card>
             )}
 
+            {/* Telegram links download in results */}
+            {linkCounts.telegram > 0 && (
+              <Card className="border-blue-200 dark:border-blue-900/40">
+                <CardContent className="pt-4 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center flex-shrink-0">
+                    <SiTelegram className="w-4 h-4 text-blue-500" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold">روابط تيليغرام</p>
+                    <p className="text-xs text-muted-foreground">تم استخراج {linkCounts.telegram} رابط تيليغرام من الملف</p>
+                  </div>
+                  <Button size="sm" variant="outline"
+                    onClick={() => window.open("/api/download/telegram", "_blank")}
+                    data-testid="button-download-telegram-results">
+                    <Download className="w-3.5 h-3.5 ml-1.5" />
+                    تحميل
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
             {/* ── 4 action buttons ── */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <Button variant="outline"
@@ -884,14 +905,14 @@ export default function Home() {
                 <span>ملف الإعلانات</span>
               </Button>
               <Button variant="outline"
-                onClick={() => { setShowExtraPanel(true); setExtraPanelMode("upload"); setNewRoundData(null); }}
+                onClick={() => setStep("upload")}
                 className="flex-col h-16 gap-1 text-xs"
-                data-testid="button-new-links">
-                <PlusCircle className="w-4 h-4" />
-                <span>رفع ملف جديد</span>
+                data-testid="button-new-file-upload">
+                <Upload className="w-4 h-4" />
+                <span>ملف جديد</span>
               </Button>
               <Button variant="outline"
-                onClick={() => { setShowExtraPanel(!showExtraPanel && extraPanelMode !== null ? false : true); setExtraPanelMode(showExtraPanel && extraPanelMode !== null ? null : extraPanelMode ?? "upload"); }}
+                onClick={() => { setShowExtraPanel(!showExtraPanel && extraPanelMode !== null ? false : true); setExtraPanelMode(showExtraPanel && extraPanelMode !== null ? null : extraPanelMode ?? "join"); }}
                 className={`flex-col h-16 gap-1 text-xs ${showExtraPanel ? "border-primary text-primary bg-primary/5" : ""}`}
                 data-testid="button-extra-options">
                 {showExtraPanel && extraPanelMode !== null ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -906,14 +927,14 @@ export default function Home() {
                   {/* Choice row */}
                   <div className="grid grid-cols-2 gap-3">
                     <button
-                      className={`border rounded-lg p-3 text-right transition-colors ${extraPanelMode === "upload" ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
-                      onClick={() => { setExtraPanelMode("upload"); setNewRoundData(null); }}
+                      className="border rounded-lg p-3 text-right transition-colors border-border hover:border-primary/40"
+                      onClick={() => setStep("upload")}
                       data-testid="option-upload">
                       <div className="flex items-center gap-2 mb-1">
                         <FolderOpen className="w-4 h-4 text-primary flex-shrink-0" />
-                        <span className="text-sm font-medium">رفع ملف جديد للفحص</span>
+                        <span className="text-sm font-medium">رفع ملف جديد</span>
                       </div>
-                      <p className="text-xs text-muted-foreground">رفع ملف DOCX جديد وإزالة المكررات ثم الفحص</p>
+                      <p className="text-xs text-muted-foreground">ملف DOCX جديد — تبدأ جلسة منفصلة من الصفر</p>
                     </button>
                     <button
                       className={`border rounded-lg p-3 text-right transition-colors ${extraPanelMode === "join" ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
