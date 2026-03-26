@@ -8,9 +8,8 @@ channel = "stable-25_05"
 [workflows]
 runButton = "Project"
 
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
+[[workflows.workfloomode]]
+mode = .workfloomode = "parallel"
 author = "agent"
 
 [[workflows.workflow.tasks]]
@@ -36,7 +35,7 @@ author = 56612047
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "git remote set-url origin https://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@github.com/salihamadah60-jpg/ExtractandChecker.git"
+args = "git remote set-url origin https://$GITHUB_TOKEN@github.com/salihamadah60-jpg/ExtractandChecker.git"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
