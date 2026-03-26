@@ -1,4 +1,4 @@
-modules = ["nodejs-20", "web"]
+modules = ["nodejs-20", "web", "bash"]
 [agent]
 expertMode = true
 
@@ -8,8 +8,9 @@ channel = "stable-25_05"
 [workflows]
 runButton = "Project"
 
-[[workflows.workfloomode]]
-mode = .workfloomode = "parallel"
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
 author = "agent"
 
 [[workflows.workflow.tasks]]
@@ -20,26 +21,13 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "npm run dev"
 waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
-
-[[workflows.workflow]]
-name = "push to github"
-mode = "sequential"
-author = 56612047
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "git remote set-url origin https://$GITHUB_TOKEN@github.com/salihamadah60-jpg/ExtractandChecker.git"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "git push origin main"
 
 [[ports]]
 localPort = 5000
