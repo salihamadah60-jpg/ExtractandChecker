@@ -69,6 +69,14 @@ class BaileysManager extends EventEmitter {
 
     try {
       await loadBaileys();
+
+      // Pairing code REQUIRES a fresh unregistered socket — any leftover
+      // credentials will cause "Failed to sign in". Clear them before pairing.
+      if (usePairing && !skipClearAuth) {
+        await clearAuthDir();
+        console.log("[Baileys] Cleared old auth for fresh pairing session");
+      }
+
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
       const { version } = await fetchLatestBaileysVersion();
 
@@ -95,25 +103,36 @@ class BaileysManager extends EventEmitter {
       });
       this.sock = sock;
 
-      // ── Pairing code: request OUTSIDE the event handler.
-      //    Uses local `sock` ref so it stays valid even if this.sock is reset.
-      //    Don't request a new code when reconnecting after pairing confirmation.
+      // ── Pairing code: request after socket is ready.
+      //    Triggered on first connection.update (socket handshake done) with a
+      //    short follow-up delay, or after a 5 s safety fallback.
+      //    Only for fresh pairing — not for reconnect-after-confirmation.
       if (usePairing && phoneNumber && !skipClearAuth) {
         const phone = phoneNumber.replace(/\D/g, "");
         this.setStatus("pairing");
 
-        // 2 s matches official Baileys examples; requestPairingCode handles
-        // its own internal readiness after the WebSocket handshakes.
-        setTimeout(async () => {
+        let codeRequested = false;
+        const requestCode = async () => {
+          if (codeRequested) return;
+          codeRequested = true;
           try {
             console.log("[Baileys] Requesting pairing code for:", phone);
             const code = await sock.requestPairingCode(phone);
             this.pairingCodeValue = code;
-            console.log("[Baileys] Pairing code:", code);
-          } catch (err) {
-            console.error("[Baileys] Pairing code error:", err);
+            console.log("[Baileys] Pairing code obtained:", code);
+          } catch (err: any) {
+            console.error("[Baileys] Pairing code error:", err?.message ?? err);
           }
-        }, 2000);
+        };
+
+        // Trigger on first connection.update (socket open/handshake complete)
+        const onFirstUpdate = () => {
+          sock.ev.off("connection.update", onFirstUpdate);
+          setTimeout(requestCode, 800); // slight delay after handshake
+        };
+        sock.ev.on("connection.update", onFirstUpdate);
+        // Safety fallback in case no update fires within 5 s
+        setTimeout(requestCode, 5000);
       }
 
       // ── Connection events
