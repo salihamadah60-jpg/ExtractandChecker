@@ -57,11 +57,18 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (!path.startsWith("/api")) return;
-    if (res.statusCode === 304) return;
-    if (req.method === "GET" && SILENT_POLL_PATHS.has(path)) return;
+
+    const isError = res.statusCode >= 400;
+    const isSuccessfulPoll =
+      req.method === "GET" &&
+      SILENT_POLL_PATHS.has(path) &&
+      !isError;
+    const isNotModified = res.statusCode === 304;
+
+    if (isSuccessfulPoll || isNotModified) return;
 
     let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-    if (capturedJsonResponse && res.statusCode >= 400) {
+    if (capturedJsonResponse && isError) {
       logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
     }
 
