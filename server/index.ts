@@ -46,16 +46,26 @@ app.use((req, res, next) => {
     return originalResJson.apply(res, [bodyJson, ...args]);
   };
 
+  const SILENT_POLL_PATHS = new Set([
+    "/api/whatsapp/status",
+    "/api/whatsapp/progress",
+    "/api/whatsapp/join-progress",
+    "/api/previous-results",
+    "/api/whatsapp/filtered-summary",
+  ]);
+
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
+    if (!path.startsWith("/api")) return;
+    if (res.statusCode === 304) return;
+    if (req.method === "GET" && SILENT_POLL_PATHS.has(path)) return;
 
-      log(logLine);
+    let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+    if (capturedJsonResponse && res.statusCode >= 400) {
+      logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
     }
+
+    log(logLine);
   });
 
   next();
