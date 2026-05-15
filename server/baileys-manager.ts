@@ -72,9 +72,17 @@ class BaileysManager extends EventEmitter {
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
       const { version } = await fetchLatestBaileysVersion();
 
+      const silentLogger = {
+        level: "silent",
+        trace: () => {}, debug: () => {}, info: () => {},
+        warn: () => {}, error: () => {}, fatal: () => {},
+        child: () => silentLogger,
+      };
+
       const sock = makeWASocket({
         version,
         auth: state,
+        logger: silentLogger as any,
         printQRInTerminal: false,
         browser: ["Link Checker Pro", "Chrome", "120.0.0"],
         generateHighQualityLinkPreview: false,

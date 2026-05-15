@@ -669,67 +669,104 @@ export default function Home() {
         {/* ── Step: Connect ── */}
         {step === "connect" && (
           <div className="space-y-4 max-w-md mx-auto">
-            <Card>
-              <CardHeader className="pb-2 text-center">
-                <CardTitle className="flex items-center justify-center gap-2">
-                  <SiWhatsapp className="w-5 h-5 text-primary" />
-                  {connectMode === "qr" ? "امسح رمز QR" : connectMode === "pair" ? "أدخل رمز الربط" : "جاري الاتصال بالجلسة المحفوظة"}
-                </CardTitle>
-                <CardDescription>
-                  {connectMode === "qr" ? "افتح واتساب → الأجهزة المرتبطة → ربط جهاز → امسح الرمز" :
-                   connectMode === "pair" ? "افتح واتساب → الأجهزة المرتبطة → ربط بالرقم → أدخل الرمز" :
-                   "يتم الاتصال تلقائياً باستخدام بيانات الجلسة المحفوظة"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col items-center gap-4">
-                <WAStatusCard status={waStatus} />
 
-                {connectMode === "qr" && qrCode && (
-                  <div className="p-3 bg-white rounded-xl shadow border">
-                    <img src={qrCode} alt="QR Code" className="w-56 h-56" data-testid="img-qr-code" />
+            {/* auth_failed: prominent clear & reconnect card */}
+            {waStatus === "auth_failed" ? (
+              <Card className="border-destructive/40 bg-destructive/5">
+                <CardContent className="pt-6 flex flex-col items-center gap-4 text-center">
+                  <div className="w-14 h-14 rounded-full bg-destructive/10 flex items-center justify-center">
+                    <WifiOff className="w-7 h-7 text-destructive" />
                   </div>
-                )}
-                {connectMode === "qr" && !qrCode && (waStatus === "connecting" || waStatus === "qr_ready") && (
-                  <div className="w-56 h-56 bg-muted rounded-xl flex items-center justify-center">
-                    <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                  <div>
+                    <p className="font-semibold text-destructive text-base">انتهت صلاحية الجلسة</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      رفضت واتساب بيانات الجلسة المحفوظة. امسح البيانات القديمة ثم أعد الاتصال.
+                    </p>
                   </div>
-                )}
+                  <Button
+                    className="w-full"
+                    variant="destructive"
+                    onClick={() => {
+                      if (confirm("هل تريد حذف بيانات الجلسة القديمة والاتصال من جديد؟"))
+                        clearCredsMutation.mutate();
+                    }}
+                    disabled={clearCredsMutation.isPending}
+                    data-testid="button-clear-and-reconnect"
+                  >
+                    {clearCredsMutation.isPending
+                      ? <Loader2 className="w-4 h-4 ml-2 animate-spin" />
+                      : <Trash2 className="w-4 h-4 ml-2" />}
+                    مسح الجلسة القديمة والاتصال من جديد
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    بعد المسح ستحتاج لمسح رمز QR أو إدخال رمز ربط جديد
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardHeader className="pb-2 text-center">
+                  <CardTitle className="flex items-center justify-center gap-2">
+                    <SiWhatsapp className="w-5 h-5 text-primary" />
+                    {connectMode === "qr" ? "امسح رمز QR" : connectMode === "pair" ? "أدخل رمز الربط" : "جاري الاتصال بالجلسة المحفوظة"}
+                  </CardTitle>
+                  <CardDescription>
+                    {connectMode === "qr" ? "افتح واتساب → الأجهزة المرتبطة → ربط جهاز → امسح الرمز" :
+                     connectMode === "pair" ? "افتح واتساب → الأجهزة المرتبطة → ربط بالرقم → أدخل الرمز" :
+                     "يتم الاتصال تلقائياً باستخدام بيانات الجلسة المحفوظة"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col items-center gap-4">
+                  <WAStatusCard status={waStatus} />
 
-                {connectMode === "pair" && pairingCode && (
-                  <div className="flex flex-col items-center gap-3 w-full">
-                    <p className="text-xs text-muted-foreground">أدخل هذا الرمز في واتساب</p>
-                    <div className="text-4xl font-mono font-bold tracking-widest bg-muted px-6 py-4 rounded-xl border w-full text-center" data-testid="text-pairing-code">
-                      {pairingCode}
+                  {connectMode === "qr" && qrCode && (
+                    <div className="p-3 bg-white rounded-xl shadow border">
+                      <img src={qrCode} alt="QR Code" className="w-56 h-56" data-testid="img-qr-code" />
                     </div>
-                    <Button variant="outline" size="sm" className="w-full" onClick={() => resendPairMutation.mutate()} disabled={resendPairMutation.isPending} data-testid="button-resend-pair">
-                      {resendPairMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 ml-1" />}
-                      إعادة إرسال الرمز
-                    </Button>
-                  </div>
-                )}
-                {connectMode === "pair" && !pairingCode && (waStatus === "pairing" || waStatus === "connecting") && (
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                    <p className="text-sm text-muted-foreground">جاري الحصول على رمز الربط...</p>
-                  </div>
-                )}
+                  )}
+                  {connectMode === "qr" && !qrCode && (waStatus === "connecting" || waStatus === "qr_ready") && (
+                    <div className="w-56 h-56 bg-muted rounded-xl flex items-center justify-center">
+                      <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                    </div>
+                  )}
 
-                {connectMode === "saved" && (waStatus === "connecting" || waStatus === "disconnected") && (
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                    <p className="text-sm text-muted-foreground">جاري الاتصال بالجلسة المحفوظة...</p>
-                  </div>
-                )}
+                  {connectMode === "pair" && pairingCode && (
+                    <div className="flex flex-col items-center gap-3 w-full">
+                      <p className="text-xs text-muted-foreground">أدخل هذا الرمز في واتساب</p>
+                      <div className="text-4xl font-mono font-bold tracking-widest bg-muted px-6 py-4 rounded-xl border w-full text-center" data-testid="text-pairing-code">
+                        {pairingCode}
+                      </div>
+                      <Button variant="outline" size="sm" className="w-full" onClick={() => resendPairMutation.mutate()} disabled={resendPairMutation.isPending} data-testid="button-resend-pair">
+                        {resendPairMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 ml-1" />}
+                        إعادة إرسال الرمز
+                      </Button>
+                    </div>
+                  )}
+                  {connectMode === "pair" && !pairingCode && (waStatus === "pairing" || waStatus === "connecting") && (
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                      <p className="text-sm text-muted-foreground">جاري الحصول على رمز الربط...</p>
+                    </div>
+                  )}
 
-                {waStatus === "connected" && (
-                  <div className="flex flex-col items-center gap-2">
-                    <CheckCircle2 className="w-12 h-12 text-primary" />
-                    <p className="font-semibold text-primary">تم الاتصال بنجاح!</p>
-                    <p className="text-sm text-muted-foreground">جاري بدء فحص الروابط...</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                  {connectMode === "saved" && (waStatus === "connecting" || waStatus === "disconnected") && (
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                      <p className="text-sm text-muted-foreground">جاري الاتصال بالجلسة المحفوظة...</p>
+                    </div>
+                  )}
+
+                  {waStatus === "connected" && (
+                    <div className="flex flex-col items-center gap-2">
+                      <CheckCircle2 className="w-12 h-12 text-primary" />
+                      <p className="font-semibold text-primary">تم الاتصال بنجاح!</p>
+                      <p className="text-sm text-muted-foreground">جاري بدء فحص الروابط...</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             <Button variant="outline" className="w-full" onClick={() => { disconnectMutation.mutate(); setStep("links"); }} data-testid="button-cancel-connect">
               <ArrowRight className="w-4 h-4 ml-1" />رجوع
             </Button>
