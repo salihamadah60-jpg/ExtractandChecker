@@ -22,6 +22,13 @@ export function isMedicalGroup(name?: string): boolean {
   return MEDICAL_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
+const EXCLUDED_DESCRIPTION_KEYWORDS = ["سكليف", "إجازة مرضية", "اجازة مرضية"];
+
+export function hasExcludedDescription(description?: string): boolean {
+  if (!description) return false;
+  return EXCLUDED_DESCRIPTION_KEYWORDS.some((kw) => description.includes(kw));
+}
+
 const LINKS_JSON_DIR = path.resolve("Linksjson");
 const LINKS_JSON_END_DIR = path.resolve("LinksjsonEndRe");
 
@@ -228,10 +235,10 @@ class LinkStore {
         (r) => r.status === "valid" && r.link.includes("chat.whatsapp.com")
       );
       const groups = validGroups
-        .filter((r) => { const m = r.members ?? 0; return m > 50 || (m > 10 && m <= 50 && !r.description?.trim()); })
+        .filter((r) => { const m = r.members ?? 0; return m > 150 || (m > 10 && m <= 150 && !r.description?.trim()); })
         .map((r) => ({ link: r.link, name: r.name, members: r.members, description: r.description }));
       const ads = validGroups
-        .filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 50 && !!r.description?.trim(); })
+        .filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 150 && !!r.description?.trim() && !hasExcludedDescription(r.description); })
         .map((r) => ({ link: r.link, name: r.name, members: r.members, description: r.description }));
 
       const data = {
@@ -447,12 +454,12 @@ class LinkStore {
       return true;
     });
 
-    // Groups file: >50 members  OR  (10 < members ≤ 50 AND no description)
+    // Groups file: >150 members  OR  (10 < members ≤ 150 AND no description)
     const groupsRaw: FilteredGroup[] = uniqueValidGroups
       .filter((r) => {
         const m = r.members ?? 0;
-        if (m > 50) return true;
-        if (m > 10 && m <= 50 && !r.description?.trim()) return true;
+        if (m > 150) return true;
+        if (m > 10 && m <= 150 && !r.description?.trim()) return true;
         return false;
       })
       .map((r) => ({ link: r.link.replace(/[.,;)>\]'"]+$/, "").trim(), name: r.name, members: r.members!, description: r.description }));
@@ -468,11 +475,11 @@ class LinkStore {
       return b.members - a.members;
     });
 
-    // Ads file: 10 < members ≤ 50 AND has non-empty description
+    // Ads file: 10 < members ≤ 150 AND has non-empty description (excluding "سكليف/إجازة مرضية")
     const ads: FilteredGroup[] = uniqueValidGroups
       .filter((r) => {
         const m = r.members ?? 0;
-        return m > 10 && m <= 50 && !!r.description?.trim();
+        return m > 10 && m <= 150 && !!r.description?.trim() && !hasExcludedDescription(r.description);
       })
       .map((r) => ({ link: r.link.replace(/[.,;)>\]'"]+$/, "").trim(), name: r.name, members: r.members!, description: r.description }))
       .sort((a, b) => {

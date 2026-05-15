@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import multer from "multer";
 import mammoth from "mammoth";
 import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } from "docx";
-import { linkStore, isMedicalGroup, type FilteredGroup } from "./link-store.js";
+import { linkStore, isMedicalGroup, hasExcludedDescription, type FilteredGroup } from "./link-store.js";
 import { baileysManager } from "./baileys-manager.js";
 import { checkLinksHTTP } from "./http-checker.js";
 
@@ -105,7 +105,7 @@ async function buildGroupsDocx(groups: FilteredGroup[]): Promise<Buffer> {
 async function buildAdsDocx(ads: FilteredGroup[]): Promise<Buffer> {
   const children: any[] = [
     new Paragraph({
-      text: "ملف الإعلانات (10–50 عضواً مع وصف)",
+      text: "ملف الإعلانات (10–150 عضواً مع وصف)",
       heading: HeadingLevel.HEADING_1,
     }),
     new Paragraph({
@@ -456,8 +456,8 @@ export async function registerRoutes(
     if (!batchResults.length) return res.status(404).json({ error: "الدفعة غير موجودة" });
 
     const validGroups = batchResults.filter((r) => r.status === "valid" && r.link.includes("chat.whatsapp.com"));
-    const groups = validGroups.filter((r) => { const m = r.members ?? 0; return m > 50 || (m > 10 && m <= 50 && !r.description?.trim()); });
-    const ads = validGroups.filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 50 && !!r.description?.trim(); });
+    const groups = validGroups.filter((r) => { const m = r.members ?? 0; return m > 150 || (m > 10 && m <= 150 && !r.description?.trim()); });
+    const ads = validGroups.filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 150 && !!r.description?.trim() && !hasExcludedDescription(r.description); });
 
     const children: Paragraph[] = [
       new Paragraph({ children: [new TextRun({ text: `نتائج الدفعة ${batchNum} (${batchResults.length} رابط)`, bold: true, size: 32 })], heading: HeadingLevel.HEADING_1 }),
@@ -633,17 +633,17 @@ export async function registerRoutes(
     });
   });
 
-  // ── Download groups file (>50 members, sorted) ─────────────────────────────
+  // ── Download groups file (>150 members, sorted) ─────────────────────────────
   app.get("/api/whatsapp/download-groups", async (_req, res) => {
     const { groups } = linkStore.getFilteredSummary();
-    if (!groups.length) return res.status(404).json({ error: "لا توجد مجموعات بأكثر من 50 عضواً" });
+    if (!groups.length) return res.status(404).json({ error: "لا توجد مجموعات بأكثر من 150 عضواً" });
     const buf = await buildGroupsDocx(groups);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-    res.setHeader("Content-Disposition", `attachment; filename="groups-50plus.docx"`);
+    res.setHeader("Content-Disposition", `attachment; filename="groups-150plus.docx"`);
     res.send(buf);
   });
 
-  // ── Download ads file (10-50 members with description) ─────────────────────
+  // ── Download ads file (10-150 members with description) ─────────────────────
   app.get("/api/whatsapp/download-ads", async (_req, res) => {
     const { ads } = linkStore.getFilteredSummary();
     if (!ads.length) return res.status(404).json({ error: "لا توجد مجموعات إعلانية" });
