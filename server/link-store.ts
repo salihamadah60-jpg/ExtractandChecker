@@ -176,8 +176,7 @@ class LinkStore {
         newRoundLinks: this.newRoundLinks,
       };
       const json = JSON.stringify(state, null, 2);
-      await fs.writeFile(STATE_FILE_TMP, json, "utf-8");
-      await fs.rename(STATE_FILE_TMP, STATE_FILE);
+      await fs.writeFile(STATE_FILE, json, "utf-8");
     } catch (err) {
       console.error("[LinkStore] Failed to save state:", err);
     }

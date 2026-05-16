@@ -737,6 +737,75 @@ export default function Home() {
               </Card>
             </div>
 
+            {/* ── Sessions management — always visible ── */}
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <SiWhatsapp className="w-4 h-4 text-primary" />الحسابات المحفوظة
+                  </CardTitle>
+                  <Button size="sm" variant="outline" className="h-7 text-xs gap-1 px-2"
+                    onClick={() => createSessionMutation.mutate()}
+                    disabled={createSessionMutation.isPending}
+                    data-testid="button-add-session">
+                    {createSessionMutation.isPending
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <UserPlus className="w-3 h-3" />}
+                    أضف جلسة
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="pt-0">
+                {waData && waData.sessions && waData.sessions.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {waData.sessions.map((sess) => (
+                      <div key={sess.id} className={`flex items-center gap-2.5 p-2 rounded-lg border transition-colors ${sess.isActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"}`}>
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${sess.status === "connected" ? "bg-primary/15" : "bg-muted"}`}>
+                          <SiWhatsapp className={`w-4 h-4 ${sess.status === "connected" ? "text-primary" : "text-muted-foreground"}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate leading-none mb-0.5">{sess.displayName}</p>
+                          <p className="text-xs text-muted-foreground">{
+                            sess.status === "connected" ? "متصل" :
+                            sess.status === "connecting" ? "جاري الاتصال..." :
+                            sess.status === "qr_ready" ? "في انتظار QR" :
+                            sess.status === "pairing" ? "جاري الربط..." :
+                            sess.status === "auth_failed" ? "فشل التحقق" : "غير متصل"
+                          }</p>
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {sess.isActive
+                            ? <Badge variant="default" className="text-xs h-6 px-2">نشط</Badge>
+                            : (
+                              <Button size="sm" variant="outline" className="h-7 text-xs px-2"
+                                onClick={() => activateSessionMutation.mutate(sess.id)}
+                                disabled={activateSessionMutation.isPending || isConnecting}
+                                data-testid={`button-activate-session-${sess.id}`}>
+                                تفعيل
+                              </Button>
+                            )
+                          }
+                          {waData.sessions.length > 1 && (
+                            <Button size="sm" variant="ghost"
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={() => { if (confirm("حذف هذا الحساب؟")) deleteSessionMutation.mutate(sess.id); }}
+                              disabled={deleteSessionMutation.isPending || isConnecting}
+                              data-testid={`button-delete-session-${sess.id}`}>
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground text-center py-3">
+                    لا توجد جلسات محفوظة — أضف جلسة جديدة لبدء الاتصال
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
             {linkCounts.whatsapp > 0 && (
               !isConnecting ? (
                 /* ── Connection method selector ── */
@@ -798,71 +867,7 @@ export default function Home() {
                 </Card>
               ) : (
                 /* ── Connecting / QR / Pairing inline UI ── */
-                <div className="space-y-4 max-w-md mx-auto w-full">
-
-                  {/* Sessions management panel */}
-                  {waData && waData.sessions && waData.sessions.length > 0 && (
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <div className="flex items-center justify-between">
-                          <CardTitle className="text-sm flex items-center gap-2">
-                            <SiWhatsapp className="w-4 h-4 text-primary" />الحسابات
-                          </CardTitle>
-                          <Button size="sm" variant="outline" className="h-7 text-xs gap-1 px-2"
-                            onClick={() => createSessionMutation.mutate()}
-                            disabled={createSessionMutation.isPending}
-                            data-testid="button-add-session">
-                            {createSessionMutation.isPending
-                              ? <Loader2 className="w-3 h-3 animate-spin" />
-                              : <UserPlus className="w-3 h-3" />}
-                            إضافة حساب
-                          </Button>
-                        </div>
-                      </CardHeader>
-                      <CardContent className="pt-0 space-y-1.5">
-                        {waData.sessions.map((sess) => (
-                          <div key={sess.id} className={`flex items-center gap-2.5 p-2 rounded-lg border transition-colors ${sess.isActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"}`}>
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${sess.status === "connected" ? "bg-primary/15" : "bg-muted"}`}>
-                              <SiWhatsapp className={`w-4 h-4 ${sess.status === "connected" ? "text-primary" : "text-muted-foreground"}`} />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium truncate leading-none mb-0.5">{sess.displayName}</p>
-                              <p className="text-xs text-muted-foreground">{
-                                sess.status === "connected" ? "متصل" :
-                                sess.status === "connecting" ? "جاري الاتصال..." :
-                                sess.status === "qr_ready" ? "في انتظار QR" :
-                                sess.status === "pairing" ? "جاري الربط..." :
-                                sess.status === "auth_failed" ? "فشل التحقق" : "غير متصل"
-                              }</p>
-                            </div>
-                            <div className="flex items-center gap-1 flex-shrink-0">
-                              {sess.isActive
-                                ? <Badge variant="default" className="text-xs h-6 px-2">نشط</Badge>
-                                : (
-                                  <Button size="sm" variant="outline" className="h-7 text-xs px-2"
-                                    onClick={() => activateSessionMutation.mutate(sess.id)}
-                                    disabled={activateSessionMutation.isPending}
-                                    data-testid={`button-activate-session-${sess.id}`}>
-                                    تفعيل
-                                  </Button>
-                                )
-                              }
-                              {waData.sessions.length > 1 && (
-                                <Button size="sm" variant="ghost"
-                                  className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                  onClick={() => { if (confirm("حذف هذا الحساب؟")) deleteSessionMutation.mutate(sess.id); }}
-                                  disabled={deleteSessionMutation.isPending}
-                                  data-testid={`button-delete-session-${sess.id}`}>
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </CardContent>
-                    </Card>
-                  )}
-
+                <div className="space-y-4">
                   {/* QR / Pairing / Status card */}
                   <Card>
                     <CardHeader className="pb-2 text-center">
