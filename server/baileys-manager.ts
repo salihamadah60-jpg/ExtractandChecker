@@ -431,6 +431,8 @@ class BaileysManager extends EventEmitter {
     session: ReturnType<typeof linkStore.startSession>
   ): Promise<void> {
     const BATCH_SIZE = 1000;
+    const MAX_RATE_RETRIES = 5;
+    let consecutiveRateLimits = 0;
 
     for (let i = 0; i < session.links.length; i++) {
       const result = session.results[i];
@@ -446,53 +448,87 @@ class BaileysManager extends EventEmitter {
       }
 
       const link = session.links[i];
+      let retryCount = 0;
+      let processed = false;
 
-      try {
-        const groupMatch = link.match(/chat\.whatsapp\.com\/([A-Za-z0-9]+)/);
-        const phoneMatch =
-          link.match(/wa\.me\/([\d+]+)/) ?? link.match(/phone=([\d+]+)/);
+      while (!processed) {
+        try {
+          const groupMatch = link.match(/chat\.whatsapp\.com\/([A-Za-z0-9]+)/);
+          const phoneMatch =
+            link.match(/wa\.me\/([\d+]+)/) ?? link.match(/phone=([\d+]+)/);
 
-        const t0 = Date.now();
-        if (groupMatch) {
-          const checkResult = await this.checkGroupLink(groupMatch[1]);
-          const elapsed = Date.now() - t0;
-          result.status = checkResult.status;
-          result.name = checkResult.name;
-          result.members = checkResult.members;
-          result.description = checkResult.description;
-          result.info =
-            result.status === "valid"
-              ? "مجموعة نشطة"
-              : "الرابط منتهٍ أو غير موجود";
-          console.log(
-            `[Check] ${result.status.toUpperCase()} | ${elapsed}ms | ${link}${result.name ? ` | ${result.name}` : ""}${result.members !== undefined ? ` | ${result.members} عضو` : ""}`
-          );
-          // Real-time description link injection
-          if (result.status === "valid" && result.description) {
-            const injected = linkStore.injectDescriptionLinks(result.description, session);
-            if (injected > 0) {
-              console.log(`[Check] Injected ${injected} new links from description of "${result.name}"`);
+          const t0 = Date.now();
+          if (groupMatch) {
+            const checkResult = await this.checkGroupLink(groupMatch[1]);
+            const elapsed = Date.now() - t0;
+            result.status = checkResult.status;
+            result.name = checkResult.name;
+            result.members = checkResult.members;
+            result.description = checkResult.description;
+            result.info =
+              result.status === "valid"
+                ? "مجموعة نشطة"
+                : "الرابط منتهٍ أو غير موجود";
+            console.log(
+              `[Check] ${result.status.toUpperCase()} | ${elapsed}ms | ${link}${result.name ? ` | ${result.name}` : ""}${result.members !== undefined ? ` | ${result.members} عضو` : ""}`
+            );
+            if (result.status === "valid" && result.description) {
+              const injected = linkStore.injectDescriptionLinks(result.description, session);
+              if (injected > 0) {
+                console.log(`[Check] Injected ${injected} new links from description of "${result.name}"`);
+              }
             }
+            consecutiveRateLimits = 0;
+          } else if (phoneMatch) {
+            result.status = await this.checkPhoneNumber(
+              phoneMatch[1].replace(/\D/g, "")
+            );
+            const elapsed = Date.now() - t0;
+            result.info =
+              result.status === "valid"
+                ? "رقم مسجل في واتساب"
+                : "رقم غير مسجل";
+            console.log(`[Check] ${result.status.toUpperCase()} | ${elapsed}ms | ${link}`);
+            consecutiveRateLimits = 0;
+          } else {
+            result.status = "error";
+            result.info = "صيغة رابط غير معروفة";
+            console.log(`[Check] ERROR | unknown format | ${link}`);
+            consecutiveRateLimits = 0;
           }
-        } else if (phoneMatch) {
-          result.status = await this.checkPhoneNumber(
-            phoneMatch[1].replace(/\D/g, "")
-          );
-          const elapsed = Date.now() - t0;
-          result.info =
-            result.status === "valid"
-              ? "رقم مسجل في واتساب"
-              : "رقم غير مسجل";
-          console.log(`[Check] ${result.status.toUpperCase()} | ${elapsed}ms | ${link}`);
-        } else {
-          result.status = "error";
-          result.info = "صيغة رابط غير معروفة";
-          console.log(`[Check] ERROR | unknown format | ${link}`);
+          processed = true;
+        } catch (err: any) {
+          const msg = (err?.message ?? "").toLowerCase();
+          const isRateLimit =
+            msg.includes("rate-overlimit") ||
+            msg.includes("rate overlimit") ||
+            msg.includes("too many") ||
+            msg.includes("429");
+
+          if (isRateLimit && retryCount < MAX_RATE_RETRIES) {
+            retryCount++;
+            consecutiveRateLimits++;
+            // Exponential backoff: 15s → 27s → 49s → 88s → 158s
+            const backoffMs = Math.min(15000 * Math.pow(1.8, retryCount - 1), 160000);
+            console.log(
+              `[Check] rate-overlimit | retry ${retryCount}/${MAX_RATE_RETRIES} | waiting ${Math.round(backoffMs / 1000)}s | ${link}`
+            );
+            // Extra cooldown every 3 consecutive rate limits
+            if (consecutiveRateLimits >= 3) {
+              console.log(`[Check] ${consecutiveRateLimits} consecutive rate limits — cooling down 90s`);
+              await new Promise((r) => setTimeout(r, 90_000));
+              consecutiveRateLimits = 0;
+            } else {
+              await new Promise((r) => setTimeout(r, backoffMs));
+            }
+          } else {
+            result.status = "error";
+            result.info = isRateLimit ? "تجاوز حد المعدل — أعد المحاولة لاحقاً" : (err.message ?? "خطأ في الفحص");
+            console.log(`[Check] ERROR | ${err.message} | ${link}`);
+            if (!isRateLimit) consecutiveRateLimits = 0;
+            processed = true;
+          }
         }
-      } catch (err: any) {
-        result.status = "error";
-        result.info = err.message ?? "خطأ في الفحص";
-        console.log(`[Check] ERROR | ${err.message} | ${link}`);
       }
 
       session.progress = session.results.filter((r) => r.status !== "pending").length;
@@ -506,8 +542,6 @@ class BaileysManager extends EventEmitter {
         if (!session.completedBatches.includes(batchNum)) {
           const batchStart = (batchNum - 1) * BATCH_SIZE;
           const batchEnd = batchNum * BATCH_SIZE;
-          // Get all results up to this point (not just this batch window,
-          // in case some were already checked before a resume)
           const batchResults = session.results
             .filter((r) => r.status !== "pending")
             .slice(batchStart, batchEnd);
@@ -517,7 +551,11 @@ class BaileysManager extends EventEmitter {
       }
 
       if (i < session.links.length - 1) {
-        const delay = 200 + Math.random() * 400;
+        // Longer base delay to stay well within WhatsApp rate limits
+        // When rate-limiting has been hit, use even slower pace
+        const baseDelay = consecutiveRateLimits > 0 ? 3500 : 1500;
+        const jitter = consecutiveRateLimits > 0 ? 2500 : 1000;
+        const delay = baseDelay + Math.random() * jitter;
         await new Promise((r) => setTimeout(r, delay));
       }
     }

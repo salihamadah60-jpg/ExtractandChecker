@@ -497,6 +497,49 @@ export async function registerRoutes(
     }
   });
 
+  // ── Fresh upload: reset session, extract new file + inject previous desc links ─
+  app.post("/api/upload-fresh", upload.single("file"), async (req: any, res: any) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "لم يتم إرسال ملف" });
+
+      // Capture description links from current session BEFORE reset
+      const currentSummary = linkStore.getFilteredSummary();
+      const descLinks = currentSummary.descriptionLinks.filter(
+        (l) => l.includes("chat.whatsapp.com") || l.includes("wa.me")
+      );
+
+      const [htmlResult, textResult] = await Promise.all([
+        mammoth.convertToHtml({ buffer: req.file.buffer }),
+        mammoth.extractRawText({ buffer: req.file.buffer }),
+      ]);
+      const extracted = extractLinks(textResult.value, htmlResult.value);
+      if (!extracted.whatsapp.length && !extracted.telegram.length)
+        return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
+
+      // Merge description links (deduplicated)
+      const waSet = new Set(extracted.whatsapp);
+      const addedDesc: string[] = [];
+      for (const l of descLinks) {
+        if (!waSet.has(l)) { waSet.add(l); addedDesc.push(l); }
+      }
+      const finalLinks = { whatsapp: [...waSet], telegram: extracted.telegram };
+
+      // Full reset, then set new links
+      linkStore.fullReset();
+      linkStore.setExtracted(finalLinks);
+      linkStore.saveLinksToFile(req.file.originalname, finalLinks).catch(console.error);
+
+      res.json({
+        success: true,
+        whatsapp: finalLinks.whatsapp.length,
+        telegram: finalLinks.telegram.length,
+        descriptionLinksAdded: addedDesc.length,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? "خطأ في معالجة الملف" });
+    }
+  });
+
   // ── Start HTTP link check (no login required) ──────────────────────────────
   app.post("/api/check-http", async (_req, res) => {
     const links = linkStore.extractedLinks.whatsapp;
@@ -650,6 +693,17 @@ export async function registerRoutes(
     const buf = await buildAdsDocx(ads);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.setHeader("Content-Disposition", `attachment; filename="ads-groups.docx"`);
+    res.send(buf);
+  });
+
+  // ── Download description links as DOCX ────────────────────────────────────
+  app.get("/api/whatsapp/download-description-links", async (_req, res) => {
+    const { descriptionLinks } = linkStore.getFilteredSummary();
+    if (!descriptionLinks.length)
+      return res.status(404).json({ error: "لا توجد روابط مستخرجة من الأوصاف" });
+    const buf = await buildDocx("روابط من أوصاف المجموعات", descriptionLinks);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="description-links.docx"`);
     res.send(buf);
   });
 

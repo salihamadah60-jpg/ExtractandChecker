@@ -75,6 +75,12 @@ interface NewRoundRes {
   skipped: number;
   total: number;
 }
+interface FreshUploadRes {
+  success: boolean;
+  whatsapp: number;
+  telegram: number;
+  descriptionLinksAdded: number;
+}
 interface PreviousResultsRes {
   hasPreviousSession: boolean;
   extractedWA?: number;
@@ -118,13 +124,16 @@ export default function Home() {
 
   const [isDragging, setIsDragging] = useState(false);
   const [isNewRoundDragging, setIsNewRoundDragging] = useState(false);
+  const [isFreshDragging, setIsFreshDragging] = useState(false);
   const [newRoundData, setNewRoundData] = useState<NewRoundRes | null>(null);
+  const [showFreshUpload, setShowFreshUpload] = useState(false);
   // Extra options panel state
   const [showExtraPanel, setShowExtraPanel] = useState(false);
   const [extraPanelMode, setExtraPanelMode] = useState<"upload" | "join" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const newRoundFileRef = useRef<HTMLInputElement>(null);
   const extraUploadRef = useRef<HTMLInputElement>(null);
+  const freshUploadRef = useRef<HTMLInputElement>(null);
 
   const { data: waData, refetch: refetchWA } = useQuery<WAStatusRes>({
     queryKey: ["/api/whatsapp/status"],
@@ -235,6 +244,35 @@ export default function Home() {
     },
   });
 
+  const freshUploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload-fresh", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
+      return data as FreshUploadRes;
+    },
+    onSuccess: (data) => {
+      setLinkCounts({ whatsapp: data.whatsapp, telegram: data.telegram });
+      setShowFreshUpload(false);
+      setShowExtraPanel(false);
+      setExtraPanelMode(null);
+      qc.invalidateQueries({ queryKey: ["/api/previous-results"] });
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] });
+      const descMsg = data.descriptionLinksAdded > 0 ? ` (+ ${data.descriptionLinksAdded} من الأوصاف)` : "";
+      toast({ title: `تم استخراج ${data.whatsapp} رابط واتساب${descMsg}` });
+      if (waStatus === "connected") {
+        checkMutation.mutate();
+      } else {
+        setStep("links");
+      }
+    },
+    onError: (err: any) => {
+      toast({ title: "خطأ", description: err.message, variant: "destructive" });
+    },
+  });
+
   const connectQRMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/connect", {}),
     onSuccess: () => { setStep("connect"); setConnectMode("qr"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
@@ -328,6 +366,14 @@ export default function Home() {
     }
     newRoundUploadMutation.mutate(file);
   }, [newRoundUploadMutation]);
+
+  const handleFreshFile = useCallback((file: File) => {
+    if (!file.name.match(/\.docx?$/i)) {
+      toast({ title: "خطأ", description: "يجب أن يكون الملف بصيغة DOCX", variant: "destructive" });
+      return;
+    }
+    freshUploadMutation.mutate(file);
+  }, [freshUploadMutation]);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setIsDragging(false);
@@ -926,7 +972,7 @@ export default function Home() {
               </Card>
             </div>
 
-            {/* Description links info */}
+            {/* Description links info + download */}
             {filteredSummary && filteredSummary.descriptionLinks > 0 && (
               <Card className="border-blue-200 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-900/10">
                 <CardContent className="pt-4 flex items-center gap-3">
@@ -935,9 +981,15 @@ export default function Home() {
                   </div>
                   <div className="flex-1">
                     <p className="text-sm font-medium">روابط من الأوصاف</p>
-                    <p className="text-xs text-muted-foreground">تم استخراج {filteredSummary.descriptionLinks} رابط من أوصاف المجموعات — يمكن إضافتها للجولة التالية</p>
+                    <p className="text-xs text-muted-foreground">تم استخراج {filteredSummary.descriptionLinks} رابط من أوصاف المجموعات</p>
                   </div>
-                  <Badge>{filteredSummary.descriptionLinks}</Badge>
+                  <Badge className="ml-1">{filteredSummary.descriptionLinks}</Badge>
+                  <Button size="sm" variant="outline" className="flex-shrink-0"
+                    onClick={() => window.open("/api/whatsapp/download-description-links", "_blank")}
+                    data-testid="button-download-description-links">
+                    <Download className="w-3.5 h-3.5 ml-1.5" />
+                    تحميل
+                  </Button>
                 </CardContent>
               </Card>
             )}
@@ -982,20 +1034,66 @@ export default function Home() {
                 <span>ملف الإعلانات</span>
               </Button>
               <Button variant="outline"
-                onClick={() => setStep("upload")}
-                className="flex-col h-16 gap-1 text-xs"
+                onClick={() => { setShowFreshUpload(!showFreshUpload); setShowExtraPanel(false); }}
+                className={`flex-col h-16 gap-1 text-xs ${showFreshUpload ? "border-primary text-primary bg-primary/5" : ""}`}
                 data-testid="button-new-file-upload">
                 <Upload className="w-4 h-4" />
                 <span>ملف جديد</span>
               </Button>
               <Button variant="outline"
-                onClick={() => { setShowExtraPanel(!showExtraPanel && extraPanelMode !== null ? false : true); setExtraPanelMode(showExtraPanel && extraPanelMode !== null ? null : extraPanelMode ?? "join"); }}
+                onClick={() => { setShowExtraPanel(!showExtraPanel && extraPanelMode !== null ? false : true); setExtraPanelMode(showExtraPanel && extraPanelMode !== null ? null : extraPanelMode ?? "join"); setShowFreshUpload(false); }}
                 className={`flex-col h-16 gap-1 text-xs ${showExtraPanel ? "border-primary text-primary bg-primary/5" : ""}`}
                 data-testid="button-extra-options">
                 {showExtraPanel && extraPanelMode !== null ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 <span>خيارات إضافية</span>
               </Button>
             </div>
+
+            {/* ── Fresh upload inline panel ── */}
+            {showFreshUpload && (
+              <Card className="border-primary/40 bg-primary/5">
+                <CardContent className="pt-4 pb-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold flex items-center gap-2">
+                      <Upload className="w-4 h-4 text-primary" />
+                      رفع ملف جديد — جلسة منفصلة
+                    </p>
+                    <Button size="sm" variant="ghost" onClick={() => setShowFreshUpload(false)} className="h-7 px-2 text-xs">إغلاق</Button>
+                  </div>
+                  {filteredSummary && filteredSummary.descriptionLinks > 0 && (
+                    <div className="flex items-center gap-2 text-xs bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-2">
+                      <Link2 className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                      <span className="text-blue-700 dark:text-blue-300">سيتم تلقائياً إضافة {filteredSummary.descriptionLinks} رابط من أوصاف الجلسة الحالية للملف الجديد</span>
+                    </div>
+                  )}
+                  <div
+                    className={`border-2 border-dashed rounded-lg p-5 flex flex-col items-center gap-3 cursor-pointer transition-colors ${isFreshDragging ? "border-primary bg-primary/10" : "border-border hover:border-primary/40"}`}
+                    onDragOver={(e) => { e.preventDefault(); setIsFreshDragging(true); }}
+                    onDragLeave={() => setIsFreshDragging(false)}
+                    onDrop={(e) => { e.preventDefault(); setIsFreshDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFreshFile(f); }}
+                    onClick={() => freshUploadRef.current?.click()}
+                    data-testid="dropzone-fresh">
+                    {freshUploadMutation.isPending ? (
+                      <><Loader2 className="w-7 h-7 text-primary animate-spin" /><p className="text-sm text-muted-foreground">جاري المعالجة...</p></>
+                    ) : (
+                      <>
+                        <FolderOpen className={`w-7 h-7 ${isFreshDragging ? "text-primary" : "text-muted-foreground"}`} />
+                        <p className="text-sm font-medium">اسحب ملف DOCX هنا أو اضغط للاختيار</p>
+                      </>
+                    )}
+                    <Button variant="outline" size="sm" disabled={freshUploadMutation.isPending}
+                      onClick={(e) => { e.stopPropagation(); freshUploadRef.current?.click(); }}
+                      data-testid="button-select-fresh-file">
+                      <FileText className="w-3.5 h-3.5 ml-1.5" />اختيار ملف
+                    </Button>
+                    <input ref={freshUploadRef} type="file" accept=".docx,.doc" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFreshFile(f); e.target.value = ""; }}
+                      data-testid="input-fresh-file" />
+                  </div>
+                  <p className="text-xs text-muted-foreground text-center">ستُمسح جميع نتائج الجلسة الحالية ويبدأ فحص جديد مستقل</p>
+                </CardContent>
+              </Card>
+            )}
 
             {/* ── Extra options panel ── */}
             {showExtraPanel && (
@@ -1004,14 +1102,14 @@ export default function Home() {
                   {/* Choice row */}
                   <div className="grid grid-cols-2 gap-3">
                     <button
-                      className="border rounded-lg p-3 text-right transition-colors border-border hover:border-primary/40"
-                      onClick={() => setStep("upload")}
+                      className={`border rounded-lg p-3 text-right transition-colors ${extraPanelMode === "upload" ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
+                      onClick={() => setExtraPanelMode(extraPanelMode === "upload" ? "join" : "upload")}
                       data-testid="option-upload">
                       <div className="flex items-center gap-2 mb-1">
                         <FolderOpen className="w-4 h-4 text-primary flex-shrink-0" />
-                        <span className="text-sm font-medium">رفع ملف جديد</span>
+                        <span className="text-sm font-medium">رفع ملف جديد (جولة)</span>
                       </div>
-                      <p className="text-xs text-muted-foreground">ملف DOCX جديد — تبدأ جلسة منفصلة من الصفر</p>
+                      <p className="text-xs text-muted-foreground">روابط جديدة — يُزيل المكررة تلقائياً</p>
                     </button>
                     <button
                       className={`border rounded-lg p-3 text-right transition-colors ${extraPanelMode === "join" ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
