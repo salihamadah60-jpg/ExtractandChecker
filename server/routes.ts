@@ -406,6 +406,22 @@ export async function registerRoutes(
     }
   });
 
+  // ── Pause / Resume / Stop link check ──────────────────────────────────────
+  app.post("/api/whatsapp/check/pause", (_req, res) => {
+    baileysManager.pauseCheck();
+    res.json({ success: true });
+  });
+
+  app.post("/api/whatsapp/check/resume", (_req, res) => {
+    baileysManager.resumeCheck();
+    res.json({ success: true });
+  });
+
+  app.post("/api/whatsapp/check/stop", (_req, res) => {
+    baileysManager.stopCheck();
+    res.json({ success: true });
+  });
+
   // ── Start joining groups ─────────────────────────────────────────────────
   app.post("/api/whatsapp/join-groups", async (_req, res) => {
     try {

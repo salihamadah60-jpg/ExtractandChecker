@@ -64,7 +64,7 @@ export interface CheckSession {
   results: CheckResult[];
   progress: number;
   total: number;
-  status: "idle" | "running" | "done" | "error";
+  status: "idle" | "running" | "done" | "error" | "paused";
   startedAt: string;
   completedAt?: string;
   completedBatches: number[];   // batch numbers (1-based) whose files are saved

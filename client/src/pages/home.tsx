@@ -13,6 +13,7 @@ import {
   Link2, QrCode, Hash, ArrowRight, ArrowLeft, Users, Megaphone,
   FolderOpen, PlusCircle, FileJson, History, ChevronDown,
   ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
+  Pause, Play, Square, Menu, X, MessageCircle, Send,
 } from "lucide-react";
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
@@ -49,7 +50,7 @@ interface CheckSession {
   results?: CheckResult[];
   progress: number;
   total: number;
-  status: "idle" | "running" | "done" | "error";
+  status: "idle" | "running" | "done" | "error" | "paused";
   startedAt: string;
   completedAt?: string;
   completedBatches: number[];
@@ -149,6 +150,8 @@ export default function Home() {
   // Extra options panel state
   const [showExtraPanel, setShowExtraPanel] = useState(false);
   const [extraPanelMode, setExtraPanelMode] = useState<"upload" | "join" | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showJoinSidePanel, setShowJoinSidePanel] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const newRoundFileRef = useRef<HTMLInputElement>(null);
   const extraUploadRef = useRef<HTMLInputElement>(null);
@@ -316,6 +319,33 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
+  const disconnectSessionMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/sessions/${id}/disconnect`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const pauseCheckMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/check/pause", {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/whatsapp/progress"] }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const resumeCheckMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/check/resume", {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/whatsapp/progress"] }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const stopCheckMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/check/stop", {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/progress"] });
+      setTimeout(() => { setStep("results"); refetchSummary(); }, 1500);
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   const connectQRMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/connect", {}),
     onSuccess: () => { setIsConnecting(true); setConnectMode("qr"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
@@ -468,6 +498,185 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background" dir="rtl">
+
+      {/* ── Fixed sidebar toggle button ── */}
+      <button
+        className="fixed bottom-6 left-6 z-50 w-14 h-14 bg-primary text-primary-foreground rounded-2xl shadow-xl flex items-center justify-center hover:bg-primary/90 active:scale-95 transition-all"
+        onClick={() => setSidebarOpen(o => !o)}
+        data-testid="button-sidebar-toggle"
+      >
+        {sidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+      </button>
+
+      {/* ── Backdrop ── */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* ── Side panel (physical left, slides in from left) ── */}
+      <aside className={`fixed left-0 top-0 h-full w-72 z-50 bg-background border-r shadow-2xl overflow-y-auto transform transition-transform duration-300 ease-in-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`} dir="rtl">
+        <div className="p-4 space-y-5">
+          {/* Panel header */}
+          <div className="flex items-center justify-between pt-2">
+            <h2 className="font-bold text-base">القائمة الجانبية</h2>
+            <Button size="sm" variant="ghost" className="h-8 w-8 p-0 rounded-full" onClick={() => setSidebarOpen(false)}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+
+          {/* ── إدارة الجلسات ── */}
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2.5 flex items-center gap-1.5">
+              <SiWhatsapp className="w-3.5 h-3.5 text-primary" />إدارة الجلسات
+            </p>
+            <div className="space-y-1.5">
+              {waData?.sessions && waData.sessions.length > 0 ? waData.sessions.map((sess) => {
+                const sLabel = sess.status === "connected" ? "متصل" : sess.status === "connecting" ? "جاري الاتصال..." : sess.status === "qr_ready" ? "في انتظار QR" : sess.status === "pairing" ? "جاري الربط..." : sess.status === "auth_failed" ? "فشل التحقق" : "غير متصل";
+                return (
+                  <div key={sess.id} className={`flex items-center gap-2 p-2 rounded-lg border transition-colors ${sess.isActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"}`}>
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${sess.status === "connected" ? "bg-primary/15" : "bg-muted"}`}>
+                      <SiWhatsapp className={`w-3.5 h-3.5 ${sess.status === "connected" ? "text-primary" : "text-muted-foreground"}`} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium truncate leading-tight">{sess.displayName}</p>
+                      <p className="text-[10px] text-muted-foreground">{sLabel}</p>
+                    </div>
+                    <div className="flex items-center gap-0.5 flex-shrink-0">
+                      {!sess.isActive ? (
+                        <Button size="sm" variant="ghost" className="h-6 w-6 p-0 hover:bg-primary/10" title="تفعيل"
+                          onClick={() => activateSessionMutation.mutate(sess.id)}
+                          disabled={activateSessionMutation.isPending}
+                          data-testid={`sidebar-activate-${sess.id}`}>
+                          <Play className="w-3 h-3 text-primary" />
+                        </Button>
+                      ) : (
+                        <Badge variant="default" className="text-[10px] h-5 px-1.5">نشط</Badge>
+                      )}
+                      {sess.status === "connected" && (
+                        <Button size="sm" variant="ghost" className="h-6 w-6 p-0 hover:bg-orange-50 dark:hover:bg-orange-900/20" title="قطع الاتصال"
+                          onClick={() => disconnectSessionMutation.mutate(sess.id)}
+                          disabled={disconnectSessionMutation.isPending}
+                          data-testid={`sidebar-disconnect-${sess.id}`}>
+                          <LogOut className="w-3 h-3 text-orange-500" />
+                        </Button>
+                      )}
+                      {waData.sessions.length > 1 && (
+                        <Button size="sm" variant="ghost" className="h-6 w-6 p-0 hover:bg-destructive/10" title="حذف"
+                          onClick={() => { if (confirm("حذف هذا الحساب؟")) deleteSessionMutation.mutate(sess.id); }}
+                          disabled={deleteSessionMutation.isPending}
+                          data-testid={`sidebar-delete-${sess.id}`}>
+                          <Trash2 className="w-3 h-3 text-destructive" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              }) : (
+                <p className="text-xs text-muted-foreground text-center py-2">لا توجد جلسات بعد</p>
+              )}
+              <Button size="sm" variant="outline" className="w-full h-8 text-xs gap-1.5 mt-1"
+                onClick={() => createSessionMutation.mutate()}
+                disabled={createSessionMutation.isPending}
+                data-testid="sidebar-add-session">
+                {createSessionMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <UserPlus className="w-3 h-3" />}
+                أضف جلسة
+              </Button>
+            </div>
+          </div>
+
+          <hr className="border-border" />
+
+          {/* ── الإجراءات ── */}
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2.5">الإجراءات</p>
+            <div className="space-y-2">
+
+              {/* الانضمام إلى المجموعات */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showJoinSidePanel ? "border-primary bg-primary/5" : ""}`}
+                onClick={() => setShowJoinSidePanel(o => !o)}
+                data-testid="sidebar-join-groups-toggle">
+                <UserPlus className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">الانضمام إلى المجموعات</span>
+                {showJoinSidePanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+
+              {showJoinSidePanel && (
+                <div className="border border-primary/20 rounded-lg p-3 space-y-3 bg-primary/5">
+                  {joinSession?.status === "running" && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium flex items-center gap-1.5">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />جاري الانضمام...
+                        </span>
+                        <Badge variant="outline" className="text-xs">{joinSession.progress}/{joinSession.total}</Badge>
+                      </div>
+                      <Progress value={joinPct} className="h-1.5" />
+                      <div className="grid grid-cols-2 gap-2 text-center">
+                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-2">
+                          <p className="font-bold text-sm text-green-600">{joinSession.joined}</p>
+                          <p className="text-[10px] text-muted-foreground">ناجح</p>
+                        </div>
+                        <div className="bg-red-50 dark:bg-red-900/20 rounded p-2">
+                          <p className="font-bold text-sm text-red-600">{joinSession.failed}</p>
+                          <p className="text-[10px] text-muted-foreground">فشل</p>
+                        </div>
+                      </div>
+                      {joinSession.currentLink && <p className="text-[10px] text-muted-foreground font-mono truncate bg-muted rounded px-2 py-1">{joinSession.currentLink}</p>}
+                    </div>
+                  )}
+                  {joinSession?.status === "done" && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5 text-xs bg-green-50 dark:bg-green-900/20 rounded p-2 border border-green-200 dark:border-green-800">
+                        <CheckCheck className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
+                        <span className="text-green-700 dark:text-green-400 font-medium">اكتمل — {joinSession.joined} ناجح، {joinSession.failed} فشل</span>
+                      </div>
+                      <Button size="sm" variant="outline" className="w-full text-xs h-8" onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}>
+                        <Download className="w-3 h-3 ml-1" />تحميل النتائج
+                      </Button>
+                    </div>
+                  )}
+                  {joinSession?.status === "paused" && (
+                    <div className="flex items-center gap-1.5 text-xs bg-orange-50 dark:bg-orange-900/20 rounded p-2 border border-orange-200 dark:border-orange-800">
+                      <AlertCircle className="w-3.5 h-3.5 text-orange-600 flex-shrink-0" />
+                      <span className="text-orange-700 dark:text-orange-400">متوقف — {joinSession.joined} ناجح من {joinSession.total}</span>
+                    </div>
+                  )}
+                  <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
+                    <Clock className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                    <span>تأخير 2–5 ث بين انضمام، ودقيقة راحة كل 30 مجموعة</span>
+                  </div>
+                  {(!joinSession || joinSession.status === "paused" || joinSession.status === "done") && (
+                    <Button size="sm" className="w-full text-xs h-8"
+                      onClick={() => joinGroupsMutation.mutate()}
+                      disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validCount}
+                      data-testid="sidebar-start-join">
+                      {joinGroupsMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <UserPlus className="w-3.5 h-3.5 ml-1" />}
+                      {joinSession?.status === "done" ? "إعادة الانضمام" : joinSession?.status === "paused" ? "استئناف" : "بدء الانضمام"}
+                    </Button>
+                  )}
+                  {waStatus !== "connected" && <p className="text-[10px] text-destructive text-center">واتساب غير متصل</p>}
+                </div>
+              )}
+
+              {/* قرأة الرسائل من المجموعات */}
+              <Button variant="outline" className="w-full justify-start gap-2 h-10 opacity-60" disabled data-testid="sidebar-read-messages">
+                <MessageCircle className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">قرأة الرسائل من المجموعات</span>
+                <Badge variant="secondary" className="text-[10px] h-4 px-1.5">قريباً</Badge>
+              </Button>
+
+              {/* نشر */}
+              <Button variant="outline" className="w-full justify-start gap-2 h-10 opacity-60" disabled data-testid="sidebar-publish">
+                <Send className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">نشر</span>
+                <Badge variant="secondary" className="text-[10px] h-4 px-1.5">قريباً</Badge>
+              </Button>
+
+            </div>
+          </div>
+        </div>
+      </aside>
+
       {/* Header */}
       <header className="sticky top-0 z-50 border-b bg-card/90 backdrop-blur-md">
         <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
@@ -987,8 +1196,8 @@ export default function Home() {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
                   <CardTitle className="flex items-center gap-2 text-base">
-                    {session.status === "running" ? <Loader2 className="w-5 h-5 text-primary animate-spin" /> : <CheckCircle2 className="w-5 h-5 text-primary" />}
-                    {session.status === "running" ? "جاري فحص الروابط..." : "اكتمل الفحص"}
+                    {session.status === "running" ? <Loader2 className="w-5 h-5 text-primary animate-spin" /> : session.status === "paused" ? <Pause className="w-5 h-5 text-orange-500" /> : <CheckCircle2 className="w-5 h-5 text-primary" />}
+                    {session.status === "running" ? "جاري فحص الروابط..." : session.status === "paused" ? "الفحص متوقف مؤقتاً" : "اكتمل الفحص"}
                   </CardTitle>
                   <Badge variant="outline">{session.progress} / {session.total}</Badge>
                 </div>
@@ -1005,6 +1214,42 @@ export default function Home() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* ── Pause / Resume / Stop controls ── */}
+            {(session.status === "running" || session.status === "paused") && (
+              <div className="flex gap-2">
+                {session.status === "running" ? (
+                  <Button variant="outline" className="flex-1 gap-2 border-orange-300 text-orange-700 hover:bg-orange-50 dark:hover:bg-orange-900/20"
+                    onClick={() => pauseCheckMutation.mutate()}
+                    disabled={pauseCheckMutation.isPending}
+                    data-testid="button-pause-check">
+                    {pauseCheckMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pause className="w-4 h-4" />}
+                    إيقاف مؤقت
+                  </Button>
+                ) : (
+                  <Button variant="outline" className="flex-1 gap-2 border-primary text-primary hover:bg-primary/5"
+                    onClick={() => resumeCheckMutation.mutate()}
+                    disabled={resumeCheckMutation.isPending}
+                    data-testid="button-resume-check">
+                    {resumeCheckMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                    استئناف الفحص
+                  </Button>
+                )}
+                <Button variant="outline" className="flex-1 gap-2 border-destructive/50 text-destructive hover:bg-destructive/5"
+                  onClick={() => { if (confirm("إيقاف الفحص نهائياً والانتقال للنتائج؟")) stopCheckMutation.mutate(); }}
+                  disabled={stopCheckMutation.isPending}
+                  data-testid="button-stop-check">
+                  {stopCheckMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Square className="w-4 h-4" />}
+                  إيقاف نهائي
+                </Button>
+              </div>
+            )}
+            {session.status === "paused" && (
+              <div className="flex items-center gap-2 text-xs bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2">
+                <Pause className="w-3.5 h-3.5 text-orange-600 flex-shrink-0" />
+                <span className="text-orange-700 dark:text-orange-400">الفحص متوقف مؤقتاً — اضغط استئناف لمتابعة الفحص أو إيقاف نهائي للانتقال للنتائج</span>
+              </div>
+            )}
 
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm">آخر النتائج</CardTitle></CardHeader>
@@ -1163,8 +1408,8 @@ export default function Home() {
               </Card>
             )}
 
-            {/* ── 4 action buttons ── */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* ── 3 action buttons ── */}
+            <div className="grid grid-cols-3 gap-3">
               <Button variant="outline"
                 onClick={() => window.open("/api/whatsapp/download-groups", "_blank")}
                 disabled={!filteredSummary || filteredSummary.groups === 0}
@@ -1182,92 +1427,39 @@ export default function Home() {
                 <span>ملف الإعلانات</span>
               </Button>
               <Button variant="outline"
-                onClick={() => { setShowFreshUpload(!showFreshUpload); setShowExtraPanel(false); }}
-                className={`flex-col h-16 gap-1 text-xs ${showFreshUpload ? "border-primary text-primary bg-primary/5" : ""}`}
-                data-testid="button-new-file-upload">
-                <Upload className="w-4 h-4" />
-                <span>ملف جديد</span>
-              </Button>
-              <Button variant="outline"
-                onClick={() => { setShowExtraPanel(!showExtraPanel && extraPanelMode !== null ? false : true); setExtraPanelMode(showExtraPanel && extraPanelMode !== null ? null : extraPanelMode ?? "join"); setShowFreshUpload(false); }}
+                onClick={() => { setShowExtraPanel(o => !o); if (!showExtraPanel) setExtraPanelMode("upload"); setShowFreshUpload(false); }}
                 className={`flex-col h-16 gap-1 text-xs ${showExtraPanel ? "border-primary text-primary bg-primary/5" : ""}`}
-                data-testid="button-extra-options">
-                {showExtraPanel && extraPanelMode !== null ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                <span>خيارات إضافية</span>
+                data-testid="button-upload-new-file">
+                {showExtraPanel ? <ChevronUp className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
+                <span>رفع ملف جديد</span>
               </Button>
             </div>
 
-            {/* ── Fresh upload inline panel ── */}
-            {showFreshUpload && (
-              <Card className="border-primary/40 bg-primary/5">
-                <CardContent className="pt-4 pb-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold flex items-center gap-2">
-                      <Upload className="w-4 h-4 text-primary" />
-                      رفع ملف جديد — جلسة منفصلة
-                    </p>
-                    <Button size="sm" variant="ghost" onClick={() => setShowFreshUpload(false)} className="h-7 px-2 text-xs">إغلاق</Button>
-                  </div>
-                  {filteredSummary && filteredSummary.descriptionLinks > 0 && (
-                    <div className="flex items-center gap-2 text-xs bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-2">
-                      <Link2 className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
-                      <span className="text-blue-700 dark:text-blue-300">سيتم تلقائياً إضافة {filteredSummary.descriptionLinks} رابط من أوصاف الجلسة الحالية للملف الجديد</span>
-                    </div>
-                  )}
-                  <div
-                    className={`border-2 border-dashed rounded-lg p-5 flex flex-col items-center gap-3 cursor-pointer transition-colors ${isFreshDragging ? "border-primary bg-primary/10" : "border-border hover:border-primary/40"}`}
-                    onDragOver={(e) => { e.preventDefault(); setIsFreshDragging(true); }}
-                    onDragLeave={() => setIsFreshDragging(false)}
-                    onDrop={(e) => { e.preventDefault(); setIsFreshDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFreshFile(f); }}
-                    onClick={() => freshUploadRef.current?.click()}
-                    data-testid="dropzone-fresh">
-                    {freshUploadMutation.isPending ? (
-                      <><Loader2 className="w-7 h-7 text-primary animate-spin" /><p className="text-sm text-muted-foreground">جاري المعالجة...</p></>
-                    ) : (
-                      <>
-                        <FolderOpen className={`w-7 h-7 ${isFreshDragging ? "text-primary" : "text-muted-foreground"}`} />
-                        <p className="text-sm font-medium">اسحب ملف DOCX هنا أو اضغط للاختيار</p>
-                      </>
-                    )}
-                    <Button variant="outline" size="sm" disabled={freshUploadMutation.isPending}
-                      onClick={(e) => { e.stopPropagation(); freshUploadRef.current?.click(); }}
-                      data-testid="button-select-fresh-file">
-                      <FileText className="w-3.5 h-3.5 ml-1.5" />اختيار ملف
-                    </Button>
-                    <input ref={freshUploadRef} type="file" accept=".docx,.doc" className="hidden"
-                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFreshFile(f); e.target.value = ""; }}
-                      data-testid="input-fresh-file" />
-                  </div>
-                  <p className="text-xs text-muted-foreground text-center">ستُمسح جميع نتائج الجلسة الحالية ويبدأ فحص جديد مستقل</p>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* ── Extra options panel ── */}
+            {/* ── Extra options panel (upload only — join moved to sidebar) ── */}
             {showExtraPanel && (
               <Card className="border-primary/30">
                 <CardContent className="pt-4 pb-4 space-y-3">
-                  {/* Choice row */}
+                  {/* Choice row: new round vs fresh session */}
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       className={`border rounded-lg p-3 text-right transition-colors ${extraPanelMode === "upload" ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
-                      onClick={() => setExtraPanelMode(extraPanelMode === "upload" ? "join" : "upload")}
-                      data-testid="option-upload">
+                      onClick={() => setExtraPanelMode("upload")}
+                      data-testid="option-new-round">
                       <div className="flex items-center gap-2 mb-1">
                         <FolderOpen className="w-4 h-4 text-primary flex-shrink-0" />
-                        <span className="text-sm font-medium">رفع ملف جديد (جولة)</span>
+                        <span className="text-sm font-medium">جولة جديدة</span>
                       </div>
-                      <p className="text-xs text-muted-foreground">روابط جديدة — يُزيل المكررة تلقائياً</p>
+                      <p className="text-xs text-muted-foreground">روابط جديدة — يُزيل المكررة، يحتفظ بالجلسة</p>
                     </button>
                     <button
                       className={`border rounded-lg p-3 text-right transition-colors ${extraPanelMode === "join" ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
                       onClick={() => setExtraPanelMode("join")}
-                      data-testid="option-join">
+                      data-testid="option-fresh-session">
                       <div className="flex items-center gap-2 mb-1">
-                        <UserPlus className="w-4 h-4 text-primary flex-shrink-0" />
-                        <span className="text-sm font-medium">الانضمام للمجموعات</span>
+                        <Upload className="w-4 h-4 text-primary flex-shrink-0" />
+                        <span className="text-sm font-medium">جلسة منفصلة</span>
                       </div>
-                      <p className="text-xs text-muted-foreground">ينضم تلقائياً للمجموعات المحفوظة بتأخير 2–5 ث</p>
+                      <p className="text-xs text-muted-foreground">ملف جديد كلياً — يمسح النتائج الحالية</p>
                     </button>
                   </div>
 
@@ -1333,118 +1525,37 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* Join sub-panel */}
+                  {/* Fresh session sub-panel */}
                   {extraPanelMode === "join" && (
                     <div className="space-y-3 border-t pt-3">
-                      {/* Completed session summary (persistent across refresh) */}
-                      {joinSession?.status === "done" && (
-                        <div className="space-y-3">
-                          <div className="flex items-center gap-2 text-xs bg-green-50 dark:bg-green-900/20 rounded-lg p-3 border border-green-200 dark:border-green-800">
-                            <CheckCheck className="w-4 h-4 text-green-600 flex-shrink-0" />
-                            <span className="text-green-700 dark:text-green-400 font-medium">اكتمل الانضمام — {joinSession.joined} ناجح، {joinSession.failed} فشل</span>
-                          </div>
-                          <div className="grid grid-cols-2 gap-3">
-                            <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2.5 text-center border border-green-200 dark:border-green-800">
-                              <p className="font-bold text-xl text-green-600">{joinSession.joined}</p>
-                              <p className="text-xs text-muted-foreground mt-0.5">انضمام ناجح</p>
-                            </div>
-                            <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2.5 text-center border border-red-200 dark:border-red-800">
-                              <p className="font-bold text-xl text-red-600">{joinSession.failed}</p>
-                              <p className="text-xs text-muted-foreground mt-0.5">فشل</p>
-                            </div>
-                          </div>
-                          <Button className="w-full" variant="outline"
-                            onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}
-                            data-testid="button-download-join-results">
-                            <Download className="w-4 h-4 ml-2" />
-                            تحميل نتائج الانضمام (DOCX)
-                          </Button>
-                          <div className="flex items-start gap-2 text-xs bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3">
-                            <Clock className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
-                            <div>
-                              <p className="font-medium text-yellow-700 dark:text-yellow-400">تأخير آمن: 2–5 ثانية بين كل انضمام، ودقيقة راحة كل 30 مجموعة</p>
-                              <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validCount} مجموعة صالحة</p>
-                            </div>
-                          </div>
-                          <Button className="w-full" onClick={() => joinGroupsMutation.mutate()}
-                            disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validCount}
-                            data-testid="button-start-join">
-                            {joinGroupsMutation.isPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <UserPlus className="w-4 h-4 ml-2" />}
-                            إعادة الانضمام
-                          </Button>
-                          {waStatus !== "connected" && <p className="text-xs text-destructive text-center">واتساب غير متصل</p>}
+                      <div className="flex items-start gap-2 text-xs bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3">
+                        <AlertCircle className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-medium text-yellow-700 dark:text-yellow-400">تنبيه: جلسة منفصلة</p>
+                          <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم مسح النتائج الحالية وبدء جلسة فحص جديدة كلياً</p>
                         </div>
-                      )}
-
-                      {/* Not started / paused */}
-                      {(!joinSession || joinSession.status === "paused") && (
-                        <div className="space-y-3">
-                          {joinSession?.status === "paused" && (
-                            <div className="flex items-center gap-2 text-xs bg-orange-50 dark:bg-orange-900/20 rounded-lg p-3 border border-orange-200 dark:border-orange-800">
-                              <AlertCircle className="w-4 h-4 text-orange-600 flex-shrink-0" />
-                              <span className="text-orange-700 dark:text-orange-400">
-                                تم إيقاف الانضمام مؤقتاً — {joinSession.joined} ناجح، {joinSession.failed} فشل من أصل {joinSession.total}
-                              </span>
-                            </div>
-                          )}
-                          {joinSession?.status === "paused" && (
-                            <Button className="w-full" variant="outline"
-                              onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}
-                              data-testid="button-download-join-results-paused">
-                              <Download className="w-4 h-4 ml-2" />
-                              تحميل نتائج جزئية (DOCX)
-                            </Button>
-                          )}
-                          <div className="flex items-start gap-2 text-xs bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3">
-                            <Clock className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
-                            <div>
-                              <p className="font-medium text-yellow-700 dark:text-yellow-400">تأخير آمن: 2–5 ثانية بين كل انضمام، ودقيقة راحة كل 30 مجموعة</p>
-                              <p className="text-yellow-600 dark:text-yellow-500 mt-0.5">سيتم الانضمام إلى {validCount} مجموعة صالحة</p>
-                            </div>
-                          </div>
-                          <Button className="w-full" onClick={() => joinGroupsMutation.mutate()}
-                            disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validCount}
-                            data-testid="button-start-join">
-                            {joinGroupsMutation.isPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <UserPlus className="w-4 h-4 ml-2" />}
-                            {joinSession?.status === "paused" ? "استئناف الانضمام" : "بدء الانضمام للمجموعات"}
-                          </Button>
-                          {waStatus !== "connected" && <p className="text-xs text-destructive text-center">واتساب غير متصل</p>}
-                        </div>
-                      )}
-
-                      {/* Running */}
-                      {joinSession?.status === "running" && (
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium flex items-center gap-2">
-                              <Loader2 className="w-4 h-4 text-primary animate-spin" />
-                              جاري الانضمام...
-                            </p>
-                            <Badge variant="outline">{joinSession.progress} / {joinSession.total}</Badge>
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-xs text-muted-foreground">
-                              <span>التقدم</span><span>{joinPct}%</span>
-                            </div>
-                            <Progress value={joinPct} className="h-2" />
-                          </div>
-                          <div className="grid grid-cols-2 gap-3">
-                            <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2.5 text-center">
-                              <p className="font-bold text-lg text-green-600">{joinSession.joined}</p>
-                              <p className="text-xs text-muted-foreground">انضمام ناجح</p>
-                            </div>
-                            <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2.5 text-center">
-                              <p className="font-bold text-lg text-red-600">{joinSession.failed}</p>
-                              <p className="text-xs text-muted-foreground">فشل</p>
-                            </div>
-                          </div>
-                          {joinSession.currentLink && (
-                            <p className="text-xs text-muted-foreground font-mono truncate bg-muted rounded px-2 py-1">
-                              {joinSession.currentLink}
-                            </p>
-                          )}
-                        </div>
-                      )}
+                      </div>
+                      <div
+                        className={`border-2 border-dashed rounded-lg p-5 flex flex-col items-center gap-3 cursor-pointer transition-colors ${isFreshDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
+                        onDragOver={(e) => { e.preventDefault(); setIsFreshDragging(true); }}
+                        onDragLeave={() => setIsFreshDragging(false)}
+                        onDrop={(e) => { e.preventDefault(); setIsFreshDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFreshFile(f); }}
+                        onClick={() => freshUploadRef.current?.click()}
+                        data-testid="dropzone-fresh-session">
+                        {freshUploadMutation.isPending ? (
+                          <><Loader2 className="w-7 h-7 text-primary animate-spin" /><p className="text-sm text-muted-foreground">جاري المعالجة...</p></>
+                        ) : (
+                          <>
+                            <Upload className={`w-7 h-7 ${isFreshDragging ? "text-primary" : "text-muted-foreground"}`} />
+                            <p className="text-sm font-medium">اسحب ملف DOCX هنا</p>
+                          </>
+                        )}
+                        <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); freshUploadRef.current?.click(); }} data-testid="button-select-fresh-file">
+                          <FileText className="w-3.5 h-3.5 ml-1.5" />اختر ملفاً
+                        </Button>
+                        <input ref={freshUploadRef} type="file" accept=".docx,.doc" className="hidden"
+                          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFreshFile(f); }} data-testid="input-fresh-file-extra" />
+                      </div>
                     </div>
                   )}
                 </CardContent>

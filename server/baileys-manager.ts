@@ -57,6 +57,29 @@ class SessionsManager extends EventEmitter {
   private _activeSessionId: string | null = null;
   private _appMeta: AppMeta = { activeSessionId: null, sessions: [] };
   private _ready = false;
+  private _checkPaused = false;
+  private _checkStopped = false;
+
+  pauseCheck(): void {
+    this._checkPaused = true;
+    if (linkStore.checkSession && linkStore.checkSession.status === "running") {
+      linkStore.checkSession.status = "paused";
+      linkStore.updateProgress();
+    }
+  }
+
+  resumeCheck(): void {
+    this._checkPaused = false;
+    if (linkStore.checkSession?.status === "paused") {
+      linkStore.checkSession.status = "running";
+      linkStore.updateProgress();
+    }
+  }
+
+  stopCheck(): void {
+    this._checkStopped = true;
+    this._checkPaused = false;
+  }
 
   // ── Public accessors ────────────────────────────────────────────────────────
 
@@ -475,12 +498,16 @@ class SessionsManager extends EventEmitter {
     if (!this.isConnected()) throw new Error("واتساب غير متصل");
     const { whatsapp } = linkStore.extractedLinks;
     if (!whatsapp.length) throw new Error("لا توجد روابط واتساب للفحص");
+    this._checkPaused = false;
+    this._checkStopped = false;
     const session = linkStore.startSession(whatsapp);
     this._runChecks(session).catch(console.error);
   }
 
   async startNewRoundChecking(): Promise<void> {
     if (!this.isConnected()) throw new Error("واتساب غير متصل");
+    this._checkPaused = false;
+    this._checkStopped = false;
     const session = linkStore.startNewRoundSession();
     this._runChecks(session).catch(console.error);
   }
@@ -535,6 +562,32 @@ class SessionsManager extends EventEmitter {
     for (let i = 0; i < session.links.length; i++) {
       const result = session.results[i];
       if (result.status !== "pending") continue;
+
+      // ── Stop check ──────────────────────────────────────────────────────────
+      if (this._checkStopped) {
+        this._checkStopped = false;
+        session.status = "done";
+        session.rateLimitInfo = null;
+        session.completedAt = new Date().toISOString();
+        linkStore.updateProgress();
+        this.emit("session", session);
+        break;
+      }
+
+      // ── Pause check — wait until resumed or stopped ──────────────────────
+      while (this._checkPaused) {
+        await new Promise((r) => setTimeout(r, 500));
+        if (this._checkStopped) break;
+      }
+      if (this._checkStopped) {
+        this._checkStopped = false;
+        session.status = "done";
+        session.rateLimitInfo = null;
+        session.completedAt = new Date().toISOString();
+        linkStore.updateProgress();
+        this.emit("session", session);
+        break;
+      }
 
       if (!this.isConnected()) {
         session.status = "idle";
