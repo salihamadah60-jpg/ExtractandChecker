@@ -20,6 +20,14 @@ type WAStatus = "disconnected" | "connecting" | "qr_ready" | "pairing" | "connec
 type Step = "upload" | "links" | "connect" | "checking" | "results";
 type ConnectMode = "qr" | "pair" | "saved";
 
+interface WASessionInfo {
+  id: string;
+  displayName: string;
+  phoneNumber?: string;
+  status: WAStatus;
+  isActive: boolean;
+}
+
 interface CheckResult {
   link: string;
   status: "pending" | "valid" | "invalid" | "error";
@@ -28,6 +36,13 @@ interface CheckResult {
   members?: number;
   description?: string;
 }
+interface RateLimitInfo {
+  waitUntil: number;
+  retryCount: number;
+  backoffSec: number;
+  link: string;
+}
+
 interface CheckSession {
   id: string;
   links?: string[];
@@ -42,6 +57,7 @@ interface CheckSession {
   invalidCount?: number;
   errorCount?: number;
   recentResults?: CheckResult[];
+  rateLimitInfo?: RateLimitInfo | null;
 }
 interface JoinSession {
   status: "running" | "done" | "error" | "paused";
@@ -61,6 +77,8 @@ interface WAStatusRes {
   pairingCode: string | null;
   session: CheckSession | null;
   hasSavedSession: boolean;
+  sessions: WASessionInfo[];
+  activeSessionId: string | null;
 }
 interface FilteredSummaryRes {
   groups: number;
@@ -122,6 +140,7 @@ export default function Home() {
     try { if (phone) localStorage.setItem("wa_phone", phone); } catch {}
   }, [phone]);
 
+  const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isNewRoundDragging, setIsNewRoundDragging] = useState(false);
   const [isFreshDragging, setIsFreshDragging] = useState(false);
@@ -273,6 +292,30 @@ export default function Home() {
     },
   });
 
+  const createSessionMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/sessions", {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] });
+      toast({ title: "تم إنشاء حساب جديد", description: "اختره وابدأ الاتصال" });
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const deleteSessionMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/sessions/${id}`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] });
+      toast({ title: "تم حذف الحساب" });
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const activateSessionMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/sessions/${id}/activate`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   const connectQRMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/connect", {}),
     onSuccess: () => { setStep("connect"); setConnectMode("qr"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
@@ -350,6 +393,16 @@ export default function Home() {
       refetchSummary();
     }
   }, [session?.status, step]);
+
+  // Rate-limit countdown timer
+  useEffect(() => {
+    const rl = session?.rateLimitInfo;
+    if (!rl) { setRateLimitCountdown(0); return; }
+    const update = () => setRateLimitCountdown(Math.max(0, Math.ceil((rl.waitUntil - Date.now()) / 1000)));
+    update();
+    const timer = setInterval(update, 500);
+    return () => clearInterval(timer);
+  }, [session?.rateLimitInfo]);
 
   const handleFile = useCallback((file: File) => {
     if (!file.name.match(/\.docx?$/i)) {
@@ -756,6 +809,71 @@ export default function Home() {
         {/* ── Step: Connect ── */}
         {step === "connect" && (
           <div className="space-y-4 max-w-md mx-auto">
+
+            {/* Sessions management panel */}
+            {waData && waData.sessions && waData.sessions.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <SiWhatsapp className="w-4 h-4 text-primary" />
+                      الحسابات
+                    </CardTitle>
+                    <Button size="sm" variant="outline" className="h-7 text-xs gap-1 px-2"
+                      onClick={() => createSessionMutation.mutate()}
+                      disabled={createSessionMutation.isPending}
+                      data-testid="button-add-session">
+                      {createSessionMutation.isPending
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <UserPlus className="w-3 h-3" />}
+                      إضافة حساب
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0 space-y-1.5">
+                  {waData.sessions.map((sess) => (
+                    <div key={sess.id} className={`flex items-center gap-2.5 p-2 rounded-lg border transition-colors ${sess.isActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"}`}>
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${sess.status === "connected" ? "bg-primary/15" : "bg-muted"}`}>
+                        <SiWhatsapp className={`w-4 h-4 ${sess.status === "connected" ? "text-primary" : "text-muted-foreground"}`} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate leading-none mb-0.5">{sess.displayName}</p>
+                        <p className="text-xs text-muted-foreground">{
+                          sess.status === "connected" ? "متصل" :
+                          sess.status === "connecting" ? "جاري الاتصال..." :
+                          sess.status === "qr_ready" ? "في انتظار QR" :
+                          sess.status === "pairing" ? "جاري الربط..." :
+                          sess.status === "auth_failed" ? "فشل التحقق" : "غير متصل"
+                        }</p>
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        {sess.isActive
+                          ? <Badge variant="default" className="text-xs h-6 px-2">نشط</Badge>
+                          : (
+                            <Button size="sm" variant="outline" className="h-7 text-xs px-2"
+                              onClick={() => activateSessionMutation.mutate(sess.id)}
+                              disabled={activateSessionMutation.isPending}
+                              data-testid={`button-activate-session-${sess.id}`}>
+                              تفعيل
+                            </Button>
+                          )
+                        }
+                        {waData.sessions.length > 1 && (
+                          <Button size="sm" variant="ghost"
+                            className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={() => { if (confirm("حذف هذا الحساب؟")) deleteSessionMutation.mutate(sess.id); }}
+                            disabled={deleteSessionMutation.isPending}
+                            data-testid={`button-delete-session-${sess.id}`}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
             <Card>
               <CardHeader className="pb-2 text-center">
                 <CardTitle className="flex items-center justify-center gap-2">
@@ -835,6 +953,30 @@ export default function Home() {
         {/* ── Step: Checking ── */}
         {step === "checking" && session && (
           <div className="space-y-5">
+            {/* Rate-limit cooldown banner */}
+            {session.rateLimitInfo && rateLimitCountdown > 0 && (
+              <Card className="border-orange-300 dark:border-orange-800 bg-orange-50 dark:bg-orange-950/30">
+                <CardContent className="pt-4 pb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-orange-100 dark:bg-orange-900/40 flex items-center justify-center flex-shrink-0">
+                      <Clock className="w-5 h-5 text-orange-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-orange-700 dark:text-orange-400">تقييد المعدل — جاري الانتظار</p>
+                      <p className="text-xs text-muted-foreground">المحاولة {session.rateLimitInfo.retryCount} · الرابط: <span className="font-mono truncate">{session.rateLimitInfo.link.slice(-30)}</span></p>
+                    </div>
+                    <div className="flex-shrink-0 text-3xl font-mono font-bold text-orange-600 dark:text-orange-400 tabular-nums w-14 text-center">
+                      {rateLimitCountdown}s
+                    </div>
+                  </div>
+                  <Progress
+                    value={Math.round(Math.max(0, 1 - rateLimitCountdown / Math.max(1, session.rateLimitInfo.backoffSec)) * 100)}
+                    className="h-1.5 mt-3 bg-orange-100 dark:bg-orange-900/20 [&>div]:bg-orange-500"
+                  />
+                </CardContent>
+              </Card>
+            )}
+
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">

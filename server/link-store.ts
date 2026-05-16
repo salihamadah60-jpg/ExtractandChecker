@@ -51,6 +51,13 @@ export interface CheckResult {
   description?: string;
 }
 
+export interface RateLimitInfo {
+  waitUntil: number;   // ms timestamp when wait ends
+  retryCount: number;
+  backoffSec: number;
+  link: string;
+}
+
 export interface CheckSession {
   id: string;
   links: string[];
@@ -61,6 +68,7 @@ export interface CheckSession {
   startedAt: string;
   completedAt?: string;
   completedBatches: number[];   // batch numbers (1-based) whose files are saved
+  rateLimitInfo?: RateLimitInfo | null;
 }
 
 export interface JoinSession {
@@ -294,6 +302,18 @@ class LinkStore {
     this.uploadedFileName = "";
     this.saveToDisk().catch(console.error);
     console.log("[LinkStore] Full reset — all previous session data cleared");
+  }
+
+  // Clears only the previous check results/links (for fresh file upload).
+  // The WhatsApp connection is managed separately and is NOT affected.
+  softReset(): void {
+    this.extractedLinks = { whatsapp: [], telegram: [] };
+    this.checkSession = null;
+    this.joinSession = null;
+    this.newRoundLinks = { whatsapp: [], telegram: [] };
+    this.uploadedFileName = "";
+    this.saveToDisk().catch(console.error);
+    console.log("[LinkStore] Soft reset — link results cleared (WA session preserved)");
   }
 
   setExtracted(links: ExtractedLinks) {

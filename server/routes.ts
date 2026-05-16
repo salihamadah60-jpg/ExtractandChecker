@@ -271,6 +271,40 @@ export async function registerRoutes(
     res.send(buf);
   });
 
+  // ── Sessions management ────────────────────────────────────────────────────
+  app.get("/api/sessions", (_req, res) => {
+    res.json({ sessions: baileysManager.getSessions(), activeSessionId: baileysManager.activeSessionId });
+  });
+
+  app.post("/api/sessions", async (_req, res) => {
+    try {
+      const id = await baileysManager.createSession();
+      res.json({ success: true, id, sessions: baileysManager.getSessions() });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/sessions/:id", async (req, res) => {
+    try {
+      await baileysManager.deleteSession(req.params.id);
+      res.json({ success: true, sessions: baileysManager.getSessions() });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/sessions/:id/activate", async (req, res) => {
+    try {
+      await baileysManager.activateSession(req.params.id);
+      const hasSaved = await baileysManager.hasSavedCredentials();
+      res.json({ success: true, sessions: baileysManager.getSessions(), hasSavedSession: hasSaved });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+  });
+
+  app.post("/api/sessions/:id/disconnect", async (req, res) => {
+    try {
+      await baileysManager.disconnectSession(req.params.id);
+      res.json({ success: true, sessions: baileysManager.getSessions() });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── WhatsApp status ────────────────────────────────────────────────────────
   app.get("/api/whatsapp/status", async (_req, res) => {
     const hasSaved = await baileysManager.hasSavedCredentials();
@@ -293,6 +327,8 @@ export async function registerRoutes(
       pairingCode: baileysManager.getPairingCode(),
       session,
       hasSavedSession: hasSaved,
+      sessions: baileysManager.getSessions(),
+      activeSessionId: baileysManager.activeSessionId,
     });
   });
 
@@ -524,8 +560,8 @@ export async function registerRoutes(
       }
       const finalLinks = { whatsapp: [...waSet], telegram: extracted.telegram };
 
-      // Full reset, then set new links
-      linkStore.fullReset();
+      // Soft reset: clears previous link results only (WA session is preserved separately)
+      linkStore.softReset();
       linkStore.setExtracted(finalLinks);
       linkStore.saveLinksToFile(req.file.originalname, finalLinks).catch(console.error);
 
@@ -598,6 +634,7 @@ export async function registerRoutes(
         invalidCount,
         errorCount,
         recentResults,
+        rateLimitInfo: session.rateLimitInfo ?? null,
       },
     });
   });

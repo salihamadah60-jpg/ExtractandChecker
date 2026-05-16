@@ -38,3 +38,8 @@ externalPort = 80
 deploymentTarget = "autoscale"
 run = ["node", "./dist/index.cjs"]
 build = ["npm", "run", "build"]
+
+[userenv]
+
+[userenv.shared]
+MONGODB_URI = "mongodb+srv://Thaker:772951869Th@cluster0.mkp6hlu.mongodb.net/CheckWa_Links?retryWrites=true&w=majority"
