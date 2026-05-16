@@ -17,7 +17,7 @@ import {
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
 type WAStatus = "disconnected" | "connecting" | "qr_ready" | "pairing" | "connected" | "auth_failed";
-type Step = "upload" | "links" | "connect" | "checking" | "results";
+type Step = "upload" | "links" | "checking" | "results";
 type ConnectMode = "qr" | "pair" | "saved";
 
 interface WASessionInfo {
@@ -120,8 +120,7 @@ interface PreviousResultsRes {
 
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "رفع الملف" },
-  { key: "links", label: "الروابط" },
-  { key: "connect", label: "ربط واتساب" },
+  { key: "links", label: "الروابط والاتصال" },
   { key: "checking", label: "الفحص" },
   { key: "results", label: "النتائج" },
 ];
@@ -132,6 +131,7 @@ export default function Home() {
   const [step, setStep] = useState<Step>("upload");
   const [linkCounts, setLinkCounts] = useState({ whatsapp: 0, telegram: 0 });
   const [connectMode, setConnectMode] = useState<ConnectMode>("qr");
+  const [isConnecting, setIsConnecting] = useState(false);
   const [phone, setPhone] = useState<string>(() => {
     try { return localStorage.getItem("wa_phone") || ""; } catch { return ""; }
   });
@@ -156,7 +156,7 @@ export default function Home() {
 
   const { data: waData, refetch: refetchWA } = useQuery<WAStatusRes>({
     queryKey: ["/api/whatsapp/status"],
-    refetchInterval: step === "connect" ? 3000 : step === "checking" ? 4000 : 8000,
+    refetchInterval: (step === "links" && isConnecting) ? 3000 : step === "checking" ? 4000 : 8000,
   });
 
   const { data: progressData } = useQuery<{ session: CheckSession | null }>({
@@ -318,19 +318,19 @@ export default function Home() {
 
   const connectQRMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/connect", {}),
-    onSuccess: () => { setStep("connect"); setConnectMode("qr"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
+    onSuccess: () => { setIsConnecting(true); setConnectMode("qr"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
   const connectPairMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/pair", { phone }),
-    onSuccess: () => { setStep("connect"); setConnectMode("pair"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
+    onSuccess: () => { setIsConnecting(true); setConnectMode("pair"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
   const connectSavedMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/use-saved-session", {}),
-    onSuccess: () => { setStep("connect"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
+    onSuccess: () => { setIsConnecting(true); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
@@ -366,7 +366,7 @@ export default function Home() {
 
   const disconnectMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/disconnect", {}),
-    onSuccess: () => { setStep("links"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
+    onSuccess: () => { setIsConnecting(false); setStep("links"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
   });
 
   const clearCredsMutation = useMutation({
@@ -378,13 +378,14 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
-  // Auto-start checking when WhatsApp connects (from connect step)
+  // Auto-start checking when WhatsApp connects (from links step)
   useEffect(() => {
-    if (waStatus === "connected" && step === "connect") {
+    if (waStatus === "connected" && step === "links" && isConnecting) {
+      setIsConnecting(false);
       setStep("checking");
       checkMutation.mutate();
     }
-  }, [waStatus, step]);
+  }, [waStatus, step, isConnecting]);
 
   // Auto-advance to results when checking finishes
   useEffect(() => {
@@ -459,7 +460,6 @@ export default function Home() {
     switch (target) {
       case "upload": return true;
       case "links": return hasLinks;
-      case "connect": return linkCounts.whatsapp > 0;
       case "checking": return !!session;
       case "results": return session?.status === "done";
       default: return false;
@@ -533,7 +533,7 @@ export default function Home() {
         </div>
 
         {/* Back button */}
-        {currentStepIdx > 0 && step !== "connect" && step !== "checking" && (
+        {currentStepIdx > 0 && step !== "checking" && !(step === "links" && isConnecting) && (
           <div className="mb-4">
             <Button variant="ghost" size="sm" onClick={() => setStep(STEPS[currentStepIdx - 1].key)}
               data-testid="button-back">
@@ -675,11 +675,11 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── Step: Links preview ── */}
+        {/* ── Step: Links & Connect (merged) ── */}
         {step === "links" && (
           <div className="space-y-5">
 
-            {/* auth_failed banner — show before anything else so user knows to clear session */}
+            {/* auth_failed banner */}
             {waStatus === "auth_failed" && (
               <Card className="border-destructive/40 bg-destructive/5">
                 <CardContent className="pt-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
@@ -693,8 +693,7 @@ export default function Home() {
                     </p>
                   </div>
                   <Button
-                    variant="destructive"
-                    size="sm"
+                    variant="destructive" size="sm"
                     className="flex-shrink-0 whitespace-nowrap"
                     onClick={() => {
                       if (confirm("هل تريد حذف بيانات الجلسة القديمة؟ ستحتاج لمسح QR أو إدخال رمز ربط جديد."))
@@ -712,6 +711,7 @@ export default function Home() {
               </Card>
             )}
 
+            {/* Link count cards — always visible */}
             <div className="grid sm:grid-cols-2 gap-4">
               <Card>
                 <CardContent className="pt-5">
@@ -738,207 +738,208 @@ export default function Home() {
             </div>
 
             {linkCounts.whatsapp > 0 && (
-              <Card className="border-primary/30 bg-primary/5">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Shield className="w-5 h-5 text-primary" />فحص روابط واتساب
-                  </CardTitle>
-                  <CardDescription>اختر طريقة الاتصال للتحقق من الروابط النشطة.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* 3 connection method cards */}
-                  <div className="grid grid-cols-3 gap-2">
-                    {/* QR */}
-                    <div className={`border rounded-lg p-3 cursor-pointer transition-colors ${connectMode === "qr" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
-                      onClick={() => setConnectMode("qr")} data-testid="select-qr-mode">
-                      <div className="flex items-center gap-1.5 mb-1"><QrCode className="w-4 h-4 text-primary flex-shrink-0" /><span className="text-xs font-medium">رمز QR</span></div>
-                      <p className="text-xs text-muted-foreground leading-tight">امسح من واتساب</p>
-                    </div>
-                    {/* Pairing */}
-                    <div className={`border rounded-lg p-3 cursor-pointer transition-colors ${connectMode === "pair" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
-                      onClick={() => setConnectMode("pair")} data-testid="select-pair-mode">
-                      <div className="flex items-center gap-1.5 mb-1"><Hash className="w-4 h-4 text-primary flex-shrink-0" /><span className="text-xs font-medium">رمز الربط</span></div>
-                      <p className="text-xs text-muted-foreground leading-tight">أدخل رقم الهاتف</p>
-                    </div>
-                    {/* Saved session */}
-                    <div className={`border rounded-lg p-3 cursor-pointer transition-colors relative ${
-                      connectMode === "saved" ? "border-primary bg-primary/5" :
-                      hasSavedSession ? "border-border hover:border-primary/50" : "border-border opacity-50 cursor-not-allowed"
-                    }`}
-                      onClick={() => hasSavedSession && setConnectMode("saved")} data-testid="select-saved-mode">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <History className="w-4 h-4 text-primary flex-shrink-0" />
-                        <span className="text-xs font-medium">جلسة محفوظة</span>
-                      </div>
-                      <p className="text-xs text-muted-foreground leading-tight">
-                        {hasSavedSession ? "استخدام الجلسة المحفوظة" : "لا توجد جلسة"}
-                      </p>
-                    </div>
-                  </div>
-
-                  {connectMode === "pair" && (
-                    <Input value={phone} onChange={(e) => setPhone(e.target.value)}
-                      placeholder="966512345678 (بدون +)" className="font-mono text-sm" dir="ltr"
-                      data-testid="input-phone" />
-                  )}
-
-                  {connectMode === "saved" && hasSavedSession && (
-                    <div className="flex items-center gap-2 text-xs bg-primary/5 border border-primary/20 rounded-lg px-3 py-2">
-                      <CheckCircle2 className="w-4 h-4 text-primary flex-shrink-0" />
-                      <span className="text-foreground">جلسة واتساب محفوظة — سيتم الاتصال مباشرةً دون مسح QR</span>
-                    </div>
-                  )}
-
-                  <Button className="w-full" size="lg"
-                    onClick={handleConnectClick}
-                    disabled={isConnectPending || (connectMode === "pair" && !phone.trim()) || (connectMode === "saved" && !hasSavedSession)}
-                    data-testid="button-check-links">
-                    {isConnectPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <SiWhatsapp className="w-4 h-4 ml-2" />}
-                    فحص الروابط
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
-
-            <Button variant="ghost" size="sm" onClick={() => setStep("upload")} data-testid="button-reupload">
-              <ArrowRight className="w-4 h-4 ml-1" />رفع ملف آخر
-            </Button>
-          </div>
-        )}
-
-        {/* ── Step: Connect ── */}
-        {step === "connect" && (
-          <div className="space-y-4 max-w-md mx-auto">
-
-            {/* Sessions management panel */}
-            {waData && waData.sessions && waData.sessions.length > 0 && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <SiWhatsapp className="w-4 h-4 text-primary" />
-                      الحسابات
+              !isConnecting ? (
+                /* ── Connection method selector ── */
+                <Card className="border-primary/30 bg-primary/5">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Shield className="w-5 h-5 text-primary" />فحص روابط واتساب
                     </CardTitle>
-                    <Button size="sm" variant="outline" className="h-7 text-xs gap-1 px-2"
-                      onClick={() => createSessionMutation.mutate()}
-                      disabled={createSessionMutation.isPending}
-                      data-testid="button-add-session">
-                      {createSessionMutation.isPending
-                        ? <Loader2 className="w-3 h-3 animate-spin" />
-                        : <UserPlus className="w-3 h-3" />}
-                      إضافة حساب
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-0 space-y-1.5">
-                  {waData.sessions.map((sess) => (
-                    <div key={sess.id} className={`flex items-center gap-2.5 p-2 rounded-lg border transition-colors ${sess.isActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"}`}>
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${sess.status === "connected" ? "bg-primary/15" : "bg-muted"}`}>
-                        <SiWhatsapp className={`w-4 h-4 ${sess.status === "connected" ? "text-primary" : "text-muted-foreground"}`} />
+                    <CardDescription>اختر طريقة الاتصال للتحقق من الروابط النشطة.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className={`border rounded-lg p-3 cursor-pointer transition-colors ${connectMode === "qr" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
+                        onClick={() => setConnectMode("qr")} data-testid="select-qr-mode">
+                        <div className="flex items-center gap-1.5 mb-1"><QrCode className="w-4 h-4 text-primary flex-shrink-0" /><span className="text-xs font-medium">رمز QR</span></div>
+                        <p className="text-xs text-muted-foreground leading-tight">امسح من واتساب</p>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate leading-none mb-0.5">{sess.displayName}</p>
-                        <p className="text-xs text-muted-foreground">{
-                          sess.status === "connected" ? "متصل" :
-                          sess.status === "connecting" ? "جاري الاتصال..." :
-                          sess.status === "qr_ready" ? "في انتظار QR" :
-                          sess.status === "pairing" ? "جاري الربط..." :
-                          sess.status === "auth_failed" ? "فشل التحقق" : "غير متصل"
-                        }</p>
+                      <div className={`border rounded-lg p-3 cursor-pointer transition-colors ${connectMode === "pair" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
+                        onClick={() => setConnectMode("pair")} data-testid="select-pair-mode">
+                        <div className="flex items-center gap-1.5 mb-1"><Hash className="w-4 h-4 text-primary flex-shrink-0" /><span className="text-xs font-medium">رمز الربط</span></div>
+                        <p className="text-xs text-muted-foreground leading-tight">أدخل رقم الهاتف</p>
                       </div>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        {sess.isActive
-                          ? <Badge variant="default" className="text-xs h-6 px-2">نشط</Badge>
-                          : (
-                            <Button size="sm" variant="outline" className="h-7 text-xs px-2"
-                              onClick={() => activateSessionMutation.mutate(sess.id)}
-                              disabled={activateSessionMutation.isPending}
-                              data-testid={`button-activate-session-${sess.id}`}>
-                              تفعيل
-                            </Button>
-                          )
-                        }
-                        {waData.sessions.length > 1 && (
-                          <Button size="sm" variant="ghost"
-                            className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
-                            onClick={() => { if (confirm("حذف هذا الحساب؟")) deleteSessionMutation.mutate(sess.id); }}
-                            disabled={deleteSessionMutation.isPending}
-                            data-testid={`button-delete-session-${sess.id}`}>
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
+                      <div className={`border rounded-lg p-3 cursor-pointer transition-colors relative ${
+                        connectMode === "saved" ? "border-primary bg-primary/5" :
+                        hasSavedSession ? "border-border hover:border-primary/50" : "border-border opacity-50 cursor-not-allowed"
+                      }`}
+                        onClick={() => hasSavedSession && setConnectMode("saved")} data-testid="select-saved-mode">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <History className="w-4 h-4 text-primary flex-shrink-0" />
+                          <span className="text-xs font-medium">جلسة محفوظة</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground leading-tight">
+                          {hasSavedSession ? "استخدام الجلسة المحفوظة" : "لا توجد جلسة"}
+                        </p>
                       </div>
                     </div>
-                  ))}
-                </CardContent>
-              </Card>
+
+                    {connectMode === "pair" && (
+                      <Input value={phone} onChange={(e) => setPhone(e.target.value)}
+                        placeholder="966512345678 (بدون +)" className="font-mono text-sm" dir="ltr"
+                        data-testid="input-phone" />
+                    )}
+
+                    {connectMode === "saved" && hasSavedSession && (
+                      <div className="flex items-center gap-2 text-xs bg-primary/5 border border-primary/20 rounded-lg px-3 py-2">
+                        <CheckCircle2 className="w-4 h-4 text-primary flex-shrink-0" />
+                        <span className="text-foreground">جلسة واتساب محفوظة — سيتم الاتصال مباشرةً دون مسح QR</span>
+                      </div>
+                    )}
+
+                    <Button className="w-full" size="lg"
+                      onClick={handleConnectClick}
+                      disabled={isConnectPending || (connectMode === "pair" && !phone.trim()) || (connectMode === "saved" && !hasSavedSession)}
+                      data-testid="button-check-links">
+                      {isConnectPending ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <SiWhatsapp className="w-4 h-4 ml-2" />}
+                      فحص الروابط
+                    </Button>
+                  </CardContent>
+                </Card>
+              ) : (
+                /* ── Connecting / QR / Pairing inline UI ── */
+                <div className="space-y-4 max-w-md mx-auto w-full">
+
+                  {/* Sessions management panel */}
+                  {waData && waData.sessions && waData.sessions.length > 0 && (
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            <SiWhatsapp className="w-4 h-4 text-primary" />الحسابات
+                          </CardTitle>
+                          <Button size="sm" variant="outline" className="h-7 text-xs gap-1 px-2"
+                            onClick={() => createSessionMutation.mutate()}
+                            disabled={createSessionMutation.isPending}
+                            data-testid="button-add-session">
+                            {createSessionMutation.isPending
+                              ? <Loader2 className="w-3 h-3 animate-spin" />
+                              : <UserPlus className="w-3 h-3" />}
+                            إضافة حساب
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0 space-y-1.5">
+                        {waData.sessions.map((sess) => (
+                          <div key={sess.id} className={`flex items-center gap-2.5 p-2 rounded-lg border transition-colors ${sess.isActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"}`}>
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${sess.status === "connected" ? "bg-primary/15" : "bg-muted"}`}>
+                              <SiWhatsapp className={`w-4 h-4 ${sess.status === "connected" ? "text-primary" : "text-muted-foreground"}`} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate leading-none mb-0.5">{sess.displayName}</p>
+                              <p className="text-xs text-muted-foreground">{
+                                sess.status === "connected" ? "متصل" :
+                                sess.status === "connecting" ? "جاري الاتصال..." :
+                                sess.status === "qr_ready" ? "في انتظار QR" :
+                                sess.status === "pairing" ? "جاري الربط..." :
+                                sess.status === "auth_failed" ? "فشل التحقق" : "غير متصل"
+                              }</p>
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              {sess.isActive
+                                ? <Badge variant="default" className="text-xs h-6 px-2">نشط</Badge>
+                                : (
+                                  <Button size="sm" variant="outline" className="h-7 text-xs px-2"
+                                    onClick={() => activateSessionMutation.mutate(sess.id)}
+                                    disabled={activateSessionMutation.isPending}
+                                    data-testid={`button-activate-session-${sess.id}`}>
+                                    تفعيل
+                                  </Button>
+                                )
+                              }
+                              {waData.sessions.length > 1 && (
+                                <Button size="sm" variant="ghost"
+                                  className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                  onClick={() => { if (confirm("حذف هذا الحساب؟")) deleteSessionMutation.mutate(sess.id); }}
+                                  disabled={deleteSessionMutation.isPending}
+                                  data-testid={`button-delete-session-${sess.id}`}>
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* QR / Pairing / Status card */}
+                  <Card>
+                    <CardHeader className="pb-2 text-center">
+                      <CardTitle className="flex items-center justify-center gap-2">
+                        <SiWhatsapp className="w-5 h-5 text-primary" />
+                        {connectMode === "qr" ? "امسح رمز QR" : connectMode === "pair" ? "أدخل رمز الربط" : "جاري الاتصال بالجلسة المحفوظة"}
+                      </CardTitle>
+                      <CardDescription>
+                        {connectMode === "qr" ? "افتح واتساب → الأجهزة المرتبطة → ربط جهاز → امسح الرمز" :
+                         connectMode === "pair" ? "افتح واتساب → الأجهزة المرتبطة → ربط بالرقم → أدخل الرمز" :
+                         "يتم الاتصال تلقائياً باستخدام بيانات الجلسة المحفوظة"}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="flex flex-col items-center gap-4">
+                      <WAStatusCard status={waStatus} />
+
+                      {connectMode === "qr" && qrCode && (
+                        <div className="p-3 bg-white rounded-xl shadow border">
+                          <img src={qrCode} alt="QR Code" className="w-56 h-56" data-testid="img-qr-code" />
+                        </div>
+                      )}
+                      {connectMode === "qr" && !qrCode && (waStatus === "connecting" || waStatus === "qr_ready") && (
+                        <div className="w-56 h-56 bg-muted rounded-xl flex items-center justify-center">
+                          <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                        </div>
+                      )}
+
+                      {connectMode === "pair" && pairingCode && (
+                        <div className="flex flex-col items-center gap-3 w-full">
+                          <p className="text-xs text-muted-foreground">أدخل هذا الرمز في واتساب</p>
+                          <div className="text-4xl font-mono font-bold tracking-widest bg-muted px-6 py-4 rounded-xl border w-full text-center" data-testid="text-pairing-code">
+                            {pairingCode}
+                          </div>
+                          <Button variant="outline" size="sm" className="w-full" onClick={() => resendPairMutation.mutate()} disabled={resendPairMutation.isPending} data-testid="button-resend-pair">
+                            {resendPairMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 ml-1" />}
+                            إعادة إرسال الرمز
+                          </Button>
+                        </div>
+                      )}
+                      {connectMode === "pair" && !pairingCode && (waStatus === "pairing" || waStatus === "connecting") && (
+                        <div className="flex flex-col items-center gap-2">
+                          <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                          <p className="text-sm text-muted-foreground">جاري الحصول على رمز الربط...</p>
+                        </div>
+                      )}
+
+                      {connectMode === "saved" && (waStatus === "connecting" || waStatus === "disconnected") && (
+                        <div className="flex flex-col items-center gap-2">
+                          <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                          <p className="text-sm text-muted-foreground">جاري الاتصال بالجلسة المحفوظة...</p>
+                        </div>
+                      )}
+
+                      {waStatus === "connected" && (
+                        <div className="flex flex-col items-center gap-2">
+                          <CheckCircle2 className="w-12 h-12 text-primary" />
+                          <p className="font-semibold text-primary">تم الاتصال بنجاح!</p>
+                          <p className="text-sm text-muted-foreground">جاري بدء فحص الروابط...</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Button variant="outline" className="w-full"
+                    onClick={() => { setIsConnecting(false); disconnectMutation.mutate(); }}
+                    data-testid="button-cancel-connect">
+                    <ArrowRight className="w-4 h-4 ml-1" />رجوع
+                  </Button>
+                </div>
+              )
             )}
 
-            <Card>
-              <CardHeader className="pb-2 text-center">
-                <CardTitle className="flex items-center justify-center gap-2">
-                  <SiWhatsapp className="w-5 h-5 text-primary" />
-                  {connectMode === "qr" ? "امسح رمز QR" : connectMode === "pair" ? "أدخل رمز الربط" : "جاري الاتصال بالجلسة المحفوظة"}
-                </CardTitle>
-                <CardDescription>
-                  {connectMode === "qr" ? "افتح واتساب → الأجهزة المرتبطة → ربط جهاز → امسح الرمز" :
-                   connectMode === "pair" ? "افتح واتساب → الأجهزة المرتبطة → ربط بالرقم → أدخل الرمز" :
-                   "يتم الاتصال تلقائياً باستخدام بيانات الجلسة المحفوظة"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col items-center gap-4">
-                <WAStatusCard status={waStatus} />
-
-                {connectMode === "qr" && qrCode && (
-                  <div className="p-3 bg-white rounded-xl shadow border">
-                    <img src={qrCode} alt="QR Code" className="w-56 h-56" data-testid="img-qr-code" />
-                  </div>
-                )}
-                {connectMode === "qr" && !qrCode && (waStatus === "connecting" || waStatus === "qr_ready") && (
-                  <div className="w-56 h-56 bg-muted rounded-xl flex items-center justify-center">
-                    <Loader2 className="w-10 h-10 text-primary animate-spin" />
-                  </div>
-                )}
-
-                {connectMode === "pair" && pairingCode && (
-                  <div className="flex flex-col items-center gap-3 w-full">
-                    <p className="text-xs text-muted-foreground">أدخل هذا الرمز في واتساب</p>
-                    <div className="text-4xl font-mono font-bold tracking-widest bg-muted px-6 py-4 rounded-xl border w-full text-center" data-testid="text-pairing-code">
-                      {pairingCode}
-                    </div>
-                    <Button variant="outline" size="sm" className="w-full" onClick={() => resendPairMutation.mutate()} disabled={resendPairMutation.isPending} data-testid="button-resend-pair">
-                      {resendPairMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 ml-1" />}
-                      إعادة إرسال الرمز
-                    </Button>
-                  </div>
-                )}
-                {connectMode === "pair" && !pairingCode && (waStatus === "pairing" || waStatus === "connecting") && (
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                    <p className="text-sm text-muted-foreground">جاري الحصول على رمز الربط...</p>
-                  </div>
-                )}
-
-                {connectMode === "saved" && (waStatus === "connecting" || waStatus === "disconnected") && (
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                    <p className="text-sm text-muted-foreground">جاري الاتصال بالجلسة المحفوظة...</p>
-                  </div>
-                )}
-
-                {waStatus === "connected" && (
-                  <div className="flex flex-col items-center gap-2">
-                    <CheckCircle2 className="w-12 h-12 text-primary" />
-                    <p className="font-semibold text-primary">تم الاتصال بنجاح!</p>
-                    <p className="text-sm text-muted-foreground">جاري بدء فحص الروابط...</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Button variant="outline" className="w-full" onClick={() => { disconnectMutation.mutate(); setStep("links"); }} data-testid="button-cancel-connect">
-              <ArrowRight className="w-4 h-4 ml-1" />رجوع
-            </Button>
+            {!isConnecting && (
+              <Button variant="ghost" size="sm" onClick={() => setStep("upload")} data-testid="button-reupload">
+                <ArrowRight className="w-4 h-4 ml-1" />رفع ملف آخر
+              </Button>
+            )}
           </div>
         )}
 
