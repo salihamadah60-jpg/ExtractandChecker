@@ -54,7 +54,7 @@
     "telegram": []
   },
   "checkSession": {
-    "id": "1778957916052",
+    "id": "1778958544096",
     "links": [
       "https://chat.whatsapp.com/GGDKw1QA4RJ4A0BQQTse7R",
       "https://chat.whatsapp.com/CMUA2SFmKBsCF5uEforglj",
@@ -482,12 +482,12 @@
     "progress": 49,
     "total": 49,
     "status": "done",
-    "startedAt": "2026-05-16T18:58:36.052Z",
+    "startedAt": "2026-05-16T19:09:04.096Z",
     "completedBatches": [
       1
     ],
     "rateLimitInfo": null,
-    "completedAt": "2026-05-16T19:00:33.626Z"
+    "completedAt": "2026-05-16T19:11:01.820Z"
   },
   "joinSession": null,
   "uploadedFileName": "",
