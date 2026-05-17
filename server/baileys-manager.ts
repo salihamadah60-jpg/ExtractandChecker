@@ -424,11 +424,20 @@ class SessionsManager extends EventEmitter {
             const cur = this.sessions.get(id);
             if (cur) cur.pairingCode = null;
             this._setStatus(id, "auth_failed");
-          } else if (code === 515 || code === 440) {
+          } else if (code === 515) {
+            // Restart required — safe to reconnect automatically
             const cur = this.sessions.get(id);
             if (cur) cur.pairingCode = null;
             this._setStatus(id, "connecting");
             setTimeout(() => this._connectSession(id, usePairing, phoneNumber, true), 2000);
+          } else if (code === 440) {
+            // Connection replaced by another WhatsApp Web session on the same account.
+            // Do NOT auto-reconnect — that would just replace itself again (infinite loop).
+            // Mark as disconnected and let the user decide.
+            const cur = this.sessions.get(id);
+            if (cur) cur.pairingCode = null;
+            console.log(`[Sessions] ${id} — connection replaced by another device. Manual reconnect required.`);
+            this._setStatus(id, "disconnected");
           } else if (code === 428 || code === 408 || !code) {
             const cur = this.sessions.get(id);
             if (cur) cur.pairingCode = null;

@@ -244,12 +244,26 @@ class LinkStore {
       const validGroups = batchResults.filter(
         (r) => r.status === "valid" && r.link.includes("chat.whatsapp.com")
       );
-      const groups = validGroups
+      // Dedup by group code (strip ?mode= params)
+      const batchSeenKeys = new Set<string>();
+      const uniqueBatchGroups = validGroups.filter((r) => {
+        try {
+          const key = new URL(r.link.replace(/[.,;)>\]'"]+$/, "").trim()).pathname.replace(/^\/+/, "");
+          if (batchSeenKeys.has(key)) return false;
+          batchSeenKeys.add(key);
+          return true;
+        } catch { return true; }
+      });
+      const cleanLink = (link: string) => {
+        try { const u = new URL(link.replace(/[.,;)>\]'"]+$/, "").trim()); return `${u.origin}${u.pathname}`; }
+        catch { return link.replace(/[.,;)>\]'"]+$/, "").trim(); }
+      };
+      const groups = uniqueBatchGroups
         .filter((r) => { const m = r.members ?? 0; return m > 150 || (m > 10 && m <= 150 && !r.description?.trim()); })
-        .map((r) => ({ link: r.link, name: r.name, members: r.members, description: r.description }));
-      const ads = validGroups
+        .map((r) => ({ link: cleanLink(r.link), name: r.name, members: r.members, description: r.description }));
+      const ads = uniqueBatchGroups
         .filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 150 && !!r.description?.trim() && !hasExcludedDescription(r.description); })
-        .map((r) => ({ link: r.link, name: r.name, members: r.members, description: r.description }));
+        .map((r) => ({ link: cleanLink(r.link), name: r.name, members: r.members, description: r.description }));
 
       const data = {
         batchNumber: batchNum,
@@ -467,14 +481,37 @@ class LinkStore {
       (r) => r.status === "valid" && r.link.includes("chat.whatsapp.com")
     );
 
-    // Dedup valid groups by link
-    const seenLinks = new Set<string>();
+    // Dedup valid groups by GROUP CODE (path only — strips ?mode= variants).
+    // e.g. https://chat.whatsapp.com/ABC123?mode=gi_t  →  key = "ABC123"
+    const getGroupKey = (link: string): string => {
+      try {
+        const clean = link.replace(/[.,;)>\]'"]+$/, "").trim();
+        const url = new URL(clean);
+        // Use just the last path segment (the group invite code)
+        return url.pathname.replace(/^\/+/, "");
+      } catch {
+        return link.replace(/[.,;)>\]'"]+$/, "").trim();
+      }
+    };
+
+    const seenKeys = new Set<string>();
     const uniqueValidGroups = validGroups.filter((r) => {
-      const cleanLink = r.link.replace(/[.,;)>\]'"]+$/, "").trim();
-      if (seenLinks.has(cleanLink)) return false;
-      seenLinks.add(cleanLink);
+      const key = getGroupKey(r.link);
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
       return true;
     });
+
+    // Strip query params from a link for clean output
+    const cleanOutputLink = (link: string): string => {
+      try {
+        const clean = link.replace(/[.,;)>\]'"]+$/, "").trim();
+        const url = new URL(clean);
+        return `${url.origin}${url.pathname}`;
+      } catch {
+        return link.replace(/[.,;)>\]'"]+$/, "").trim();
+      }
+    };
 
     // Groups file: >150 members  OR  (10 < members ≤ 150 AND no description)
     const groupsRaw: FilteredGroup[] = uniqueValidGroups
@@ -484,7 +521,7 @@ class LinkStore {
         if (m > 10 && m <= 150 && !r.description?.trim()) return true;
         return false;
       })
-      .map((r) => ({ link: r.link.replace(/[.,;)>\]'"]+$/, "").trim(), name: r.name, members: r.members!, description: r.description }));
+      .map((r) => ({ link: cleanOutputLink(r.link), name: r.name, members: r.members!, description: r.description }));
 
     // Smart categorization: medical/health groups first, then by first word, then member count
     const groups = groupsRaw.sort((a, b) => {
@@ -503,7 +540,7 @@ class LinkStore {
         const m = r.members ?? 0;
         return m > 10 && m <= 150 && !!r.description?.trim() && !hasExcludedDescription(r.description);
       })
-      .map((r) => ({ link: r.link.replace(/[.,;)>\]'"]+$/, "").trim(), name: r.name, members: r.members!, description: r.description }))
+      .map((r) => ({ link: cleanOutputLink(r.link), name: r.name, members: r.members!, description: r.description }))
       .sort((a, b) => {
         const aMed = isMedicalGroup(a.name) ? 0 : 1;
         const bMed = isMedicalGroup(b.name) ? 0 : 1;
