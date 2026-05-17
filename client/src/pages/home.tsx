@@ -478,6 +478,14 @@ export default function Home() {
     }
   }, [session?.status, step]);
 
+  // Crash recovery: auto-navigate to checking when session resumes in background
+  useEffect(() => {
+    if (!session) return;
+    if (session.status === "running" && step !== "checking" && step !== "results") {
+      setStep("checking");
+    }
+  }, [session?.status]);
+
   // Rate-limit countdown timer
   useEffect(() => {
     const rl = session?.rateLimitInfo;
@@ -1013,6 +1021,41 @@ export default function Home() {
         {/* ── Step: Upload ── */}
         {step === "upload" && (
           <div className="space-y-4">
+
+            {/* Crash-recovery banner: suspended in-progress session */}
+            {session && session.status === "idle" && session.progress < session.total && (
+              <Card className="border-orange-400/60 bg-orange-50 dark:bg-orange-900/20">
+                <CardContent className="pt-4 pb-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-full bg-orange-100 dark:bg-orange-900/40 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Loader2 className="w-4 h-4 text-orange-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm text-orange-800 dark:text-orange-300">جلسة فحص متوقفة</p>
+                      <p className="text-xs text-orange-700 dark:text-orange-400 mt-0.5">
+                        تم الفحص حتى الآن: <strong>{session.progress}</strong> من <strong>{session.total}</strong> رابط — ستستأنف تلقائياً عند اتصال واتساب
+                      </p>
+                      <div className="mt-2.5">
+                        <div className="w-full bg-orange-200 dark:bg-orange-800/40 rounded-full h-1.5">
+                          <div
+                            className="bg-orange-500 h-1.5 rounded-full transition-all"
+                            style={{ width: `${Math.round((session.progress / session.total) * 100)}%` }}
+                          />
+                        </div>
+                        <p className="text-[10px] text-orange-600 dark:text-orange-400 mt-1 text-left">
+                          {Math.round((session.progress / session.total) * 100)}٪
+                        </p>
+                      </div>
+                    </div>
+                    <Button size="sm" className="flex-shrink-0 bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 px-3"
+                      onClick={() => setStep("connect")}
+                      data-testid="button-resume-session">
+                      استئناف
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Previous session card */}
             {previousResults?.hasPreviousSession && (

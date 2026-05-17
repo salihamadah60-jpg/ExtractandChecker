@@ -5,28 +5,162 @@ const STATE_FILE = path.resolve(".session-state.json");
 const STATE_FILE_TMP = STATE_FILE + ".tmp";
 const DESC_LINKS_FILE = path.resolve("description-links.json");
 
+// ── Comprehensive medical keyword lists ───────────────────────────────────────
+
+// Groups that must ALWAYS go to the Ads file regardless of member count.
+// These are service/commercial medical groups (sick leave, research opportunities, etc.)
+const AD_ONLY_MEDICAL_TERMS = [
+  // Sick leave services
+  "سكليف", "سكليفات",
+  // Medical excuse services
+  "أعذار طبية", "اعذار طبية", "عذر طبي", "اعذار طبيه", "أعذار طبيه",
+  "عذر طبيه", "عذر طبية",
+  // Research opportunity ads
+  "فرص بحثية", "فرص ابحاث", "فرص أبحاث", "فرص للأبحاث",
+  "فرص بحثيه",
+  // Research publishing services
+  "نشر أبحاث", "نشر ابحاث", "نشر الابحاث", "نشر البحوث",
+  "نشر بحوث", "نشر الأبحاث",
+  "تساهيل لنشر",
+  // General research-ad groups
+  "دعم الأبحاث", "دعم البحوث",
+];
+
+// Full medical / health-related classifier — determines the "الطب والصحة" section
 const MEDICAL_KEYWORDS = [
-  "طب", "طبي", "طبية", "دكتور", "دكتورة", "صيدل", "مستشف", "عياد", "صح",
-  "طوارئ", "جراح", "أطفال", "اطفال", "نساء", "توليد", "عظام", "قلب",
-  "أعصاب", "اعصاب", "عيون", "أنف", "انف", "أذن", "اذن", "حلق", "جلد",
-  "نفس", "مختبر", "مخبر", "تمريض", "ممرض", "دواء", "أدوية", "ادوية",
-  "علاج", "مرض", "مريض", "أشعة", "اشعة", "تحاليل", "بروميتريك",
-  "بيطر", "أسنان", "اسنان", "فارما", "باطن", "جراح",
+  // ── Core Arabic medical ────────────────────────────────────────────────────
+  "طب", "طبي", "طبية", "طبيب", "طبيبة",
+  "دكتور", "دكتورة", "حكيم", "حكيمة",
+  // Pharmacy
+  "صيدل", "صيدلان", "صيدلة", "صيدلية", "فارما", "دوائية",
+  // Hospital / clinic
+  "مستشف", "مستوصف", "عيادة", "عياد", "مركز صحي",
+  // Health (general)
+  "صح", "صحي", "صحة", "صحية", "صحتي",
+  // Emergency
+  "طوارئ", "إسعاف", "اسعاف",
+  // Surgery
+  "جراح", "جراحة", "جراحية",
+  // Pediatrics
+  "أطفال", "اطفال", "أطفالية", "بيدياتر",
+  // OB/GYN
+  "نساء", "توليد", "ولادة", "نسائية", "نسائي",
+  // Orthopedics
+  "عظام", "عظمية", "مفاصل", "اورثو",
+  // Cardiology / Vascular
+  "قلب", "قلبي", "قلبية", "أوعية", "BLS", "ACLS", "PALS",
+  // Neurology
+  "أعصاب", "اعصاب", "عصبي", "عصبية", "نيورو",
+  // Ophthalmology
+  "عيون", "رمد", "بصر", "بصريات",
+  // ENT
+  "أنف", "انف", "أذن", "اذن", "حلق",
+  // Dermatology
+  "جلد", "جلدية", "جلدي",
+  // Psychiatry / Psychology
+  "نفسي", "نفسية", "نفسيات", "صدمات نفسية",
+  // Labs / Radiology
+  "مختبر", "مخبر", "معمل", "تحاليل", "أشعة", "اشعة", "راديولوجي",
+  // Nursing
+  "تمريض", "تمريضية", "ممرض", "ممرضة", "تمريض",
+  // Medications
+  "دواء", "أدوية", "ادوية", "علاج", "علاجية",
+  // Disease / patient
+  "مرض", "مريض", "أمراض", "امراض",
+  // Prometric exams (licensing)
+  "بروميتريك", "برو ميتريك",
+  // Veterinary
+  "بيطر", "بيطري", "بيطرية",
+  // Dentistry
+  "أسنان", "اسنان", "تقويم", "أسنانية", "اسنانية", "لثة", "اندو",
+  // Internal medicine
+  "باطن", "باطنية", "باطنية",
+  // Family medicine
+  "طب أسرة", "طب اسرة", "طب الأسرة",
+  // Anesthesia
+  "تخدير", "تخديري", "بنج",
+  // Nephrology / Urology
+  "كلى", "كلية", "كلوي", "مسالك بولية", "مسالك البولية",
+  // Pulmonology
+  "صدر", "رئة", "رئوي",
+  // Endocrinology
+  "سكري", "غدد", "هرمونات", "هرمون",
+  // Rheumatology
+  "روماتيزم", "مناعة", "مناعي",
+  // Oncology
+  "أورام", "اورام", "سرطان", "سرطاني",
+  // Hematology
+  "هيماتولوجيا",
+  // Gastroenterology
+  "هضمية", "معدة", "كبد", "أمعاء", "امعاء",
+  // ICU / CCU / OR
+  "رعاية مركزة", "وحدة العناية",
+  // Residency
+  "إقامة", "اقامة", "ريزيدنت", "ريزيدنسي",
+  // Board exams
+  "بورد", "بوردية",
+  // Fellowship
+  "زمالة", "زمالات", "فيلوشيب",
+  // Scholarship (medical)
+  "ابتعاث",
+  // Matching
+  "ماتشينج",
+  // Internship
+  "امتياز",
+  // CME / Professional development (medical)
+  "CME", "CPD",
+  // Health clusters (Saudi health regions)
+  "تجمع صحي", "تجمع الرياض الصحي", "تجمع الجوف الصحي",
+  "تجمع مكة", "تجمع المدينة", "تجمع جدة", "تجمع الشرقية",
+  "الصحة المجتمعية",
+  // Healthcare workers
+  "ممارسين صحيين", "ممارس صحي", "خدمات الممارسين",
+  // Medical specialties in Arabic
+  "تشخيص", "تشخيصية",
+  "طوارئ",
+  // Sick leave (AD-ONLY but still medical category)
+  "سكليف",
+  // Research (AD-ONLY but still medical category)
+  "فرص بحثية", "فرص أبحاث", "نشر أبحاث", "نشر بحوث",
+  "أعذار طبية", "اعذار طبية",
+  "فرص لابحاث", "أبحاث صحية",
+  // ── English medical terms ──────────────────────────────────────────────────
   "medical", "health", "clinic", "hospital", "doctor", "nurse",
-  "dental", "pharma", "therapy", "physician", "prometric",
+  "dental", "pharma", "therapy", "physician",
+  "prometric", "dha", "haad", "moh", "scfhs", "schfs",
+  "surgery", "pediatr", "cardiol", "neurol", "dermat",
+  "orthop", "ophthalmol", "radiol", "pathol",
+  "obstetric", "gynecol", "obgyn", "anesthes",
+  "resident", "residency", "fellowship", "intern",
+  "board", "matching", "scholarship",
+  "pharmacist", "dentist", "physiother",
+  "icu", "ccu", "ent",
+  "bls", "acls", "pals", "cme",
+  "nursing", "emergency",
+  "hematol", "oncol", "gastro", "nephrol", "urol",
+  "pulmonol", "endocrin", "rheumatol", "immunol",
+  "psychiatr", "psychol",
+  "anatomy", "physiol", "biochem", "patholog",
+  "internal medicine", "family medicine",
+  "دكتوراه",
 ];
 
 export function isMedicalGroup(name?: string): boolean {
   if (!name) return false;
-  const lower = name.toLowerCase();
-  return MEDICAL_KEYWORDS.some((kw) => lower.includes(kw));
+  const text = name.toLowerCase();
+  return MEDICAL_KEYWORDS.some((kw) => text.includes(kw.toLowerCase()));
 }
 
-const EXCLUDED_DESCRIPTION_KEYWORDS = ["سكليف", "إجازة مرضية", "اجازة مرضية"];
+// Returns true for groups that must ALWAYS go to Ads file regardless of member count.
+// These are service/commercial medical groups (sick leave, research ads, etc.)
+export function isAdOnlyMedicalGroup(name?: string, description?: string): boolean {
+  const text = ((name ?? "") + " " + (description ?? "")).toLowerCase();
+  return AD_ONLY_MEDICAL_TERMS.some((kw) => text.includes(kw.toLowerCase()));
+}
 
-export function hasExcludedDescription(description?: string): boolean {
-  if (!description) return false;
-  return EXCLUDED_DESCRIPTION_KEYWORDS.some((kw) => description.includes(kw));
+// No excluded description keywords — previously excluded سكليف groups now always go to Ads.
+export function hasExcludedDescription(_description?: string): boolean {
+  return false;
 }
 
 const LINKS_JSON_DIR = path.resolve("Linksjson");
@@ -179,7 +313,9 @@ class LinkStore {
         newRoundLinks: this.newRoundLinks,
       };
       const json = JSON.stringify(state, null, 2);
-      await fs.writeFile(STATE_FILE, json, "utf-8");
+      // Atomic write: write to .tmp first, then rename to prevent corruption on crash
+      await fs.writeFile(STATE_FILE_TMP, json, "utf-8");
+      await fs.rename(STATE_FILE_TMP, STATE_FILE);
     } catch (err) {
       console.error("[LinkStore] Failed to save state:", err);
     }
@@ -259,10 +395,19 @@ class LinkStore {
         catch { return link.replace(/[.,;)>\]'"]+$/, "").trim(); }
       };
       const groups = uniqueBatchGroups
-        .filter((r) => { const m = r.members ?? 0; return m > 150 || (m > 10 && m <= 150 && !r.description?.trim()); })
+        .filter((r) => {
+          if (isAdOnlyMedicalGroup(r.name, r.description)) return false;
+          const m = r.members ?? 0;
+          return m > 150 || (m > 10 && m <= 150 && !r.description?.trim());
+        })
         .map((r) => ({ link: cleanLink(r.link), name: r.name, members: r.members, description: r.description }));
       const ads = uniqueBatchGroups
-        .filter((r) => { const m = r.members ?? 0; return m > 10 && m <= 150 && !!r.description?.trim() && !hasExcludedDescription(r.description); })
+        .filter((r) => {
+          const m = r.members ?? 0;
+          if (m <= 10) return false;
+          if (isAdOnlyMedicalGroup(r.name, r.description)) return true;
+          return m <= 150 && !!r.description?.trim();
+        })
         .map((r) => ({ link: cleanLink(r.link), name: r.name, members: r.members, description: r.description }));
 
       const data = {
@@ -513,9 +658,11 @@ class LinkStore {
       }
     };
 
-    // Groups file: >150 members  OR  (10 < members ≤ 150 AND no description)
+    // Groups file: NOT an ad-only group AND (>150 members OR (10 < members ≤ 150 AND no description))
+    // Ad-only groups (سكليف, أعذار طبية, فرص بحثية, نشر أبحاث, etc.) always go to Ads regardless of size.
     const groupsRaw: FilteredGroup[] = uniqueValidGroups
       .filter((r) => {
+        if (isAdOnlyMedicalGroup(r.name, r.description)) return false; // → Ads file
         const m = r.members ?? 0;
         if (m > 150) return true;
         if (m > 10 && m <= 150 && !r.description?.trim()) return true;
@@ -534,11 +681,15 @@ class LinkStore {
       return b.members - a.members;
     });
 
-    // Ads file: 10 < members ≤ 150 AND has non-empty description (excluding "سكليف/إجازة مرضية")
+    // Ads file:
+    //   • Ad-only medical groups (سكليف, أعذار طبية, فرص بحثية, نشر أبحاث…): ALWAYS in ads if members > 10
+    //   • Regular groups: 10 < members ≤ 150 AND has non-empty description
     const ads: FilteredGroup[] = uniqueValidGroups
       .filter((r) => {
         const m = r.members ?? 0;
-        return m > 10 && m <= 150 && !!r.description?.trim() && !hasExcludedDescription(r.description);
+        if (m <= 10) return false;
+        if (isAdOnlyMedicalGroup(r.name, r.description)) return true; // always in ads regardless of size
+        return m <= 150 && !!r.description?.trim();
       })
       .map((r) => ({ link: cleanOutputLink(r.link), name: r.name, members: r.members!, description: r.description }))
       .sort((a, b) => {
