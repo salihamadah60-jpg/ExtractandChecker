@@ -16,17 +16,18 @@ const upload = multer({
   },
 });
 
+// Groups and channels only — personal contacts, API links, and wa.me/phone are excluded
 function extractLinks(text: string, html: string) {
   const combined = text + " " + html;
   const waRegex =
-    /https?:\/\/(?:chat\.whatsapp\.com\/[A-Za-z0-9_-]+|wa\.me\/[\d+]+|api\.whatsapp\.com\/send\?[^\s"'<>]*)/g;
+    /https?:\/\/(?:chat\.whatsapp\.com\/[A-Za-z0-9_-]+(?:\?[A-Za-z0-9_=&%.+-]+)?|whatsapp\.com\/channel\/[A-Za-z0-9_-]+)/g;
   const tgRegex =
-    /https?:\/\/(?:t\.me\/[A-Za-z0-9_+/-]+|telegram\.me\/[A-Za-z0-9_]+|telegram\.org\/[^\s"'<>]*)/g;
+    /https?:\/\/(?:t\.me\/(?:\+|joinchat\/)[A-Za-z0-9_-]+|t\.me\/[A-Za-z0-9_]+|telegram\.me\/[A-Za-z0-9_]+)/g;
   const waRaw = [...combined.matchAll(waRegex)].map((m) =>
-    m[0].replace(/[.,;)>\]'"]+$/, "")
+    m[0].replace(/[.,;)>\]'"»]+$/, "")
   );
   const tgRaw = [...combined.matchAll(tgRegex)].map((m) =>
-    m[0].replace(/[.,;)>\]'"]+$/, "")
+    m[0].replace(/[.,;)>\]'"»]+$/, "")
   );
   const dedup = (arr: string[]) =>
     [...new Set(arr.map((l) => l.trim()).filter(Boolean))];

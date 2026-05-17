@@ -4,7 +4,7 @@ const MONGO_URI = process.env.MONGODB_URI || "";
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 
-async function getDb(): Promise<Db> {
+export async function getDb(): Promise<Db> {
   if (_db) return _db;
   if (!MONGO_URI) throw new Error("MONGODB_URI environment variable not set");
   _client = new MongoClient(MONGO_URI, {

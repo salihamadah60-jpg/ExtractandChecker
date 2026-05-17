@@ -109,12 +109,15 @@ function linksMatch(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((l, i) => l === b[i]);
 }
 
-const WA_REGEX = /https?:\/\/(?:chat\.whatsapp\.com\/[A-Za-z0-9_-]+|wa\.me\/[\d+]+|api\.whatsapp\.com\/send\?[^\s"'<>]*)/g;
-const TG_REGEX = /https?:\/\/(?:t\.me\/[A-Za-z0-9_+/-]+|telegram\.me\/[A-Za-z0-9_]+|telegram\.org\/[^\s"'<>]*)/g;
+// Groups and channels only — personal contacts (wa.me/phone), api links, and message links are excluded
+const WA_REGEX =
+  /https?:\/\/(?:chat\.whatsapp\.com\/[A-Za-z0-9_-]+(?:\?[A-Za-z0-9_=&%.+-]+)?|whatsapp\.com\/channel\/[A-Za-z0-9_-]+)/g;
+const TG_REGEX =
+  /https?:\/\/(?:t\.me\/(?:\+|joinchat\/)[A-Za-z0-9_-]+|t\.me\/[A-Za-z0-9_]+|telegram\.me\/[A-Za-z0-9_]+)/g;
 
 function extractLinksFromText(text: string): string[] {
-  const waLinks = [...text.matchAll(WA_REGEX)].map((m) => m[0].replace(/[.,;)>\]'"]+$/, ""));
-  const tgLinks = [...text.matchAll(TG_REGEX)].map((m) => m[0].replace(/[.,;)>\]'"]+$/, ""));
+  const waLinks = [...text.matchAll(WA_REGEX)].map((m) => m[0].replace(/[.,;)>\]'"»]+$/, ""));
+  const tgLinks = [...text.matchAll(TG_REGEX)].map((m) => m[0].replace(/[.,;)>\]'"»]+$/, ""));
   return [...new Set([...waLinks, ...tgLinks].map((l) => l.trim()).filter(Boolean))];
 }
 

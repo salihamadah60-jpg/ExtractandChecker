@@ -4,6 +4,8 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { linkStore } from "./link-store";
 import { baileysManager } from "./baileys-manager";
+import { linksRepository } from "./modules/links-repository";
+import { systemState } from "./modules/system-state";
 
 const app = express();
 const httpServer = createServer(app);
@@ -81,6 +83,18 @@ app.use((req, res, next) => {
 const initServer = async () => {
   // Restore saved check session and extracted links from previous run
   await linkStore.loadFromDisk();
+
+  // Initialize MongoDB modules (skip if MONGODB_URI not set)
+  if (process.env.MONGODB_URI) {
+    try {
+      await linksRepository.init();
+      await systemState.init();
+      // Check if a function was interrupted on last restart — reset the lock
+      await systemState.checkRecovery();
+    } catch (err) {
+      console.warn("[Startup] MongoDB modules init failed (continuing without):", (err as Error).message);
+    }
+  }
 
   // Auto-reconnect WhatsApp if credentials from a previous session exist
   baileysManager.autoConnect().catch(console.error);
