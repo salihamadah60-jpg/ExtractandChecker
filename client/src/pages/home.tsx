@@ -118,6 +118,25 @@ interface PreviousResultsRes {
   ads?: number;
   descriptionLinks?: number;
 }
+interface CoordinatorStatus { active: string | null; isRunning: boolean; }
+interface RepoCounts { Pending: number; Joined: number; Ignored: number; Left: number; }
+interface JoinProgress2 {
+  status: "running" | "done" | "paused" | "stopped" | "error";
+  total: number; processed: number; joined: number; ignored: number; failed: number; skipped_ads: number;
+  currentLink?: string; stopReason?: string; startedAt: string; completedAt?: string;
+}
+interface LeaveQueueEntry { url: string; groupJid?: string; enqueuedAt: string; reason?: string; }
+interface AdMessage { _id: string; text: string; createdAt: string; sentCount: number; lastSentAt?: string; }
+interface PublishProgress {
+  status: "running" | "done" | "stopped" | "error";
+  total: number; processed: number; sent: number; failed: number;
+  currentGroup?: string; startedAt: string; completedAt?: string;
+}
+interface ReaderStats {
+  status: "running" | "stopped" | "error";
+  messagesReceived: number; messagesSkippedAds: number; linksFound: number; linksNew: number;
+  startedAt: string; stoppedAt?: string;
+}
 
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "رفع الملف" },
@@ -152,6 +171,10 @@ export default function Home() {
   const [extraPanelMode, setExtraPanelMode] = useState<"upload" | "join" | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showJoinSidePanel, setShowJoinSidePanel] = useState(false);
+  const [showPublisherPanel, setShowPublisherPanel] = useState(false);
+  const [showReaderPanel, setShowReaderPanel] = useState(false);
+  const [showLeavePanel, setShowLeavePanel] = useState(false);
+  const [newAdText, setNewAdText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const newRoundFileRef = useRef<HTMLInputElement>(null);
   const extraUploadRef = useRef<HTMLInputElement>(null);
@@ -181,6 +204,36 @@ export default function Home() {
   const { data: previousResults } = useQuery<PreviousResultsRes>({
     queryKey: ["/api/previous-results"],
     refetchInterval: false,
+  });
+  const { data: coordinatorData } = useQuery<CoordinatorStatus>({
+    queryKey: ["/api/coordinator/status"],
+    refetchInterval: 3000,
+  });
+  const { data: repoCounts, refetch: refetchRepoCounts } = useQuery<RepoCounts>({
+    queryKey: ["/api/links-repository/counts"],
+    refetchInterval: 15000,
+  });
+  const { data: joinProgress2Data, refetch: refetchJoinProgress2 } = useQuery<{ progress: JoinProgress2 | null }>({
+    queryKey: ["/api/join/progress"],
+    refetchInterval: coordinatorData?.active === "joining" ? 2000 : 15000,
+  });
+  const { data: leaveQueueData, refetch: refetchLeaveQueue } = useQuery<{ queue: LeaveQueueEntry[]; count: number }>({
+    queryKey: ["/api/leave/queue"],
+    refetchInterval: showLeavePanel ? 5000 : false,
+    enabled: true,
+  });
+  const { data: publisherAdsData, refetch: refetchPublisherAds } = useQuery<AdMessage[]>({
+    queryKey: ["/api/publisher/ads"],
+    refetchInterval: false,
+    enabled: true,
+  });
+  const { data: publisherProgressData } = useQuery<{ progress: PublishProgress | null }>({
+    queryKey: ["/api/publisher/progress"],
+    refetchInterval: coordinatorData?.active === "publishing" ? 2000 : false,
+  });
+  const { data: readerStatsData } = useQuery<{ stats: ReaderStats | null; isRunning: boolean }>({
+    queryKey: ["/api/reader/stats"],
+    refetchInterval: 5000,
   });
 
   // Restore check session state on page refresh — runs once when data arrives
@@ -483,6 +536,75 @@ export default function Home() {
   const recentResults: CheckResult[] = session?.recentResults ?? session?.results?.filter((r) => r.status !== "pending").slice(-20) ?? [];
   const joinPct = joinSession ? Math.round((joinSession.progress / joinSession.total) * 100) : 0;
 
+  const isCoordinatorBusy = coordinatorData?.isRunning ?? false;
+  const activeFunction = coordinatorData?.active ?? null;
+  const joinProgress2 = joinProgress2Data?.progress ?? null;
+  const join2Pct = joinProgress2 ? Math.round((joinProgress2.processed / Math.max(1, joinProgress2.total)) * 100) : 0;
+  const publishProgress = publisherProgressData?.progress ?? null;
+  const publishPct = publishProgress ? Math.round((publishProgress.processed / Math.max(1, publishProgress.total)) * 100) : 0;
+  const readerStats = readerStatsData?.stats ?? null;
+  const isReaderRunning = readerStatsData?.isRunning ?? false;
+  const leaveQueue = leaveQueueData?.queue ?? [];
+
+  const startJoin2Mutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/join/start", {}),
+    onSuccess: () => { toast({ title: "بدأ الانضمام من المستودع" }); void refetchJoinProgress2(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const stopJoin2Mutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/join/stop", {}),
+    onSuccess: () => { toast({ title: "جاري إيقاف الانضمام..." }); void refetchJoinProgress2(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const startLeaveMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/leave/start", {}),
+    onSuccess: () => { toast({ title: "بدأت معالجة قائمة المغادرة" }); void refetchLeaveQueue(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const stopLeaveMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/leave/stop", {}),
+    onSuccess: () => toast({ title: "جاري إيقاف المغادرة..." }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const dequeueLeaveMutation = useMutation({
+    mutationFn: (url: string) => apiRequest("DELETE", "/api/leave/dequeue", { url }),
+    onSuccess: () => { void refetchLeaveQueue(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const addAdMutation = useMutation({
+    mutationFn: (text: string) => apiRequest("POST", "/api/publisher/ads", { text }),
+    onSuccess: () => { setNewAdText(""); void refetchPublisherAds(); toast({ title: "تمت إضافة الإعلان" }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const removeAdMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/publisher/ads/${id}`, {}),
+    onSuccess: () => { void refetchPublisherAds(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const startPublishMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/publisher/start", {}),
+    onSuccess: () => toast({ title: "بدأ نشر الإعلانات" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const stopPublishMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/publisher/stop", {}),
+    onSuccess: () => toast({ title: "جاري إيقاف النشر..." }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const startReaderMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/reader/start", {}),
+    onSuccess: () => toast({ title: "بدأت قراءة الرسائل" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const stopReaderMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/reader/stop", {}),
+    onSuccess: () => toast({ title: "تم إيقاف القراءة" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   const currentStepIdx = STEPS.findIndex((s) => s.key === step);
 
   const canNavigateTo = (target: Step): boolean => {
@@ -591,86 +713,223 @@ export default function Home() {
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2.5">الإجراءات</p>
             <div className="space-y-2">
 
-              {/* الانضمام إلى المجموعات */}
-              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showJoinSidePanel ? "border-primary bg-primary/5" : ""}`}
-                onClick={() => setShowJoinSidePanel(o => !o)}
-                data-testid="sidebar-join-groups-toggle">
-                <UserPlus className="w-4 h-4 text-primary flex-shrink-0" />
-                <span className="flex-1 text-right text-sm">الانضمام إلى المجموعات</span>
-                {showJoinSidePanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
-              </Button>
-
-              {showJoinSidePanel && (
-                <div className="border border-primary/20 rounded-lg p-3 space-y-3 bg-primary/5">
-                  {joinSession?.status === "running" && (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium flex items-center gap-1.5">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />جاري الانضمام...
-                        </span>
-                        <Badge variant="outline" className="text-xs">{joinSession.progress}/{joinSession.total}</Badge>
-                      </div>
-                      <Progress value={joinPct} className="h-1.5" />
-                      <div className="grid grid-cols-2 gap-2 text-center">
-                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-2">
-                          <p className="font-bold text-sm text-green-600">{joinSession.joined}</p>
-                          <p className="text-[10px] text-muted-foreground">ناجح</p>
-                        </div>
-                        <div className="bg-red-50 dark:bg-red-900/20 rounded p-2">
-                          <p className="font-bold text-sm text-red-600">{joinSession.failed}</p>
-                          <p className="text-[10px] text-muted-foreground">فشل</p>
-                        </div>
-                      </div>
-                      {joinSession.currentLink && <p className="text-[10px] text-muted-foreground font-mono truncate bg-muted rounded px-2 py-1">{joinSession.currentLink}</p>}
-                    </div>
-                  )}
-                  {joinSession?.status === "done" && (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-1.5 text-xs bg-green-50 dark:bg-green-900/20 rounded p-2 border border-green-200 dark:border-green-800">
-                        <CheckCheck className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
-                        <span className="text-green-700 dark:text-green-400 font-medium">اكتمل — {joinSession.joined} ناجح، {joinSession.failed} فشل</span>
-                      </div>
-                      <Button size="sm" variant="outline" className="w-full text-xs h-8" onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}>
-                        <Download className="w-3 h-3 ml-1" />تحميل النتائج
-                      </Button>
-                    </div>
-                  )}
-                  {joinSession?.status === "paused" && (
-                    <div className="flex items-center gap-1.5 text-xs bg-orange-50 dark:bg-orange-900/20 rounded p-2 border border-orange-200 dark:border-orange-800">
-                      <AlertCircle className="w-3.5 h-3.5 text-orange-600 flex-shrink-0" />
-                      <span className="text-orange-700 dark:text-orange-400">متوقف — {joinSession.joined} ناجح من {joinSession.total}</span>
-                    </div>
-                  )}
-                  <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
-                    <Clock className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                    <span>تأخير 2–5 ث بين انضمام، ودقيقة راحة كل 30 مجموعة</span>
-                  </div>
-                  {(!joinSession || joinSession.status === "paused" || joinSession.status === "done") && (
-                    <Button size="sm" className="w-full text-xs h-8"
-                      onClick={() => joinGroupsMutation.mutate()}
-                      disabled={joinGroupsMutation.isPending || waStatus !== "connected" || !validCount}
-                      data-testid="sidebar-start-join">
-                      {joinGroupsMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <UserPlus className="w-3.5 h-3.5 ml-1" />}
-                      {joinSession?.status === "done" ? "إعادة الانضمام" : joinSession?.status === "paused" ? "استئناف" : "بدء الانضمام"}
-                    </Button>
-                  )}
-                  {waStatus !== "connected" && <p className="text-[10px] text-destructive text-center">واتساب غير متصل</p>}
+              {/* ── Coordinator status banner ── */}
+              {isCoordinatorBusy && (
+                <div className="flex items-center gap-2 text-xs bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg px-3 py-2">
+                  <Loader2 className="w-3.5 h-3.5 text-yellow-600 animate-spin flex-shrink-0" />
+                  <span className="text-yellow-700 dark:text-yellow-400">
+                    وظيفة نشطة: <strong>{activeFunction === "joining" ? "الانضمام" : activeFunction === "publishing" ? "النشر" : activeFunction === "reading" ? "القراءة" : activeFunction === "leaving" ? "المغادرة" : activeFunction ?? ""}</strong> — الأزرار الأخرى معطّلة
+                  </span>
                 </div>
               )}
 
-              {/* قرأة الرسائل من المجموعات */}
-              <Button variant="outline" className="w-full justify-start gap-2 h-10 opacity-60" disabled data-testid="sidebar-read-messages">
-                <MessageCircle className="w-4 h-4 text-primary flex-shrink-0" />
-                <span className="flex-1 text-right text-sm">قرأة الرسائل من المجموعات</span>
-                <Badge variant="secondary" className="text-[10px] h-4 px-1.5">قريباً</Badge>
-              </Button>
+              {/* ── مستودع الروابط ── */}
+              {repoCounts && (
+                <div className="border rounded-lg p-2.5 space-y-1.5 bg-muted/30">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">مستودع الروابط</p>
+                  <div className="grid grid-cols-4 gap-1 text-center">
+                    {([["Pending","معلق","text-yellow-600"],["Joined","منضم","text-green-600"],["Ignored","متجاهل","text-red-500"],["Left","خرج","text-muted-foreground"]] as const).map(([k,l,c]) => (
+                      <div key={k} className="bg-background rounded p-1 border">
+                        <p className={`font-bold text-sm leading-none ${c}`}>{repoCounts[k as keyof RepoCounts] ?? 0}</p>
+                        <p className="text-[9px] text-muted-foreground mt-0.5">{l}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-              {/* نشر */}
-              <Button variant="outline" className="w-full justify-start gap-2 h-10 opacity-60" disabled data-testid="sidebar-publish">
-                <Send className="w-4 h-4 text-primary flex-shrink-0" />
-                <span className="flex-1 text-right text-sm">نشر</span>
-                <Badge variant="secondary" className="text-[10px] h-4 px-1.5">قريباً</Badge>
+              {/* ── الانضمام من المستودع (new API) ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showJoinSidePanel ? "border-primary bg-primary/5" : ""}`}
+                onClick={() => setShowJoinSidePanel(o => !o)}
+                data-testid="sidebar-join-repo-toggle">
+                <UserPlus className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">الانضمام من المستودع</span>
+                {joinProgress2 && <Badge variant={joinProgress2.status === "running" ? "default" : "secondary"} className="text-[10px]">{joinProgress2.joined ?? 0}</Badge>}
+                {showJoinSidePanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
               </Button>
+              {showJoinSidePanel && (
+                <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
+                  {joinProgress2?.status === "running" && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />جاري الانضمام...</span>
+                        <Badge variant="outline" className="text-xs">{joinProgress2.processed}/{joinProgress2.total}</Badge>
+                      </div>
+                      <Progress value={join2Pct} className="h-1.5" />
+                      <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
+                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-green-600">{joinProgress2.joined}</p><p className="text-muted-foreground">ناجح</p></div>
+                        <div className="bg-red-50 dark:bg-red-900/20 rounded p-1.5"><p className="font-bold text-red-600">{joinProgress2.failed}</p><p className="text-muted-foreground">فشل</p></div>
+                        <div className="bg-muted rounded p-1.5"><p className="font-bold">{joinProgress2.ignored}</p><p className="text-muted-foreground">متجاهل</p></div>
+                      </div>
+                      {joinProgress2.currentLink && <p className="text-[10px] text-muted-foreground font-mono truncate bg-muted rounded px-2 py-1">{joinProgress2.currentLink}</p>}
+                      {joinProgress2.stopReason && <p className="text-[10px] text-destructive bg-destructive/10 rounded p-1.5">{joinProgress2.stopReason}</p>}
+                      <Button size="sm" variant="outline" className="w-full text-xs h-8 border-destructive/50 text-destructive hover:bg-destructive/5" onClick={() => stopJoin2Mutation.mutate()} disabled={stopJoin2Mutation.isPending}>
+                        <Square className="w-3 h-3 ml-1" />إيقاف
+                      </Button>
+                    </div>
+                  )}
+                  {(joinProgress2?.status === "done" || joinProgress2?.status === "stopped") && (
+                    <div className="flex items-center gap-1.5 text-xs bg-green-50 dark:bg-green-900/20 rounded p-2 border border-green-200 dark:border-green-800">
+                      <CheckCheck className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
+                      <span className="text-green-700 dark:text-green-400 font-medium">اكتمل — {joinProgress2.joined} ناجح، {joinProgress2.failed} فشل، {joinProgress2.ignored} متجاهل</span>
+                    </div>
+                  )}
+                  {(!joinProgress2 || joinProgress2.status === "done" || joinProgress2.status === "stopped" || joinProgress2.status === "paused") && (
+                    <Button size="sm" className="w-full text-xs h-8"
+                      onClick={() => startJoin2Mutation.mutate()}
+                      disabled={startJoin2Mutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
+                      data-testid="sidebar-start-join2">
+                      {startJoin2Mutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <UserPlus className="w-3.5 h-3.5 ml-1" />}
+                      {joinProgress2?.status === "paused" ? "استئناف الانضمام" : "بدء الانضمام"}
+                    </Button>
+                  )}
+                  <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
+                    <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                    <span>يتوقف تلقائياً عند أي خطأ يهدد الحساب (421، حظر، بلاغ)</span>
+                  </div>
+                </div>
+              )}
+
+              {/* ── قرأة الرسائل ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showReaderPanel ? "border-primary bg-primary/5" : ""}`}
+                onClick={() => setShowReaderPanel(o => !o)}
+                data-testid="sidebar-read-messages">
+                <MessageCircle className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">قراءة رسائل المجموعات</span>
+                {isReaderRunning && <Badge className="text-[10px] bg-green-500">نشط</Badge>}
+                {showReaderPanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showReaderPanel && (
+                <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
+                  {readerStats && (
+                    <div className="grid grid-cols-2 gap-1 text-center text-[10px]">
+                      <div className="bg-background rounded p-1.5 border"><p className="font-bold text-sm">{readerStats.messagesReceived}</p><p className="text-muted-foreground">رسالة</p></div>
+                      <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p><p className="text-muted-foreground">روابط جديدة</p></div>
+                    </div>
+                  )}
+                  {isReaderRunning ? (
+                    <Button size="sm" variant="outline" className="w-full text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopReaderMutation.mutate()} disabled={stopReaderMutation.isPending} data-testid="sidebar-stop-reader">
+                      {stopReaderMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <Square className="w-3 h-3 ml-1" />}إيقاف القراءة
+                    </Button>
+                  ) : (
+                    <Button size="sm" className="w-full text-xs h-8"
+                      onClick={() => startReaderMutation.mutate()}
+                      disabled={startReaderMutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
+                      data-testid="sidebar-start-reader">
+                      {startReaderMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <MessageCircle className="w-3.5 h-3.5 ml-1" />}
+                      بدء القراءة
+                    </Button>
+                  )}
+                  <p className="text-[10px] text-muted-foreground">تقرأ الرسائل الجديدة فور وصولها وتستخرج الروابط تلقائياً</p>
+                </div>
+              )}
+
+              {/* ── نشر الإعلانات ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showPublisherPanel ? "border-orange-400 bg-orange-50 dark:bg-orange-900/10" : ""}`}
+                onClick={() => { setShowPublisherPanel(o => !o); if (!publisherAdsData) void refetchPublisherAds(); }}
+                data-testid="sidebar-publish">
+                <Send className="w-4 h-4 text-orange-500 flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">نشر الإعلانات</span>
+                {publisherAdsData && <Badge variant="secondary" className="text-[10px]">{publisherAdsData.length} إعلان</Badge>}
+                {showPublisherPanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showPublisherPanel && (
+                <div className="border border-orange-200 dark:border-orange-800 rounded-lg p-3 space-y-2.5 bg-orange-50/50 dark:bg-orange-900/10">
+                  {/* Progress */}
+                  {publishProgress?.status === "running" && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs"><span className="flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin text-orange-500" />جاري النشر...</span><Badge variant="outline">{publishProgress.processed}/{publishProgress.total}</Badge></div>
+                      <Progress value={publishPct} className="h-1.5" />
+                      <div className="grid grid-cols-2 gap-1 text-center text-[10px]">
+                        <div className="bg-green-50 rounded p-1.5"><p className="font-bold text-green-600">{publishProgress.sent}</p><p className="text-muted-foreground">أُرسل</p></div>
+                        <div className="bg-red-50 rounded p-1.5"><p className="font-bold text-red-600">{publishProgress.failed}</p><p className="text-muted-foreground">فشل</p></div>
+                      </div>
+                      <Button size="sm" variant="outline" className="w-full text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopPublishMutation.mutate()} disabled={stopPublishMutation.isPending}>
+                        <Square className="w-3 h-3 ml-1" />إيقاف النشر
+                      </Button>
+                    </div>
+                  )}
+                  {/* Ad list */}
+                  {publisherAdsData && publisherAdsData.length > 0 && (
+                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {publisherAdsData.map((ad) => (
+                        <div key={ad._id} className="flex items-start gap-1.5 bg-background rounded p-2 border text-xs">
+                          <span className="flex-1 line-clamp-2 text-muted-foreground">{ad.text}</span>
+                          <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                            <Badge variant="outline" className="text-[9px] h-4 px-1">{ad.sentCount}×</Badge>
+                            <Button size="sm" variant="ghost" className="h-5 w-5 p-0 hover:bg-destructive/10" onClick={() => removeAdMutation.mutate(ad._id)} disabled={removeAdMutation.isPending} data-testid={`button-remove-ad-${ad._id}`}><Trash2 className="w-3 h-3 text-destructive" /></Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Add ad */}
+                  <div className="flex gap-1.5">
+                    <Input
+                      placeholder="نص الإعلان الجديد..."
+                      value={newAdText}
+                      onChange={(e) => setNewAdText(e.target.value)}
+                      className="flex-1 h-8 text-xs"
+                      onKeyDown={(e) => { if (e.key === "Enter" && newAdText.trim()) addAdMutation.mutate(newAdText); }}
+                      data-testid="input-new-ad"
+                    />
+                    <Button size="sm" className="h-8 px-2" onClick={() => addAdMutation.mutate(newAdText)} disabled={addAdMutation.isPending || !newAdText.trim()} data-testid="button-add-ad">
+                      {addAdMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
+                    </Button>
+                  </div>
+                  {/* Start button */}
+                  {(!publishProgress || publishProgress.status !== "running") && (
+                    <Button size="sm" className="w-full text-xs h-8 bg-orange-500 hover:bg-orange-600 text-white"
+                      onClick={() => startPublishMutation.mutate()}
+                      disabled={startPublishMutation.isPending || waStatus !== "connected" || isCoordinatorBusy || !publisherAdsData?.length}
+                      data-testid="button-start-publish">
+                      {startPublishMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <Send className="w-3.5 h-3.5 ml-1" />}
+                      بدء النشر للمجموعات المنضمة
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {/* ── قائمة المغادرة ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showLeavePanel ? "border-red-300 bg-red-50 dark:bg-red-900/10" : ""}`}
+                onClick={() => { setShowLeavePanel(o => !o); void refetchLeaveQueue(); }}
+                data-testid="sidebar-leave-queue">
+                <LogOut className="w-4 h-4 text-red-500 flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">قائمة المغادرة</span>
+                {leaveQueue.length > 0 && <Badge variant="destructive" className="text-[10px]">{leaveQueue.length}</Badge>}
+                {showLeavePanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showLeavePanel && (
+                <div className="border border-red-200 dark:border-red-800 rounded-lg p-3 space-y-2 bg-red-50/50 dark:bg-red-900/10">
+                  {leaveQueue.length > 0 ? (
+                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {leaveQueue.map((entry) => (
+                        <div key={entry.url} className="flex items-center gap-1.5 bg-background rounded p-2 border text-xs">
+                          <span className="flex-1 font-mono truncate text-muted-foreground">{entry.url}</span>
+                          <Button size="sm" variant="ghost" className="h-5 w-5 p-0 hover:bg-destructive/10 flex-shrink-0" onClick={() => dequeueLeaveMutation.mutate(entry.url)} disabled={dequeueLeaveMutation.isPending}><Trash2 className="w-3 h-3 text-destructive" /></Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground text-center py-2">قائمة المغادرة فارغة</p>
+                  )}
+                  <div className="flex gap-1.5">
+                    <Button size="sm" className="flex-1 h-8 text-xs bg-red-500 hover:bg-red-600 text-white"
+                      onClick={() => startLeaveMutation.mutate()}
+                      disabled={startLeaveMutation.isPending || waStatus !== "connected" || isCoordinatorBusy || leaveQueue.length === 0}
+                      data-testid="button-start-leave">
+                      {startLeaveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <LogOut className="w-3.5 h-3.5 ml-1" />}
+                      مغادرة الكل ({leaveQueue.length})
+                    </Button>
+                    {activeFunction === "leaving" && (
+                      <Button size="sm" variant="outline" className="h-8 px-2 border-destructive/50 text-destructive" onClick={() => stopLeaveMutation.mutate()} disabled={stopLeaveMutation.isPending} data-testid="button-stop-leave">
+                        <Square className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">تأخير 5–15 ث قبل كل مغادرة لحماية الحساب</p>
+                </div>
+              )}
 
             </div>
           </div>

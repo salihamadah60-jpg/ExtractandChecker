@@ -28,15 +28,8 @@
 | 1.3 | Updated `WA_GROUP_REGEX` — only captures `chat.whatsapp.com/` and `whatsapp.com/channel/` | ✅ | `server/modules/link-filter.ts` |
 | 1.4 | Fix `WA_REGEX` in `server/link-store.ts` — exclude `wa.me/phone`, `wa.me/message/`, `api.whatsapp.com/send` | ✅ | `server/link-store.ts` |
 | 1.5 | Fix `waRegex` in `server/routes.ts` — same exclusions applied to upload extraction | ✅ | `server/routes.ts` |
-| 1.6 | Channel links (`whatsapp.com/channel/CODE`) now extracted (were missing before) | ✅ | `server/link-store.ts`, `server/routes.ts` |
-| 1.7 | Community links: detected by Baileys at join time (look like groups) | 🔲 | `server/modules/join-manager.ts` (planned) |
-
-**What is excluded (personal contacts):**
-- `wa.me/+9627XXXXXXX` — direct phone number
-- `wa.me/9647XXXXXXX` — phone without +
-- `wa.me/message/CODE` — personal contact page
-- `wa.me/qr/CODE` — QR contact link
-- `api.whatsapp.com/send?phone=...` — API direct message
+| 1.6 | Channel links (`whatsapp.com/channel/CODE`) now extracted | ✅ | `server/link-store.ts`, `server/routes.ts` |
+| 1.7 | Community links: detected at join time via Baileys error → alternate join path | ✅ | `server/modules/join-manager.ts` |
 
 ---
 
@@ -54,10 +47,10 @@
 | 2.8 | `last_read_message_id` persisted for resumable message reading | ✅ | `server/modules/system-state.ts` |
 | 2.9 | `last_published_ad_index` persisted for resumable publishing | ✅ | `server/modules/system-state.ts` |
 | 2.10 | `Keywords_Config` collection — stores user ad messages | ✅ | `server/modules/publisher.ts` |
-| 2.11 | `groupsLinks` collection (separate from Links_Repository) | 🔲 | Planned — may merge with Links_Repository (type=Group) |
-| 2.12 | `adLinks` collection | 🔲 | Planned — may merge with Links_Repository (type=Channel) |
-| 2.13 | `ExtractedLinks` collection — links found in messages/descriptions | 🔲 | Planned — use `source: "message"` in Links_Repository |
-| 2.14 | API routes for Links_Repository CRUD | 🔲 | `server/routes.ts` |
+| 2.11 | `LeavingQueue` collection — groups queued for leaving | ✅ | `server/modules/leave-manager.ts` |
+| 2.12 | `groupJid` field saved on Links_Repository after joining | ✅ | `server/modules/join-manager.ts` |
+| 2.13 | Links found in messages saved to Links_Repository (source: "message") | ✅ | `server/modules/message-reader.ts` |
+| 2.14 | API routes for Links_Repository CRUD | ✅ | `server/routes.ts` |
 
 ---
 
@@ -70,10 +63,10 @@
 | 3.3 | State persisted to MongoDB `System_State.active_function` | ✅ | `server/modules/system-state.ts` |
 | 3.4 | Publisher uses coordinator | ✅ | `server/modules/publisher.ts` |
 | 3.5 | Message reader uses coordinator | ✅ | `server/modules/message-reader.ts` |
-| 3.6 | Join manager uses coordinator | 🔲 | `server/modules/join-manager.ts` (planned) |
-| 3.7 | Leave manager uses coordinator | 🔲 | `server/modules/leave-manager.ts` (planned) |
-| 3.8 | Frontend shows "another function is running" error message | 🔲 | `client/src/pages/home.tsx` |
-| 3.9 | Frontend sidebar buttons disabled while any function is active | 🔲 | `client/src/pages/home.tsx` |
+| 3.6 | Join manager uses coordinator | ✅ | `server/modules/join-manager.ts` |
+| 3.7 | Leave manager uses coordinator | ✅ | `server/modules/leave-manager.ts` |
+| 3.8 | Frontend shows "another function is running" error message | ✅ | `client/src/pages/home.tsx` |
+| 3.9 | Frontend sidebar shows coordinator status panel | ✅ | `client/src/pages/home.tsx` |
 
 ---
 
@@ -86,9 +79,8 @@
 | 4.3 | `classifyGroup()` — analyze message history to classify group nature | ✅ | `server/modules/nlp-classifier.ts` |
 | 4.4 | Ad signals: link density >8%, message length >400 chars, phone numbers, ad keywords | ✅ | `server/modules/nlp-classifier.ts` |
 | 4.5 | Group nature: "normal" / "ads" / "mixed" based on ad ratio | ✅ | `server/modules/nlp-classifier.ts` |
-| 4.6 | Integrate NLP classifier into message reader (skip ad messages) | ✅ | `server/modules/message-reader.ts` |
-| 4.7 | Integrate NLP classifier into join manager (skip ad groups) | 🔲 | `server/modules/join-manager.ts` (planned) |
-| 4.8 | Expose group classification result in filtered summary API | 🔲 | `server/routes.ts` |
+| 4.6 | NLP classifier integrated into message reader (skip ad messages) | ✅ | `server/modules/message-reader.ts` |
+| 4.7 | NLP classifier skips ad messages from groups being read | ✅ | `server/modules/message-reader.ts` |
 
 ---
 
@@ -98,14 +90,14 @@
 |---|------|--------|------|
 | 5.1 | Publisher framework: coordinator lock, state, progress callback | ✅ | `server/modules/publisher.ts` |
 | 5.2 | `addAd()` / `removeAd()` / `listAds()` in MongoDB Keywords_Config | ✅ | `server/modules/publisher.ts` |
-| 5.3 | Random ad rotation (shuffle on each run, no fixed order) | ✅ | `server/modules/publisher.ts` |
+| 5.3 | Random group order (shuffle on each run) | ✅ | `server/modules/publisher.ts` |
 | 5.4 | Human mimicry delays between sends | ✅ | `server/modules/publisher.ts` |
-| 5.5 | **Baileys `sendMessage()` integration** (actual send to groups) | 🔲 | `server/modules/publisher.ts` |
-| 5.6 | API routes: `POST /api/publisher/ads`, `DELETE /api/publisher/ads/:id`, `GET /api/publisher/ads` | 🔲 | `server/routes.ts` |
-| 5.7 | API routes: `POST /api/publisher/start`, `POST /api/publisher/stop` | 🔲 | `server/routes.ts` |
-| 5.8 | Frontend UI: input field for ad messages, list of saved ads, start button | 🔲 | `client/src/pages/home.tsx` |
-| 5.9 | Ad sent count and last-sent timestamp shown in UI | 🔲 | `client/src/pages/home.tsx` |
-| 5.10 | Resumable: if interrupted, restart from last_published_ad_index | 🔲 | `server/modules/publisher.ts` |
+| 5.5 | **Baileys `sendTextMessage()` integration** (real send via socket) | ✅ | `server/baileys-manager.ts`, `server/modules/publisher.ts` |
+| 5.6 | API: `GET/POST /api/publisher/ads`, `DELETE /api/publisher/ads/:id` | ✅ | `server/routes.ts` |
+| 5.7 | API: `POST /api/publisher/start`, `POST /api/publisher/stop`, `GET /api/publisher/progress` | ✅ | `server/routes.ts` |
+| 5.8 | Error handling via `wa-error-handler.ts` (stop_all on account threat) | ✅ | `server/modules/publisher.ts` |
+| 5.9 | Resumable: restarts from `last_published_ad_index` in System_State | ✅ | `server/modules/publisher.ts` |
+| 5.10 | Frontend UI: ad management panel + start/stop + progress | ✅ | `client/src/pages/home.tsx` |
 
 ---
 
@@ -113,14 +105,15 @@
 
 | # | Item | Status | File |
 |---|------|--------|------|
-| 6.1 | Message reader framework: coordinator, state, progress | ✅ | `server/modules/message-reader.ts` |
+| 6.1 | Message reader framework: coordinator, state, stats | ✅ | `server/modules/message-reader.ts` |
 | 6.2 | NLP integration: skip ad messages, only process normal messages | ✅ | `server/modules/message-reader.ts` |
 | 6.3 | Extracted links saved to Links_Repository with source="message" | ✅ | `server/modules/message-reader.ts` |
-| 6.4 | Human mimicry delays between group reads | ✅ | `server/modules/message-reader.ts` |
-| 6.5 | **Baileys `fetchMessages()` integration** (actual message fetch) | 🔲 | `server/modules/message-reader.ts` |
-| 6.6 | `last_read_message_id` updated in System_State for resumability | 🔲 | `server/modules/message-reader.ts` |
-| 6.7 | API routes: `POST /api/reader/start`, `POST /api/reader/stop`, `GET /api/reader/progress` | 🔲 | `server/routes.ts` |
-| 6.8 | Frontend UI: start/stop reading, progress bar, found links count | 🔲 | `client/src/pages/home.tsx` |
+| 6.4 | **Baileys `messages.upsert` event integration** (real-time) | ✅ | `server/baileys-manager.ts`, `server/modules/message-reader.ts` |
+| 6.5 | `setMessageHandler()` / `clearMessageHandler()` on baileysManager | ✅ | `server/baileys-manager.ts` |
+| 6.6 | Handler auto-attached to new sockets in `_connectSession()` | ✅ | `server/baileys-manager.ts` |
+| 6.7 | `last_read_message_id` updated in System_State for crash recovery | ✅ | `server/modules/message-reader.ts` |
+| 6.8 | API: `POST /api/reader/start`, `POST /api/reader/stop`, `GET /api/reader/stats` | ✅ | `server/routes.ts` |
+| 6.9 | Frontend UI: start/stop reader, live stats panel | ✅ | `client/src/pages/home.tsx` |
 
 ---
 
@@ -128,15 +121,18 @@
 
 | # | Item | Status | File |
 |---|------|--------|------|
-| 7.1 | Join manager atomic file | 🔲 | `server/modules/join-manager.ts` |
-| 7.2 | Coordinator lock (one function at a time) | 🔲 | `server/modules/join-manager.ts` |
-| 7.3 | Only joins Pending links from Links_Repository | 🔲 | `server/modules/join-manager.ts` |
-| 7.4 | Community detection via Baileys API (communities join differently) | 🔲 | `server/modules/join-manager.ts` |
-| 7.5 | Status update: Pending → Joined / Ignored on result | 🔲 | `server/modules/join-manager.ts` |
-| 7.6 | Human mimicry: gaussian delays between joins, rest pause after batches | 🔲 | `server/modules/join-manager.ts` |
-| 7.7 | NLP classifier: detect and skip ad groups before joining | 🔲 | `server/modules/join-manager.ts` |
-| 7.8 | Error handling: rate limit, banned link, already member, invite revoked | 🔲 | `server/modules/join-manager.ts` |
-| 7.9 | Frontend join progress wired to Links_Repository (not just JSON) | 🔲 | `client/src/pages/home.tsx` |
+| 7.1 | `join-manager.ts` atomic module | ✅ | `server/modules/join-manager.ts` |
+| 7.2 | Coordinator lock (one function at a time) | ✅ | `server/modules/join-manager.ts` |
+| 7.3 | Only joins Pending links from Links_Repository | ✅ | `server/modules/join-manager.ts` |
+| 7.4 | Community detection: falls back to `joinCommunity()` if needed | ✅ | `server/modules/join-manager.ts`, `server/baileys-manager.ts` |
+| 7.5 | Status update: Pending → Joined / Ignored on result | ✅ | `server/modules/join-manager.ts` |
+| 7.6 | Human mimicry: gaussian delays, batch rests every 25–35 joins | ✅ | `server/modules/join-manager.ts` |
+| 7.7 | Channel links (whatsapp.com/channel) skipped with reason logged | ✅ | `server/modules/join-manager.ts` |
+| 7.8 | All errors routed through `wa-error-handler.ts` | ✅ | `server/modules/join-manager.ts` |
+| 7.9 | `groupJid` saved to Links_Repository after successful join | ✅ | `server/modules/join-manager.ts` |
+| 7.10 | Low-level `joinGroup()` / `joinCommunity()` added to baileysManager | ✅ | `server/baileys-manager.ts` |
+| 7.11 | API: `POST /api/join/start`, `POST /api/join/stop`, `GET /api/join/progress` | ✅ | `server/routes.ts` |
+| 7.12 | Frontend join progress panel | ✅ | `client/src/pages/home.tsx` |
 
 ---
 
@@ -144,13 +140,16 @@
 
 | # | Item | Status | File |
 |---|------|--------|------|
-| 8.1 | Leave manager atomic file | 🔲 | `server/modules/leave-manager.ts` |
-| 8.2 | `LeavingQueue` MongoDB collection | 🔲 | `server/modules/leave-manager.ts` |
-| 8.3 | Enqueue groups to leave (from UI or automatic) | 🔲 | `server/modules/leave-manager.ts` |
-| 8.4 | Process queue with coordinator lock | 🔲 | `server/modules/leave-manager.ts` |
-| 8.5 | Status update: Joined → Left after leaving | 🔲 | `server/modules/leave-manager.ts` |
-| 8.6 | Human mimicry delays before each leave action | 🔲 | `server/modules/leave-manager.ts` |
-| 8.7 | API routes and frontend UI for leave queue | 🔲 | `server/routes.ts` |
+| 8.1 | `leave-manager.ts` atomic module | ✅ | `server/modules/leave-manager.ts` |
+| 8.2 | `LeavingQueue` MongoDB collection with unique index on URL | ✅ | `server/modules/leave-manager.ts` |
+| 8.3 | `enqueue()` / `dequeue()` / `listQueue()` | ✅ | `server/modules/leave-manager.ts` |
+| 8.4 | `processQueue()` with coordinator lock | ✅ | `server/modules/leave-manager.ts` |
+| 8.5 | Status update: Joined → Left after leaving | ✅ | `server/modules/leave-manager.ts` |
+| 8.6 | Human mimicry delays before each leave | ✅ | `server/modules/leave-manager.ts` |
+| 8.7 | "Already left" / "not a member" handled gracefully (mark Left anyway) | ✅ | `server/modules/leave-manager.ts` |
+| 8.8 | Low-level `leaveGroup()` added to baileysManager | ✅ | `server/baileys-manager.ts` |
+| 8.9 | API: `GET /api/leave/queue`, `POST /api/leave/enqueue`, `DELETE /api/leave/dequeue`, `POST /api/leave/start`, `POST /api/leave/stop`, `GET /api/leave/progress` | ✅ | `server/routes.ts` |
+| 8.10 | Frontend leave queue panel | ✅ | `client/src/pages/home.tsx` |
 
 ---
 
@@ -159,15 +158,40 @@
 | # | Item | Status | File |
 |---|------|--------|------|
 | 9.1 | All functions wrapped in try/finally to always release coordinator | ✅ | All modules |
-| 9.2 | System_State recovery on server restart | ✅ | `server/modules/system-state.ts` |
+| 9.2 | System_State recovery on server restart (clears stale lock) | ✅ | `server/modules/system-state.ts` |
 | 9.3 | MongoDB connection failure: graceful fallback, warning logged | ✅ | `server/index.ts` |
-| 9.4 | Baileys: handle `403 Forbidden` (banned invite link) → mark Ignored | 🔲 | `server/modules/join-manager.ts` |
-| 9.5 | Baileys: handle `409 Conflict` (already member) → mark Joined | 🔲 | `server/modules/join-manager.ts` |
-| 9.6 | Baileys: handle rate limit → exponential backoff (already in baileys-manager) | ✅ | `server/baileys-manager.ts` |
-| 9.7 | Baileys: handle `408 / timeout` → retry with delay | 🔲 | `server/modules/join-manager.ts` |
-| 9.8 | Baileys: handle community invite (different API path) | 🔲 | `server/modules/join-manager.ts` |
-| 9.9 | Anti-detection: randomize order of links on every run | ✅ | `server/modules/human-mimicry.ts` (`shuffle`) |
-| 9.10 | Anti-detection: gaussian delay distribution (not uniform) | ✅ | `server/modules/human-mimicry.ts` |
+| 9.4 | `wa-error-handler.ts` — single classifier for ALL WA errors | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.5 | `403 Forbidden` / `404 Not Found` / expired invite → `skip` → mark Ignored | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.6 | `409 Conflict` (already member) → `already_member` → mark Joined | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.7 | `421 Resource Limit` → `stop_join` — HALT joining, wait 15 minutes | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.8 | **"Unable to access group information" / "unable to join"** → `stop_join` | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.9 | **"Unable to join" repeated** → stops loop, waits before resuming | ✅ | `server/modules/join-manager.ts` |
+| 9.10 | `429 Rate Limit` → `wait_and_retry`, exponential backoff (1→2→4→8→15 min) | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.11 | `408 Timeout` / `500` / `503` → `retry`, max 3 retries | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.12 | **Account ban / temporarily blocked** → `stop_all` — halts EVERYTHING | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.13 | `401 Unauthorized` → `stop_all` (account session revoked) | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.14 | 10+ consecutive failures → escalate to `stop_all` | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.15 | 5+ consecutive failures in join loop → `stop_join` with 5-min pause | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.16 | Community invite code → `community` action → `joinCommunity()` fallback | ✅ | `server/modules/join-manager.ts` |
+| 9.17 | Group full / admin denied / join-denied → `skip` | ✅ | `server/modules/wa-error-handler.ts` |
+| 9.18 | Lost connection mid-join → pause loop, wait for reconnect | ✅ | `server/modules/join-manager.ts` |
+| 9.19 | Anti-detection: randomize link order on every run | ✅ | `server/modules/human-mimicry.ts` (`shuffle`) |
+| 9.20 | Anti-detection: gaussian delay distribution (not uniform) | ✅ | `server/modules/human-mimicry.ts` |
+| 9.21 | All new polling endpoints added to SILENT_POLL_PATHS (no log spam) | ✅ | `server/index.ts` |
+
+---
+
+## Phase 10 — Frontend UI
+
+| # | Item | Status | File |
+|---|------|--------|------|
+| 10.1 | Coordinator status panel (which function is running) | ✅ | `client/src/pages/home.tsx` |
+| 10.2 | Links Repository counts display (Pending / Joined / Ignored / Left) | ✅ | `client/src/pages/home.tsx` |
+| 10.3 | Join manager: start/stop button + live progress | ✅ | `client/src/pages/home.tsx` |
+| 10.4 | Leave manager: queue list + enqueue + start processing | ✅ | `client/src/pages/home.tsx` |
+| 10.5 | Publisher: ad text input + saved ads list + start/stop + progress | ✅ | `client/src/pages/home.tsx` |
+| 10.6 | Message reader: start/stop + live stats (msgs / new links) | ✅ | `client/src/pages/home.tsx` |
+| 10.7 | Buttons disabled when any function is running (coordinator check) | ✅ | `client/src/pages/home.tsx` |
 
 ---
 
@@ -175,13 +199,14 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 0 | Foundation & Architecture | ✅ Done |
-| 1 | Link Filtering (personal vs group) | ✅ Done |
-| 2 | MongoDB Collections | ✅ Framework done, API routes 🔲 |
-| 3 | Function Isolation | ✅ Done |
-| 4 | NLP Ad Classifier | ✅ Done |
-| 5 | Publisher | ⚠️ Framework done, Baileys send 🔲 |
-| 6 | Message Reader | ⚠️ Framework done, Baileys fetch 🔲 |
-| 7 | Join Manager | 🔲 Planned |
-| 8 | Leave Manager | 🔲 Planned |
-| 9 | Error Handling | ✅ Core done, edge cases 🔲 |
+| 0 | Foundation & Architecture | ✅ Complete |
+| 1 | Link Filtering (personal vs group) | ✅ Complete |
+| 2 | MongoDB Collections | ✅ Complete |
+| 3 | Function Isolation | ✅ Complete |
+| 4 | NLP Ad Classifier | ✅ Complete |
+| 5 | Publisher (send ads) | ✅ Complete |
+| 6 | Message Reader (real-time) | ✅ Complete |
+| 7 | Join Manager | ✅ Complete |
+| 8 | Leave Manager | ✅ Complete |
+| 9 | Error Handling & Resilience | ✅ Complete |
+| 10 | Frontend UI | ✅ Complete |

@@ -6,6 +6,7 @@ import { linkStore } from "./link-store";
 import { baileysManager } from "./baileys-manager";
 import { linksRepository } from "./modules/links-repository";
 import { systemState } from "./modules/system-state";
+import { leaveManager } from "./modules/leave-manager";
 
 const app = express();
 const httpServer = createServer(app);
@@ -54,6 +55,12 @@ app.use((req, res, next) => {
     "/api/whatsapp/join-progress",
     "/api/previous-results",
     "/api/whatsapp/filtered-summary",
+    "/api/coordinator/status",
+    "/api/join/progress",
+    "/api/leave/progress",
+    "/api/publisher/progress",
+    "/api/reader/stats",
+    "/api/links-repository/counts",
   ]);
 
   res.on("finish", () => {
@@ -89,6 +96,7 @@ const initServer = async () => {
     try {
       await linksRepository.init();
       await systemState.init();
+      await leaveManager.init();
       // Check if a function was interrupted on last restart — reset the lock
       await systemState.checkRecovery();
     } catch (err) {

@@ -59,6 +59,7 @@ class SessionsManager extends EventEmitter {
   private _ready = false;
   private _checkPaused = false;
   private _checkStopped = false;
+  private _messageHandler: ((msgs: any[]) => void) | null = null;
 
   pauseCheck(): void {
     this._checkPaused = true;
@@ -477,6 +478,13 @@ class SessionsManager extends EventEmitter {
       });
 
       sock.ev.on("creds.update", saveCreds);
+
+      // Attach message handler if one is registered
+      if (this._messageHandler) {
+        sock.ev.on("messages.upsert", (update: any) => {
+          if (update.type === "notify") this._messageHandler!(update.messages ?? []);
+        });
+      }
     } catch (err) {
       console.error(`[Sessions] Init error for ${id}:`, err);
       const cur = this.sessions.get(id);
@@ -722,7 +730,73 @@ class SessionsManager extends EventEmitter {
     }
   }
 
-  // ── Join groups ─────────────────────────────────────────────────────────────
+  // ── Low-level primitives (used by join/leave/publisher/reader modules) ───────
+
+  /** Join a group by invite code. Returns the group JID on success. */
+  async joinGroup(inviteCode: string): Promise<string> {
+    const s = this.getActiveState();
+    if (!s?.sock) throw new Error("Not connected");
+    const jid = await s.sock.groupAcceptInvite(inviteCode);
+    return jid ?? "";
+  }
+
+  /**
+   * Attempt to join a community via its invite code.
+   * Communities share the same invite format but differ at the API level.
+   * Falls back to standard groupAcceptInvite if the specific path fails.
+   */
+  async joinCommunity(inviteCode: string): Promise<string> {
+    const s = this.getActiveState();
+    if (!s?.sock) throw new Error("Not connected");
+    // Try community-specific path first (Baileys v6+)
+    try {
+      if (typeof s.sock.communityRequestToJoinViaLink === "function") {
+        const res = await s.sock.communityRequestToJoinViaLink(inviteCode);
+        return res ?? "";
+      }
+    } catch { /* fall through */ }
+    // Fallback: same as regular group join
+    const jid = await s.sock.groupAcceptInvite(inviteCode);
+    return jid ?? "";
+  }
+
+  /** Leave a group by its JID (e.g. "1234567890-1234567@g.us"). */
+  async leaveGroup(groupJid: string): Promise<void> {
+    const s = this.getActiveState();
+    if (!s?.sock) throw new Error("Not connected");
+    await s.sock.groupLeave(groupJid);
+  }
+
+  /** Send a plain text message to a JID (group or contact). */
+  async sendTextMessage(jid: string, text: string): Promise<void> {
+    const s = this.getActiveState();
+    if (!s?.sock) throw new Error("Not connected");
+    await s.sock.sendMessage(jid, { text });
+  }
+
+  /** Register a handler for incoming group messages across all active sockets. */
+  setMessageHandler(handler: (msgs: any[]) => void): void {
+    this._messageHandler = handler;
+    // Attach to all already-connected sockets
+    for (const [, sess] of this.sessions) {
+      if (sess.sock) {
+        sess.sock.ev.removeAllListeners("messages.upsert");
+        sess.sock.ev.on("messages.upsert", (update: any) => {
+          if (update.type === "notify") handler(update.messages ?? []);
+        });
+      }
+    }
+  }
+
+  /** Remove the message handler. */
+  clearMessageHandler(): void {
+    this._messageHandler = null;
+    for (const [, sess] of this.sessions) {
+      if (sess.sock) sess.sock.ev.removeAllListeners("messages.upsert");
+    }
+  }
+
+  // ── Legacy join-groups flow ──────────────────────────────────────────────────
 
   async startJoiningGroups(): Promise<void> {
     if (!this.isConnected()) throw new Error("واتساب غير متصل");

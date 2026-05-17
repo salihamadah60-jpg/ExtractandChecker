@@ -6,6 +6,12 @@ import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } fro
 import { linkStore, isMedicalGroup, hasExcludedDescription, type FilteredGroup } from "./link-store.js";
 import { baileysManager } from "./baileys-manager.js";
 import { checkLinksHTTP } from "./http-checker.js";
+import { coordinator } from "./modules/function-coordinator.js";
+import { linksRepository } from "./modules/links-repository.js";
+import { joinManager } from "./modules/join-manager.js";
+import { leaveManager } from "./modules/leave-manager.js";
+import { publisher } from "./modules/publisher.js";
+import { messageReader } from "./modules/message-reader.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -772,6 +778,182 @@ export async function registerRoutes(
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.setHeader("Content-Disposition", `attachment; filename="valid-whatsapp-links.docx"`);
     res.send(buf);
+  });
+
+  // ── Coordinator status ─────────────────────────────────────────────────────
+  app.get("/api/coordinator/status", (_req, res) => {
+    res.json({
+      active: coordinator.getActive(),
+      isRunning: coordinator.isRunning(),
+    });
+  });
+
+  // ── Links Repository ───────────────────────────────────────────────────────
+  app.get("/api/links-repository/counts", async (_req, res) => {
+    try {
+      const counts = await linksRepository.countByStatus();
+      res.json(counts);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/links-repository/joined", async (_req, res) => {
+    try {
+      const links = await linksRepository.findJoined();
+      res.json(links);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/links-repository/pending", async (_req, res) => {
+    try {
+      const links = await linksRepository.findPendingForJoin();
+      res.json(links);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Join Manager ───────────────────────────────────────────────────────────
+  app.post("/api/join/start", async (_req, res) => {
+    try {
+      joinManager.start().catch(console.error);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/join/stop", (_req, res) => {
+    joinManager.requestStop();
+    res.json({ success: true });
+  });
+
+  app.get("/api/join/progress", (_req, res) => {
+    res.json({ progress: joinManager.getProgress() });
+  });
+
+  // ── Leave Manager ──────────────────────────────────────────────────────────
+  app.get("/api/leave/queue", async (_req, res) => {
+    try {
+      const queue = await leaveManager.listQueue();
+      res.json({ queue, count: queue.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/leave/enqueue", async (req, res) => {
+    const { url, reason } = req.body ?? {};
+    if (!url) return res.status(400).json({ error: "url مطلوب" });
+    try {
+      const added = await leaveManager.enqueue(url, reason);
+      res.json({ success: true, added });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/leave/dequeue", async (req, res) => {
+    const { url } = req.body ?? {};
+    if (!url) return res.status(400).json({ error: "url مطلوب" });
+    try {
+      await leaveManager.dequeue(url);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/leave/start", async (_req, res) => {
+    try {
+      leaveManager.processQueue().catch(console.error);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/leave/stop", (_req, res) => {
+    leaveManager.requestStop();
+    res.json({ success: true });
+  });
+
+  app.get("/api/leave/progress", (_req, res) => {
+    res.json({ progress: leaveManager.getProgress() });
+  });
+
+  // ── Publisher ──────────────────────────────────────────────────────────────
+  app.get("/api/publisher/ads", async (_req, res) => {
+    try {
+      const ads = await publisher.listAds();
+      res.json(ads);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/publisher/ads", async (req, res) => {
+    const { text } = req.body ?? {};
+    if (!text?.trim()) return res.status(400).json({ error: "نص الإعلان مطلوب" });
+    try {
+      const id = await publisher.addAd(text.trim());
+      res.json({ success: true, id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/publisher/ads/:id", async (req, res) => {
+    try {
+      await publisher.removeAd(req.params.id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/publisher/start", async (_req, res) => {
+    try {
+      publisher.start().catch(console.error);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/publisher/stop", (_req, res) => {
+    publisher.requestStop();
+    res.json({ success: true });
+  });
+
+  app.get("/api/publisher/progress", (_req, res) => {
+    res.json({ progress: publisher.getProgress() });
+  });
+
+  // ── Message Reader ─────────────────────────────────────────────────────────
+  app.post("/api/reader/start", async (_req, res) => {
+    try {
+      await messageReader.start();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/reader/stop", async (_req, res) => {
+    try {
+      await messageReader.stop();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/reader/stats", (_req, res) => {
+    res.json({ stats: messageReader.getStats(), isRunning: messageReader.isRunning() });
   });
 
   return httpServer;

@@ -1,110 +1,153 @@
 /**
- * message-reader.ts — Read messages from joined groups and extract links
+ * message-reader.ts — Real-time message reader from joined groups
  *
- * - Iterates over all Joined groups in Links_Repository
- * - Fetches messages via Baileys
- * - Classifies messages (ad vs normal) using NLP
- * - Extracts WhatsApp/Telegram links from non-ad messages
- * - Saves extracted links back to Links_Repository (source: "message")
- * - Tracks last_read_message_id in System_State for resumability
- * - Blocked if another function is running (function-coordinator)
+ * Uses Baileys messages.upsert event (real-time push) to receive
+ * new messages from all joined groups as they arrive.
  *
- * Status: STUB — framework ready, Baileys message fetch integration pending
+ * Features:
+ *   - Registers message handler with baileysManager
+ *   - Filters: group messages only (JID ends with @g.us)
+ *   - NLP classifier: skips advertising messages
+ *   - Extracts WhatsApp/Telegram group links from clean messages
+ *   - Saves new links to Links_Repository (source: "message")
+ *   - Tracks last_read_message_id in System_State for crash recovery
+ *   - Coordinator lock: blocks other functions while active
  */
 
+import { baileysManager } from "../baileys-manager.js";
 import { coordinator } from "./function-coordinator.js";
 import { systemState } from "./system-state.js";
 import { linksRepository } from "./links-repository.js";
 import { classifyMessage } from "./nlp-classifier.js";
 import { extractGroupLinks } from "./link-filter.js";
-import { DELAYS } from "./human-mimicry.js";
 
-export interface ReadProgress {
-  groupsTotal: number;
-  groupsDone: number;
-  messagesRead: number;
+export interface ReaderStats {
+  status: "running" | "stopped" | "error";
+  messagesReceived: number;
+  messagesSkippedAds: number;
   linksFound: number;
-  adsSkipped: number;
-  currentGroup?: string;
+  linksNew: number;
+  startedAt: string;
+  stoppedAt?: string;
+  lastMessageId?: string;
 }
 
+let _stats: ReaderStats | null = null;
+let _running = false;
+
 export const messageReader = {
-  /**
-   * Start reading messages from all joined groups.
-   *
-   * STUB: Baileys fetchMessages integration is pending.
-   * See TODO comment below.
-   */
-  async start(
-    onProgress?: (p: ReadProgress) => void
-  ): Promise<ReadProgress> {
-    const acquired = await coordinator.acquire("reading");
-    if (!acquired) {
-      throw new Error("وظيفة أخرى تعمل حالياً. يُرجى الانتظار حتى تنتهي.");
+  getStats(): ReaderStats | null {
+    return _stats;
+  },
+
+  isRunning(): boolean {
+    return _running;
+  },
+
+  /** Start listening for messages from all joined groups. */
+  async start(): Promise<void> {
+    if (!baileysManager.isConnected()) {
+      throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
     }
 
-    const progress: ReadProgress = {
-      groupsTotal: 0,
-      groupsDone: 0,
-      messagesRead: 0,
+    const acquired = await coordinator.acquire("reading");
+    if (!acquired) {
+      const active = coordinator.getActive();
+      throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
+    }
+
+    _running = true;
+    _stats = {
+      status: "running",
+      messagesReceived: 0,
+      messagesSkippedAds: 0,
       linksFound: 0,
-      adsSkipped: 0,
+      linksNew: 0,
+      startedAt: new Date().toISOString(),
     };
 
+    await systemState.setActiveFunction("reading");
+    console.log("[MessageReader] Started — listening for group messages");
+
+    // Get last processed message ID from System_State for recovery
+    const state = await systemState.get();
+    if (state.last_read_message_id) {
+      _stats.lastMessageId = state.last_read_message_id;
+    }
+
+    // Register the real-time message handler with baileysManager
+    baileysManager.setMessageHandler(async (msgs: any[]) => {
+      for (const msg of msgs) {
+        if (!_running) break;
+        await messageReader._handleMessage(msg);
+      }
+    });
+  },
+
+  /** Stop listening for messages. */
+  async stop(): Promise<void> {
+    _running = false;
+    baileysManager.clearMessageHandler();
+
+    if (_stats) {
+      _stats.status = "stopped";
+      _stats.stoppedAt = new Date().toISOString();
+    }
+
+    coordinator.release();
+    await systemState.setActiveFunction(null);
+    console.log(
+      `[MessageReader] Stopped — messages: ${_stats?.messagesReceived ?? 0}, new links: ${_stats?.linksNew ?? 0}`
+    );
+  },
+
+  /** Internal: process a single Baileys message object. */
+  async _handleMessage(msg: any): Promise<void> {
     try {
-      await systemState.setActiveFunction("reading");
-      const state = await systemState.get();
-      const lastId = state.last_read_message_id;
+      // Only process group messages (JID ends with @g.us)
+      const jid: string = msg.key?.remoteJid ?? "";
+      if (!jid.endsWith("@g.us")) return;
 
-      const joinedGroups = await linksRepository.findJoined();
-      progress.groupsTotal = joinedGroups.length;
+      // Extract text content
+      const text: string =
+        msg.message?.conversation ??
+        msg.message?.extendedTextMessage?.text ??
+        msg.message?.imageMessage?.caption ??
+        msg.message?.videoMessage?.caption ??
+        "";
 
-      if (!joinedGroups.length) {
-        console.log("[MessageReader] No joined groups to read from");
-        return progress;
+      if (!text.trim()) return;
+
+      if (_stats) _stats.messagesReceived++;
+
+      // NLP: skip ad messages
+      const embeddedLinks = extractGroupLinks(text);
+      const cls = classifyMessage(text, embeddedLinks.whatsapp);
+      if (cls.isAd) {
+        if (_stats) _stats.messagesSkippedAds++;
+        return;
       }
 
-      for (const group of joinedGroups) {
-        progress.currentGroup = group.url;
-        onProgress?.(progress);
+      // Extract group/channel links from the clean message
+      const allLinks = [...embeddedLinks.whatsapp];
+      if (_stats) _stats.linksFound += allLinks.length;
 
-        // TODO: Integrate Baileys fetchGroupMessages here:
-        // const inviteCode = group.url.split("/").pop()!;
-        // const groupId = await baileysManager.resolveGroupId(inviteCode);
-        // const messages = await baileysManager.fetchMessages(groupId, { since: lastId });
-
-        // STUB: simulate empty message list
-        const messages: string[] = [];
-        console.log(`[MessageReader] STUB: would read from ${group.url}`);
-
-        for (const text of messages) {
-          progress.messagesRead++;
-
-          // NLP classification — skip ad messages
-          const embeddedLinks = extractGroupLinks(text);
-          const cls = classifyMessage(text, embeddedLinks.whatsapp);
-          if (cls.isAd) {
-            progress.adsSkipped++;
-            continue;
-          }
-
-          // Extract links and save to repository
-          for (const url of embeddedLinks.whatsapp) {
-            const added = await linksRepository.addIfNew(url, "Group", "message");
-            if (added) progress.linksFound++;
-          }
-
-          await DELAYS.betweenGroupReads();
+      for (const url of allLinks) {
+        const added = await linksRepository.addIfNew(url, "Group", "message");
+        if (added) {
+          if (_stats) _stats.linksNew++;
+          console.log(`[MessageReader] New link found: ${url}`);
         }
-
-        progress.groupsDone++;
-        await DELAYS.betweenGroupReads();
       }
 
-      return progress;
-    } finally {
-      coordinator.release();
-      await systemState.setActiveFunction(null);
+      // Save last message ID for crash recovery
+      const msgId = msg.key?.id;
+      if (msgId) {
+        if (_stats) _stats.lastMessageId = msgId;
+        await systemState.setLastReadMessageId(msgId);
+      }
+    } catch (err) {
+      console.warn("[MessageReader] Error processing message:", (err as Error).message);
     }
   },
 };
