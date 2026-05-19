@@ -940,9 +940,10 @@ export async function registerRoutes(
   });
 
   // ── Join Manager ───────────────────────────────────────────────────────────
-  app.post("/api/join/start", async (_req, res) => {
+  app.post("/api/join/start", async (req, res) => {
     try {
-      joinManager.start().catch(console.error);
+      const maxLinks: number | undefined = req.body?.maxLinks ? Number(req.body.maxLinks) : undefined;
+      joinManager.start(maxLinks).catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });

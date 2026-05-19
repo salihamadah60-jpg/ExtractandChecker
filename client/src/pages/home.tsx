@@ -181,6 +181,7 @@ export default function Home() {
   const [showReaderPanel, setShowReaderPanel] = useState(false);
   const [showLeavePanel, setShowLeavePanel] = useState(false);
   const [newAdText, setNewAdText] = useState("");
+  const [joinMaxLinks, setJoinMaxLinks] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
   const newRoundFileRef = useRef<HTMLInputElement>(null);
   const extraUploadRef = useRef<HTMLInputElement>(null);
@@ -598,8 +599,15 @@ export default function Home() {
   const leaveQueue = leaveQueueData?.queue ?? [];
 
   const startJoin2Mutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/join/start", {}),
-    onSuccess: () => { toast({ title: "بدأ الانضمام — رابطان كل 10 دقائق" }); void refetchJoinProgress2(); },
+    mutationFn: () => {
+      const max = parseInt(joinMaxLinks, 10);
+      return apiRequest("POST", "/api/join/start", max > 0 ? { maxLinks: max } : {});
+    },
+    onSuccess: () => {
+      const max = parseInt(joinMaxLinks, 10);
+      toast({ title: max > 0 ? `بدأ الانضمام التجريبي — ${max} روابط فقط` : "بدأ الانضمام — رابطان كل 10 دقائق" });
+      void refetchJoinProgress2();
+    },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
   const stopJoin2Mutation = useMutation({
@@ -667,6 +675,91 @@ export default function Home() {
   });
 
   const currentStepIdx = STEPS.findIndex((s) => s.key === step);
+
+  // ── Browser notification system ───────────────────────────────────────────
+  const notifPermRef = useRef<NotificationPermission>("default");
+  const prevJoinStatusRef   = useRef<string | null>(null);
+  const prevWindowNumRef    = useRef<number>(0);
+  const prevCooldownRef     = useRef<boolean>(false);
+  const prevPublishStatusRef = useRef<string | null>(null);
+
+  // Request permission once on mount
+  useEffect(() => {
+    if ("Notification" in window) {
+      Notification.requestPermission().then(p => { notifPermRef.current = p; });
+    }
+  }, []);
+
+  function sendNotif(title: string, body: string, icon = "/favicon.ico") {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    try { new Notification(title, { body, icon, dir: "rtl", lang: "ar" }); }
+    catch {}
+  }
+
+  // Watch join progress for notification triggers
+  useEffect(() => {
+    if (!joinProgress2) return;
+    const prev = prevJoinStatusRef.current;
+    const prevWin = prevWindowNumRef.current;
+    const prevCool = prevCooldownRef.current;
+
+    // Cooldown just activated
+    if (!prevCool && joinProgress2.telemetry?.cooldownActive) {
+      sendNotif("🛡️ تبريد وقائي مفعّل", "تم رصد استجابة بطيئة — جاري الانتظار لحماية الحساب");
+    }
+    prevCooldownRef.current = !!joinProgress2.telemetry?.cooldownActive;
+
+    // New window completed (windowNumber increased means last window finished)
+    if (joinProgress2.windowNumber > prevWin && prevWin > 0) {
+      const joined = joinProgress2.joined;
+      sendNotif(
+        `✅ نافذة ${prevWin} اكتملت`,
+        `تم الانضمام إلى ${joined} مجموعة حتى الآن — الانضمام القادم في ${
+          joinProgress2.nextJoinAt
+            ? new Date(joinProgress2.nextJoinAt).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })
+            : "قريباً"
+        }`
+      );
+    }
+    prevWindowNumRef.current = joinProgress2.windowNumber;
+
+    // Session done
+    if (prev && prev !== "done" && joinProgress2.status === "done") {
+      sendNotif(
+        "🎉 الانضمام اكتمل!",
+        `ناجح: ${joinProgress2.joined} | فشل: ${joinProgress2.failed} | متجاهل: ${joinProgress2.ignored}`
+      );
+    }
+
+    // Session stopped unexpectedly (stop_all from error)
+    if (prev && prev !== "stopped" && joinProgress2.status === "stopped" && joinProgress2.stopReason?.includes("⚠️")) {
+      sendNotif("⚠️ توقف طارئ في الانضمام", joinProgress2.stopReason ?? "يُرجى مراجعة التطبيق");
+    }
+
+    // Sleeping mode
+    if (prev !== "sleeping" && joinProgress2.status === "sleeping") {
+      sendNotif(
+        "🌙 وضع النوم الليلي",
+        `الانضمام متوقف حتى الساعة 7:30 صباحاً — كل شيء بأمان`
+      );
+    }
+
+    prevJoinStatusRef.current = joinProgress2.status;
+  }, [joinProgress2]);
+
+  // Watch publisher for completion notification
+  useEffect(() => {
+    if (!publishProgress) return;
+    const prev = prevPublishStatusRef.current;
+    if (prev && prev !== "done" && publishProgress.status === "done") {
+      sendNotif(
+        "📢 النشر اكتمل",
+        `أُرسل إلى ${publishProgress.sent} مجموعة — فشل: ${publishProgress.failed}`
+      );
+    }
+    prevPublishStatusRef.current = publishProgress.status;
+  }, [publishProgress]);
 
   const canNavigateTo = (target: Step): boolean => {
     const hasLinks = linkCounts.whatsapp > 0 || linkCounts.telegram > 0;
@@ -944,23 +1037,55 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* ── Start button (idle / done / stopped) ── */}
+                  {/* ── Start section (idle / done / stopped) ── */}
                   {(!joinProgress2 || joinProgress2.status === "done" || joinProgress2.status === "stopped") && (
-                    <Button size="sm" className="w-full text-xs h-8"
-                      onClick={() => startJoin2Mutation.mutate()}
-                      disabled={startJoin2Mutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
-                      data-testid="sidebar-start-join2">
-                      {startJoin2Mutation.isPending
-                        ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" />
-                        : <UserPlus className="w-3.5 h-3.5 ml-1" />}
-                      بدء الانضمام
-                    </Button>
+                    <div className="space-y-2">
+                      {/* Max links input */}
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1">
+                          <Input
+                            type="number"
+                            min={1}
+                            max={500}
+                            placeholder="عدد الروابط (فارغ = الكل)"
+                            value={joinMaxLinks}
+                            onChange={e => setJoinMaxLinks(e.target.value)}
+                            className="h-8 text-xs text-right"
+                            data-testid="input-join-max-links"
+                          />
+                        </div>
+                        {joinMaxLinks && parseInt(joinMaxLinks) > 0 && (
+                          <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-400 whitespace-nowrap">
+                            تجريبي
+                          </Badge>
+                        )}
+                      </div>
+                      {joinMaxLinks && parseInt(joinMaxLinks) > 0 && (
+                        <p className="text-[10px] text-amber-600 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1">
+                          وضع تجريبي: سيتم الانضمام إلى {joinMaxLinks} رابط فقط ثم يتوقف تلقائياً
+                        </p>
+                      )}
+                      <Button size="sm" className="w-full text-xs h-8"
+                        onClick={() => startJoin2Mutation.mutate()}
+                        disabled={startJoin2Mutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
+                        data-testid="sidebar-start-join2">
+                        {startJoin2Mutation.isPending
+                          ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" />
+                          : <UserPlus className="w-3.5 h-3.5 ml-1" />}
+                        {joinMaxLinks && parseInt(joinMaxLinks) > 0 ? `بدء تجريبي (${joinMaxLinks})` : "بدء الانضمام"}
+                      </Button>
+                    </div>
                   )}
 
                   {/* ── Rate info ── */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
                     <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
                     <span>معدل آمن: رابطان كل 10 دقائق — نوم ليلي 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر</span>
+                  </div>
+                  {/* Note about Stop vs WhatsApp connection */}
+                  <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-blue-50 dark:bg-blue-900/20 rounded p-2">
+                    <Shield className="w-3 h-3 flex-shrink-0 mt-0.5 text-blue-500" />
+                    <span className="text-blue-700 dark:text-blue-400">ملاحظة: زر الإيقاف يوقف جلسة الانضمام فقط — اتصال واتساب يبقى نشطاً</span>
                   </div>
                 </div>
               )}

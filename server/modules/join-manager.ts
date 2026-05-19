@@ -232,7 +232,7 @@ export const joinManager = {
 
   isPaused(): boolean { return _pauseRequested; },
 
-  async start(): Promise<void> {
+  async start(maxLinks?: number): Promise<void> {
     if (!baileysManager.isConnected()) {
       throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
     }
@@ -255,7 +255,13 @@ export const joinManager = {
         throw new Error("لا توجد روابط معلقة في المستودع للانضمام إليها.");
       }
 
-      const queue = shuffle(pendingLinks);
+      // If caller specified a limit (e.g. for testing), trim the queue
+      const allLinks = shuffle(pendingLinks);
+      const queue = (maxLinks && maxLinks > 0) ? allLinks.slice(0, maxLinks) : allLinks;
+
+      if (maxLinks && maxLinks > 0) {
+        console.log(`[JoinManager] Test mode: limiting queue to ${maxLinks} links (${pendingLinks.length} available)`);
+      }
 
       _progress = {
         status:       "running",
