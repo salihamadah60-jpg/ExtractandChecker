@@ -16,6 +16,7 @@ export type LinkSource = "upload" | "description" | "message" | "manual";
 
 export interface LinkRecord {
   url: string;
+  groupJid?: string;
   type: LinkType;
   status: LinkStatus;
   name?: string;
@@ -191,6 +192,34 @@ export const linksRepository = {
 
     console.log(`[LinksRepository] Filtered saved → ${newGroups} new groups, ${newAds} new ads, ${newDescLinks} new desc links`);
     return { newGroups, newAds, newDescLinks };
+  },
+
+  /** Get daily additions for the last N days (for trend chart). */
+  async getDailyTrend(days = 14): Promise<{ date: string; count: number }[]> {
+    const c = await col();
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    const agg = await c.aggregate([
+      { $match: { addedAt: { $gte: since } } },
+      { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$addedAt" } }, count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]).toArray();
+    return agg.map((d: any) => ({ date: d._id as string, count: d.count as number }));
+  },
+
+  /** Get count by source. */
+  async countBySource(): Promise<Record<string, number>> {
+    const c = await col();
+    const agg = await c.aggregate([{ $group: { _id: "$source", count: { $sum: 1 } } }]).toArray();
+    const result: Record<string, number> = {};
+    agg.forEach((d: any) => { result[d._id] = d.count; });
+    return result;
+  },
+
+  /** Get the most recently added links (for activity feed). */
+  async getRecent(limit = 15): Promise<LinkRecord[]> {
+    const c = await col();
+    return c.find({}).sort({ addedAt: -1 }).limit(limit).toArray();
   },
 
   /**

@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import multer from "multer";
 import mammoth from "mammoth";
 import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } from "docx";
-import { linkStore, isMedicalGroup, hasExcludedDescription, type FilteredGroup } from "./link-store.js";
+import { linkStore, isMedicalGroup, hasExcludedDescription, isAdOnlyMedicalGroup, type FilteredGroup } from "./link-store.js";
 import { baileysManager } from "./baileys-manager.js";
 import { checkLinksHTTP } from "./http-checker.js";
 import { coordinator } from "./modules/function-coordinator.js";
@@ -301,21 +301,31 @@ export async function registerRoutes(
   });
 
   // ── Upload new round DOCX (dedup against existing session) ─────────────────
-  app.post("/api/upload-new-round", upload.single("file"), async (req: any, res: any) => {
+  app.post("/api/upload-new-round", upload.array("files", 20), async (req: any, res: any) => {
     try {
-      if (!req.file) return res.status(400).json({ error: "لم يتم إرسال ملف" });
-      const [htmlResult, textResult] = await Promise.all([
-        mammoth.convertToHtml({ buffer: req.file.buffer }),
-        mammoth.extractRawText({ buffer: req.file.buffer }),
-      ]);
-      const extracted = extractLinks(textResult.value, htmlResult.value);
-      if (!extracted.whatsapp.length && !extracted.telegram.length)
-        return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
+      const files: Express.Multer.File[] = req.files ?? (req.file ? [req.file] : []);
+      if (!files.length) return res.status(400).json({ error: "لم يتم إرسال ملف" });
+
+      // Merge links from all files
+      const waSet = new Set<string>();
+      const tgSet = new Set<string>();
+      for (const f of files) {
+        const [htmlResult, textResult] = await Promise.all([
+          mammoth.convertToHtml({ buffer: f.buffer }),
+          mammoth.extractRawText({ buffer: f.buffer }),
+        ]);
+        const extracted = extractLinks(textResult.value, htmlResult.value);
+        extracted.whatsapp.forEach((l) => waSet.add(l));
+        extracted.telegram.forEach((l) => tgSet.add(l));
+      }
+
+      if (!waSet.size && !tgSet.size)
+        return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملفات" });
 
       const { uniqueWhatsapp, uniqueTelegram, skipped } = linkStore.prepareNewRound(
-        extracted.whatsapp,
-        extracted.telegram,
-        req.file.originalname
+        [...waSet],
+        [...tgSet],
+        files.map((f) => f.originalname).join(", ")
       );
 
       res.json({
@@ -641,9 +651,10 @@ export async function registerRoutes(
   });
 
   // ── Fresh upload: reset session, extract new file + inject previous desc links ─
-  app.post("/api/upload-fresh", upload.single("file"), async (req: any, res: any) => {
+  app.post("/api/upload-fresh", upload.array("files", 20), async (req: any, res: any) => {
     try {
-      if (!req.file) return res.status(400).json({ error: "لم يتم إرسال ملف" });
+      const files: Express.Multer.File[] = req.files ?? (req.file ? [req.file] : []);
+      if (!files.length) return res.status(400).json({ error: "لم يتم إرسال ملف" });
 
       // Capture description links from current session BEFORE reset
       const currentSummary = linkStore.getFilteredSummary();
@@ -651,26 +662,33 @@ export async function registerRoutes(
         (l) => l.includes("chat.whatsapp.com") || l.includes("wa.me")
       );
 
-      const [htmlResult, textResult] = await Promise.all([
-        mammoth.convertToHtml({ buffer: req.file.buffer }),
-        mammoth.extractRawText({ buffer: req.file.buffer }),
-      ]);
-      const extracted = extractLinks(textResult.value, htmlResult.value);
-      if (!extracted.whatsapp.length && !extracted.telegram.length)
-        return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
+      // Merge links from all files
+      const waSet = new Set<string>();
+      const tgSet = new Set<string>();
+      for (const f of files) {
+        const [htmlResult, textResult] = await Promise.all([
+          mammoth.convertToHtml({ buffer: f.buffer }),
+          mammoth.extractRawText({ buffer: f.buffer }),
+        ]);
+        const extracted = extractLinks(textResult.value, htmlResult.value);
+        extracted.whatsapp.forEach((l) => waSet.add(l));
+        extracted.telegram.forEach((l) => tgSet.add(l));
+      }
+
+      if (!waSet.size && !tgSet.size)
+        return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملفات" });
 
       // Merge description links (deduplicated)
-      const waSet = new Set(extracted.whatsapp);
       const addedDesc: string[] = [];
       for (const l of descLinks) {
         if (!waSet.has(l)) { waSet.add(l); addedDesc.push(l); }
       }
-      const finalLinks = { whatsapp: [...waSet], telegram: extracted.telegram };
+      const finalLinks = { whatsapp: [...waSet], telegram: [...tgSet] };
 
       // Soft reset: clears previous link results only (WA session is preserved separately)
       linkStore.softReset();
       linkStore.setExtracted(finalLinks);
-      linkStore.saveLinksToFile(req.file.originalname, finalLinks).catch(console.error);
+      linkStore.saveLinksToFile(files.map((f) => f.originalname).join("+"), finalLinks).catch(console.error);
 
       res.json({
         success: true,
@@ -813,11 +831,24 @@ export async function registerRoutes(
       linkStore.saveFilteredResults(summary).catch(console.error);
       // Auto-save filtered results to MongoDB repository (as Pending for join manager)
       if (process.env.MONGODB_URI && (summary.groups.length + summary.ads.length > 0)) {
-        linksRepository.saveFilteredLinks(
-          summary.groups,
-          summary.ads,
-          summary.descriptionLinks.filter((l) => l.includes("chat.whatsapp.com"))
-        ).catch((err) => console.warn("[Routes] Failed to save filtered to DB:", err.message));
+        linksRepository.saveFilteredLinks(summary.groups, summary.ads)
+          .catch((err) => console.warn("[Routes] Failed to save filtered to DB:", err.message));
+      }
+      // Description links: check+filter them via pipeline BEFORE saving to DB
+      const waDescLinks = summary.descriptionLinks.filter((l) => l.includes("chat.whatsapp.com"));
+      if (process.env.MONGODB_URI && waDescLinks.length > 0 && baileysManager.isConnected()) {
+        baileysManager.checkLinksForPipeline(waDescLinks).then((results) => {
+          const valid = results.filter((r) => r.status === "valid" && r.url.includes("chat.whatsapp.com"));
+          function clean(u: string) { try { const p = new URL(u); return `${p.origin}${p.pathname}`; } catch { return u; } }
+          const grps = valid
+            .filter((r) => { if (isAdOnlyMedicalGroup(r.name, r.description)) return false; const m = r.members ?? 0; return m > 150 || (m > 10 && m <= 150 && !r.description?.trim()); })
+            .map((r) => ({ link: clean(r.url), name: r.name, members: r.members, description: r.description }));
+          const ads2 = valid
+            .filter((r) => { const m = r.members ?? 0; if (m <= 10) return false; if (isAdOnlyMedicalGroup(r.name, r.description)) return true; return m <= 150 && !!r.description?.trim(); })
+            .map((r) => ({ link: clean(r.url), name: r.name, members: r.members, description: r.description }));
+          if (grps.length + ads2.length > 0)
+            return linksRepository.saveFilteredLinks(grps, ads2);
+        }).catch((err) => console.warn("[Routes] Description links pipeline failed:", err.message));
       }
     }
     res.json({
@@ -1002,6 +1033,29 @@ export async function registerRoutes(
     try {
       await publisher.removeAd(req.params.id);
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Dashboard stats ────────────────────────────────────────────────────────
+  app.get("/api/dashboard/stats", async (_req, res) => {
+    try {
+      const [byStatus, bySource, trend, recent] = await Promise.all([
+        linksRepository.countByStatus(),
+        linksRepository.countBySource(),
+        linksRepository.getDailyTrend(14),
+        linksRepository.getRecent(15),
+      ]);
+      const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
+      // Today's count
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayEntry = trend.find((d) => d.date === todayStr);
+      const todayCount = todayEntry?.count ?? 0;
+      // Reader / join manager live stats
+      const readerStats = messageReader.getStats();
+      const joinProgress = joinManager.getProgress();
+      res.json({ byStatus, bySource, trend, recent, total, todayCount, readerStats, joinProgress });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

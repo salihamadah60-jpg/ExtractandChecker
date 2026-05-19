@@ -7,13 +7,14 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { Link } from "wouter";
 import {
   Upload, FileText, Download, CheckCircle2, XCircle, AlertCircle,
   Loader2, Wifi, WifiOff, LogOut, RefreshCw, Shield,
   Link2, QrCode, Hash, ArrowRight, ArrowLeft, Users, Megaphone,
   FolderOpen, PlusCircle, FileJson, History, ChevronDown,
   ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
-  Pause, Play, Square, Menu, X, MessageCircle, Send,
+  Pause, Play, Square, Menu, X, MessageCircle, Send, LayoutDashboard,
 } from "lucide-react";
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
@@ -317,9 +318,9 @@ export default function Home() {
   });
 
   const newRoundUploadMutation = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (files: File[]) => {
       const fd = new FormData();
-      fd.append("file", file);
+      files.forEach((f) => fd.append("files", f));
       const res = await fetch("/api/upload-new-round", { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
@@ -339,9 +340,9 @@ export default function Home() {
   });
 
   const freshUploadMutation = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (files: File[]) => {
       const fd = new FormData();
-      fd.append("file", file);
+      files.forEach((f) => fd.append("files", f));
       const res = await fetch("/api/upload-fresh", { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
@@ -541,21 +542,21 @@ export default function Home() {
 
   const handleFile = useCallback((file: File) => handleFiles([file]), [handleFiles]);
 
-  const handleNewRoundFile = useCallback((file: File) => {
-    if (!file.name.match(/\.docx?$/i)) {
-      toast({ title: "خطأ", description: "يجب أن يكون الملف بصيغة DOCX", variant: "destructive" });
-      return;
-    }
-    newRoundUploadMutation.mutate(file);
+  const handleNewRoundFiles = useCallback((fileList: FileList | File[]) => {
+    const arr = Array.from(fileList).filter((f) => f.name.match(/\.docx?$/i));
+    if (!arr.length) { toast({ title: "خطأ", description: "يجب أن تكون الملفات بصيغة DOCX", variant: "destructive" }); return; }
+    newRoundUploadMutation.mutate(arr);
   }, [newRoundUploadMutation]);
 
-  const handleFreshFile = useCallback((file: File) => {
-    if (!file.name.match(/\.docx?$/i)) {
-      toast({ title: "خطأ", description: "يجب أن يكون الملف بصيغة DOCX", variant: "destructive" });
-      return;
-    }
-    freshUploadMutation.mutate(file);
+  const handleNewRoundFile = useCallback((file: File) => handleNewRoundFiles([file]), [handleNewRoundFiles]);
+
+  const handleFreshFiles = useCallback((fileList: FileList | File[]) => {
+    const arr = Array.from(fileList).filter((f) => f.name.match(/\.docx?$/i));
+    if (!arr.length) { toast({ title: "خطأ", description: "يجب أن تكون الملفات بصيغة DOCX", variant: "destructive" }); return; }
+    freshUploadMutation.mutate(arr);
   }, [freshUploadMutation]);
+
+  const handleFreshFile = useCallback((file: File) => handleFreshFiles([file]), [handleFreshFiles]);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setIsDragging(false);
@@ -564,8 +565,8 @@ export default function Home() {
 
   const onNewRoundDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setIsNewRoundDragging(false);
-    const file = e.dataTransfer.files[0]; if (file) handleNewRoundFile(file);
-  }, [handleNewRoundFile]);
+    if (e.dataTransfer.files.length) handleNewRoundFiles(e.dataTransfer.files);
+  }, [handleNewRoundFiles]);
 
   const handleConnectClick = () => {
     if (connectMode === "qr") connectQRMutation.mutate();
@@ -995,6 +996,12 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-2">
             <StatusPill status={waStatus} />
+            <Link href="/dashboard">
+              <Button size="sm" variant="ghost" className="text-xs gap-1.5" data-testid="link-dashboard">
+                <LayoutDashboard className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">لوحة التحكم</span>
+              </Button>
+            </Link>
             {(waStatus === "connected" || waStatus === "qr_ready" || waStatus === "pairing") && (
               <Button size="sm" variant="outline" onClick={() => disconnectMutation.mutate()}
                 disabled={disconnectMutation.isPending} data-testid="button-disconnect">
@@ -1835,8 +1842,8 @@ export default function Home() {
                           <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); newRoundFileRef.current?.click(); }} data-testid="button-select-new-round-file">
                             <FileText className="w-3.5 h-3.5 ml-1.5" />قم برفع ملف
                           </Button>
-                          <input ref={newRoundFileRef} type="file" accept=".docx,.doc" className="hidden"
-                            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleNewRoundFile(f); }} data-testid="input-new-round-file" />
+                          <input ref={newRoundFileRef} type="file" accept=".docx,.doc" multiple className="hidden"
+                            onChange={(e) => { if (e.target.files?.length) handleNewRoundFiles(e.target.files); e.target.value = ""; }} data-testid="input-new-round-file" />
                         </div>
                       ) : (
                         <div className="space-y-3">
@@ -1889,7 +1896,7 @@ export default function Home() {
                         className={`border-2 border-dashed rounded-lg p-5 flex flex-col items-center gap-3 cursor-pointer transition-colors ${isFreshDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
                         onDragOver={(e) => { e.preventDefault(); setIsFreshDragging(true); }}
                         onDragLeave={() => setIsFreshDragging(false)}
-                        onDrop={(e) => { e.preventDefault(); setIsFreshDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFreshFile(f); }}
+                        onDrop={(e) => { e.preventDefault(); setIsFreshDragging(false); if (e.dataTransfer.files.length) handleFreshFiles(e.dataTransfer.files); }}
                         onClick={() => freshUploadRef.current?.click()}
                         data-testid="dropzone-fresh-session">
                         {freshUploadMutation.isPending ? (
@@ -1903,8 +1910,8 @@ export default function Home() {
                         <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); freshUploadRef.current?.click(); }} data-testid="button-select-fresh-file">
                           <FileText className="w-3.5 h-3.5 ml-1.5" />اختر ملفاً
                         </Button>
-                        <input ref={freshUploadRef} type="file" accept=".docx,.doc" className="hidden"
-                          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFreshFile(f); }} data-testid="input-fresh-file-extra" />
+                        <input ref={freshUploadRef} type="file" accept=".docx,.doc" multiple className="hidden"
+                          onChange={(e) => { if (e.target.files?.length) handleFreshFiles(e.target.files); e.target.value = ""; }} data-testid="input-fresh-file-extra" />
                       </div>
                     </div>
                   )}
