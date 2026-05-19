@@ -1,82 +1,119 @@
 /**
- * message-reader.ts — Real-time message reader from joined groups
+ * message-reader.ts — Real-time message reader (anti-ban hardened)
  *
- * Uses Baileys messages.upsert event (real-time push) to receive
- * new messages from all joined groups as they arrive.
- *
- * Features:
- *   - Registers message handler with baileysManager
- *   - Filters: group messages only (JID ends with @g.us)
- *   - NLP classifier: skips advertising messages
- *   - Extracts WhatsApp/Telegram group links from clean messages
- *   - Saves new links to Links_Repository (source: "message")
- *   - Tracks last_read_message_id in System_State for crash recovery
- *   - Coordinator lock: blocks other functions while active
- *   - Sequential pipeline: reader → check → filter → save to DB → join → resume
+ * Safety improvements:
+ *   1. Pipeline buffer capped at 30 links — prevents flooding join queue
+ *   2. Pipeline skips if join session is already running (coordinator busy)
+ *   3. Minimum cooldown between consecutive pipeline runs (10 min)
+ *   4. Telemetry integrated: pipeline waits if cooldown is active
+ *   5. Hard stop on consecutive handler errors (self-healing)
+ *   6. Better logging: shows buffer state and pipeline skip reasons
+ *   7. Reader resumes only if WhatsApp is still connected AND idle
  */
 
-import { baileysManager } from "../baileys-manager.js";
-import { coordinator } from "./function-coordinator.js";
-import { systemState } from "./system-state.js";
-import { linksRepository } from "./links-repository.js";
-import { classifyMessage } from "./nlp-classifier.js";
+import { baileysManager }   from "../baileys-manager.js";
+import { coordinator }      from "./function-coordinator.js";
+import { systemState }      from "./system-state.js";
+import { linksRepository }  from "./links-repository.js";
+import { classifyMessage }  from "./nlp-classifier.js";
 import { extractGroupLinks } from "./link-filter.js";
 import { isAdOnlyMedicalGroup } from "../link-store.js";
+import { telemetry }        from "./telemetry.js";
 
 export interface ReaderStats {
   status: "running" | "stopped" | "error";
-  messagesReceived: number;
-  messagesSkippedAds: number;
-  linksFound: number;
-  linksNew: number;
-  startedAt: string;
-  stoppedAt?: string;
-  lastMessageId?: string;
-  pipelineRuns?: number;
+  messagesReceived:    number;
+  messagesSkippedAds:  number;
+  linksFound:          number;
+  linksNew:            number;
+  startedAt:           string;
+  stoppedAt?:          string;
+  lastMessageId?:      string;
+  pipelineRuns?:       number;
+  pipelineSkipped?:    number;
+  bufferSize?:         number;
 }
 
-let _stats: ReaderStats | null = null;
-let _running = false;
+let _stats:   ReaderStats | null = null;
+let _running  = false;
 
-// ── Pipeline buffer ────────────────────────────────────────────────────────────
-// Accumulates newly discovered links between pipeline runs
-let _pipelineBuffer: string[] = [];
-let _pipelineLock = false;
+// ── Pipeline config ───────────────────────────────────────────────────────────
+const PIPELINE_DEBOUNCE_MS   = 45_000;  // wait 45s of inactivity before running
+const PIPELINE_BUFFER_CAP    = 30;      // max queued links before forced flush
+const PIPELINE_MIN_INTERVAL  = 10 * 60_000; // min 10 min between pipeline runs
+const MAX_HANDLER_ERRORS     = 10;      // stop reader after this many consecutive errors
+
+let _pipelineBuffer:   string[] = [];
+let _pipelineLock      = false;
 let _pipelineDebounce: ReturnType<typeof setTimeout> | null = null;
-const PIPELINE_DEBOUNCE_MS = 30_000; // trigger pipeline 30s after last new link
+let _lastPipelineRun   = 0;
+let _handlerErrors     = 0;
 
 function _cleanLink(link: string): string {
   try { const u = new URL(link.trim()); return `${u.origin}${u.pathname}`; }
   catch { return link.trim(); }
 }
 
-/** Run the sequential pipeline: pause reader → check → filter → save → join → resume. */
+function _schedulePipeline() {
+  if (_pipelineDebounce) clearTimeout(_pipelineDebounce);
+  _pipelineDebounce = setTimeout(() => _runPipeline(), PIPELINE_DEBOUNCE_MS);
+}
+
+/** Run the sequential pipeline: pause reader → check → filter → save → join → resume */
 async function _runPipeline(): Promise<void> {
   _pipelineDebounce = null;
   if (_pipelineLock || _pipelineBuffer.length === 0 || !_running) return;
+
+  // ── Guard: skip if coordinator is busy (join session running) ─────────────
+  if (coordinator.isRunning()) {
+    console.log(`[Pipeline] Coordinator busy (${coordinator.getActive()}) — pipeline deferred`);
+    if (_stats) _stats.pipelineSkipped = (_stats.pipelineSkipped ?? 0) + 1;
+    // Reschedule — try again in 5 minutes
+    _pipelineDebounce = setTimeout(() => _runPipeline(), 5 * 60_000);
+    return;
+  }
+
+  // ── Guard: minimum interval between pipeline runs ─────────────────────────
+  const elapsed = Date.now() - _lastPipelineRun;
+  if (_lastPipelineRun > 0 && elapsed < PIPELINE_MIN_INTERVAL) {
+    const wait = PIPELINE_MIN_INTERVAL - elapsed;
+    console.log(`[Pipeline] Too soon since last run (${Math.round(elapsed / 60_000)} min ago) — waiting ${Math.round(wait / 60_000)} min`);
+    if (_stats) _stats.pipelineSkipped = (_stats.pipelineSkipped ?? 0) + 1;
+    _pipelineDebounce = setTimeout(() => _runPipeline(), wait);
+    return;
+  }
+
+  // ── Guard: telemetry cooldown ─────────────────────────────────────────────
+  if (telemetry.isCoolingDown()) {
+    const wait = telemetry.cooldownRemaining();
+    console.log(`[Pipeline] Telemetry cooldown — deferring ${Math.round(wait / 60_000)} min`);
+    _pipelineDebounce = setTimeout(() => _runPipeline(), wait + 5000);
+    return;
+  }
+
   _pipelineLock = true;
 
   const linksToCheck = [..._pipelineBuffer];
-  _pipelineBuffer = [];
+  _pipelineBuffer    = [];
+  if (_stats) _stats.bufferSize = 0;
 
-  console.log(`[Pipeline] Starting pipeline with ${linksToCheck.length} buffered links`);
+  console.log(`[Pipeline] Starting — ${linksToCheck.length} buffered links`);
 
   try {
-    // 1. Pause reader — release coordinator so joinManager can later acquire it
+    // 1. Pause reader — release coordinator
     _running = false;
     baileysManager.clearMessageHandler();
     coordinator.release();
     await systemState.setActiveFunction(null);
-    if (_stats) {
-      _stats.status = "stopped";
-      _stats.stoppedAt = new Date().toISOString();
-    }
+    if (_stats) { _stats.status = "stopped"; _stats.stoppedAt = new Date().toISOString(); }
     console.log("[Pipeline] Reader paused");
 
-    // 2. Check links via Baileys (with anti-ban delays)
+    _lastPipelineRun = Date.now();
+
+    // 2. Check links
     const checkResults = await baileysManager.checkLinksForPipeline(linksToCheck);
 
-    // 3. Filter results using same logic as getFilteredSummary
+    // 3. Filter
     const validGroups = checkResults.filter(
       (r) => r.status === "valid" && r.url.includes("chat.whatsapp.com")
     );
@@ -98,68 +135,68 @@ async function _runPipeline(): Promise<void> {
       })
       .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
 
-    // 4. Save to DB and start join manager if anything was found
+    // 4. Save & trigger join
     if (groups.length + ads.length > 0) {
       await linksRepository.saveFilteredLinks(groups, ads);
-      console.log(`[Pipeline] Saved ${groups.length} groups + ${ads.length} ads to DB`);
+      console.log(`[Pipeline] Saved ${groups.length} groups + ${ads.length} ads`);
 
-      // 5. Trigger join manager (it acquires coordinator internally)
-      try {
-        const { joinManager } = await import("./join-manager.js");
-        await joinManager.start();
-        console.log("[Pipeline] Join manager completed");
-      } catch (err) {
-        console.warn("[Pipeline] Join manager skipped:", (err as Error).message);
+      // Only trigger join if coordinator is now free
+      if (!coordinator.isRunning()) {
+        try {
+          const { joinManager } = await import("./join-manager.js");
+          // Non-blocking: join manager runs the new safe scheduler independently
+          joinManager.start().catch((err: Error) =>
+            console.warn("[Pipeline] Join manager deferred:", err.message)
+          );
+          console.log("[Pipeline] Join manager triggered (will run with safe scheduler)");
+        } catch (err) {
+          console.warn("[Pipeline] Join manager skip:", (err as Error).message);
+        }
+      } else {
+        console.log("[Pipeline] Coordinator busy — join will start when free");
       }
     } else {
-      console.log("[Pipeline] No valid groups after filtering — skipping join");
+      console.log("[Pipeline] No valid groups — skipping join");
     }
 
-    if (_stats) {
-      _stats.pipelineRuns = (_stats.pipelineRuns ?? 0) + 1;
-    }
+    if (_stats) _stats.pipelineRuns = (_stats.pipelineRuns ?? 0) + 1;
+
   } catch (err) {
-    console.error("[Pipeline] Error during pipeline:", (err as Error).message);
+    console.error("[Pipeline] Error:", (err as Error).message);
   } finally {
-    // 6. Always try to resume reader if WhatsApp is still connected
-    if (baileysManager.isConnected()) {
+    // 5. Always try to resume reader
+    if (baileysManager.isConnected() && !coordinator.isRunning()) {
       try {
         const acquired = await coordinator.acquire("reading");
         if (acquired) {
           await systemState.setActiveFunction("reading");
           _running = true;
-          if (_stats) {
-            _stats.status = "running";
-            _stats.stoppedAt = undefined;
-          }
+          if (_stats) { _stats.status = "running"; _stats.stoppedAt = undefined; }
+          _handlerErrors = 0;
           baileysManager.setMessageHandler(async (msgs: any[]) => {
             for (const msg of msgs) {
               if (!_running) break;
               await messageReader._handleMessage(msg);
             }
           });
-          console.log("[Pipeline] Reader resumed after pipeline");
+          console.log("[Pipeline] Reader resumed");
         } else {
-          console.warn("[Pipeline] Could not re-acquire coordinator — reader not resumed");
+          console.warn("[Pipeline] Cannot re-acquire coordinator — reader stays paused");
         }
       } catch (err) {
-        console.error("[Pipeline] Failed to resume reader:", (err as Error).message);
+        console.error("[Pipeline] Resume failed:", (err as Error).message);
       }
+    } else {
+      console.log("[Pipeline] Reader NOT resumed — WA disconnected or coordinator busy");
     }
     _pipelineLock = false;
   }
 }
 
 export const messageReader = {
-  getStats(): ReaderStats | null {
-    return _stats;
-  },
+  getStats(): ReaderStats | null { return _stats; },
+  isRunning(): boolean { return _running; },
 
-  isRunning(): boolean {
-    return _running;
-  },
-
-  /** Start listening for messages from all joined groups. */
   async start(): Promise<void> {
     if (!baileysManager.isConnected()) {
       throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
@@ -171,28 +208,27 @@ export const messageReader = {
       throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
     }
 
-    _running = true;
+    _running       = true;
     _pipelineBuffer = [];
+    _handlerErrors  = 0;
     _stats = {
-      status: "running",
-      messagesReceived: 0,
-      messagesSkippedAds: 0,
-      linksFound: 0,
-      linksNew: 0,
-      startedAt: new Date().toISOString(),
-      pipelineRuns: 0,
+      status:              "running",
+      messagesReceived:    0,
+      messagesSkippedAds:  0,
+      linksFound:          0,
+      linksNew:            0,
+      startedAt:           new Date().toISOString(),
+      pipelineRuns:        0,
+      pipelineSkipped:     0,
+      bufferSize:          0,
     };
 
     await systemState.setActiveFunction("reading");
     console.log("[MessageReader] Started — listening for group messages");
 
-    // Get last processed message ID from System_State for recovery
     const state = await systemState.get();
-    if (state.last_read_message_id) {
-      _stats.lastMessageId = state.last_read_message_id;
-    }
+    if (state.last_read_message_id) _stats.lastMessageId = state.last_read_message_id;
 
-    // Register the real-time message handler with baileysManager
     baileysManager.setMessageHandler(async (msgs: any[]) => {
       for (const msg of msgs) {
         if (!_running) break;
@@ -201,49 +237,31 @@ export const messageReader = {
     });
   },
 
-  /** Stop listening for messages. */
   async stop(): Promise<void> {
-    // Cancel any pending pipeline
-    if (_pipelineDebounce) {
-      clearTimeout(_pipelineDebounce);
-      _pipelineDebounce = null;
-    }
-
+    if (_pipelineDebounce) { clearTimeout(_pipelineDebounce); _pipelineDebounce = null; }
     _running = false;
     baileysManager.clearMessageHandler();
-
-    if (_stats) {
-      _stats.status = "stopped";
-      _stats.stoppedAt = new Date().toISOString();
-    }
-
+    if (_stats) { _stats.status = "stopped"; _stats.stoppedAt = new Date().toISOString(); }
     coordinator.release();
     await systemState.setActiveFunction(null);
-    console.log(
-      `[MessageReader] Stopped — messages: ${_stats?.messagesReceived ?? 0}, new links: ${_stats?.linksNew ?? 0}`
-    );
+    console.log(`[MessageReader] Stopped — messages: ${_stats?.messagesReceived ?? 0}, new links: ${_stats?.linksNew ?? 0}`);
   },
 
-  /** Internal: process a single Baileys message object. */
   async _handleMessage(msg: any): Promise<void> {
     try {
-      // Only process group messages (JID ends with @g.us)
       const jid: string = msg.key?.remoteJid ?? "";
       if (!jid.endsWith("@g.us")) return;
 
-      // Extract text content
       const text: string =
         msg.message?.conversation ??
         msg.message?.extendedTextMessage?.text ??
         msg.message?.imageMessage?.caption ??
-        msg.message?.videoMessage?.caption ??
-        "";
+        msg.message?.videoMessage?.caption ?? "";
 
       if (!text.trim()) return;
 
       if (_stats) _stats.messagesReceived++;
 
-      // NLP: skip ad messages
       const embeddedLinks = extractGroupLinks(text);
       const cls = classifyMessage(text, embeddedLinks.whatsapp);
       if (cls.isAd) {
@@ -251,30 +269,42 @@ export const messageReader = {
         return;
       }
 
-      // Extract group/channel links from the clean message
       const allLinks = [...embeddedLinks.whatsapp];
       if (_stats) _stats.linksFound += allLinks.length;
 
       for (const url of allLinks) {
+        // ── Buffer cap: flush early if too many links queued ─────────────
+        if (_pipelineBuffer.length >= PIPELINE_BUFFER_CAP) {
+          console.log(`[MessageReader] Buffer cap reached (${PIPELINE_BUFFER_CAP}) — flushing early`);
+          if (_pipelineDebounce) clearTimeout(_pipelineDebounce);
+          _pipelineDebounce = setTimeout(() => _runPipeline(), 5_000);
+          break; // stop processing more links from this message
+        }
+
         const added = await linksRepository.addIfNew(url, "Group", "message");
         if (added) {
-          if (_stats) _stats.linksNew++;
-          // Add to pipeline buffer and schedule debounced pipeline run
+          if (_stats) { _stats.linksNew++; _stats.bufferSize = (_stats.bufferSize ?? 0) + 1; }
           _pipelineBuffer.push(url);
-          if (_pipelineDebounce) clearTimeout(_pipelineDebounce);
-          _pipelineDebounce = setTimeout(() => _runPipeline(), PIPELINE_DEBOUNCE_MS);
-          console.log(`[MessageReader] New link → buffer (${_pipelineBuffer.length}): ${url}`);
+          _schedulePipeline();
+          console.log(`[MessageReader] New link → buffer (${_pipelineBuffer.length}/${PIPELINE_BUFFER_CAP}): ${url}`);
         }
       }
 
-      // Save last message ID for crash recovery
       const msgId = msg.key?.id;
       if (msgId) {
         if (_stats) _stats.lastMessageId = msgId;
         await systemState.setLastReadMessageId(msgId);
       }
+
+      _handlerErrors = 0; // reset on success
     } catch (err) {
-      console.warn("[MessageReader] Error processing message:", (err as Error).message);
+      _handlerErrors++;
+      console.warn(`[MessageReader] Handler error #${_handlerErrors}:`, (err as Error).message);
+
+      if (_handlerErrors >= MAX_HANDLER_ERRORS) {
+        console.error(`[MessageReader] Too many errors (${MAX_HANDLER_ERRORS}) — stopping reader for safety`);
+        await messageReader.stop().catch(() => {});
+      }
     }
   },
 };
