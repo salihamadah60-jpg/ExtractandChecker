@@ -108,7 +108,8 @@ async function interruptibleSleep(
 /** Perform one actual group join and record telemetry */
 async function joinOne(
   record: { url: string },
-  consecutiveFailures: number
+  consecutiveFailures: number,
+  currentPhone?: string
 ): Promise<{ result: "joined" | "ignored" | "failed" | "stop_all" | "stop_join"; waitMs?: number }> {
   const codeMatch    = record.url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
   const channelMatch = record.url.match(/whatsapp\.com\/channel\/([A-Za-z0-9_-]+)/);
@@ -132,14 +133,14 @@ async function joinOne(
     const latency  = Date.now() - t0;
     telemetry.record(latency);
 
-    await linksRepository.setStatus(record.url, "Joined");
+    await linksRepository.setStatus(record.url, "Joined", currentPhone);
     await linksRepository.recordCheck(record.url, undefined, undefined, undefined);
     if (groupJid) {
       const db = (await import("../mongo-auth-state.js")).getDb();
       const c  = (await db).collection("Links_Repository");
       await c.updateOne({ url: record.url }, { $set: { groupJid, updatedAt: new Date() } });
     }
-    console.log(`[JoinManager] ✓ Joined (${latency}ms): ${record.url}`);
+    console.log(`[JoinManager] ✓ Joined (${latency}ms) [${currentPhone ?? "?"}]: ${record.url}`);
     return { result: "joined" };
 
   } catch (err: unknown) {
@@ -156,13 +157,13 @@ async function joinOne(
         return { result: "stop_join", waitMs: classified.waitMs };
 
       case "already_member":
-        await linksRepository.setStatus(record.url, "Joined");
+        await linksRepository.setStatus(record.url, "Joined", currentPhone);
         return { result: "joined" };
 
       case "community":
         try {
           const communityJid = await baileysManager.joinCommunity(inviteCode);
-          await linksRepository.setStatus(record.url, "Joined");
+          await linksRepository.setStatus(record.url, "Joined", currentPhone);
           if (communityJid) {
             const db = (await import("../mongo-auth-state.js")).getDb();
             const c  = (await db).collection("Links_Repository");
@@ -250,9 +251,13 @@ export const joinManager = {
     try {
       await systemState.setActiveFunction("joining");
 
-      const pendingLinks = await linksRepository.findPendingForJoin();
+      // Get current connected phone for per-account isolation
+      const currentPhone = baileysManager.getConnectedPhone() ?? undefined;
+      console.log(`[JoinManager] Starting for phone: ${currentPhone ?? "unknown"}`);
+
+      const pendingLinks = await linksRepository.findPendingForJoin(currentPhone);
       if (!pendingLinks.length) {
-        throw new Error("لا توجد روابط معلقة في المستودع للانضمام إليها.");
+        throw new Error("لا توجد روابط معلقة في المستودع للانضمام إليها (جميعها تم الانضمام إليها بهذا الحساب).");
       }
 
       // If caller specified a limit (e.g. for testing), trim the queue
@@ -377,7 +382,7 @@ export const joinManager = {
         if (_progress) { _progress.status = "running"; _progress.currentLink = slot0Link.url; }
         console.log(`[JoinManager] [Window ${windowNum}] Slot 0: ${slot0Link.url}`);
 
-        const r0 = await joinOne(slot0Link, consecutiveFailures);
+        const r0 = await joinOne(slot0Link, consecutiveFailures, currentPhone);
 
         if (r0.result === "stop_all") {
           if (_progress) { _progress.status = "stopped"; _progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }
@@ -419,7 +424,7 @@ export const joinManager = {
             if (_progress) { _progress.status = "running"; _progress.currentLink = slot1Link.url; }
             console.log(`[JoinManager] [Window ${windowNum}] Slot 1: ${slot1Link.url}`);
 
-            const r1 = await joinOne(slot1Link, consecutiveFailures);
+            const r1 = await joinOne(slot1Link, consecutiveFailures, currentPhone);
 
             if (r1.result === "stop_all") {
               if (_progress) { _progress.status = "stopped"; _progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }

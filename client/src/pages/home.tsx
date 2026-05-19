@@ -598,6 +598,16 @@ export default function Home() {
   const isReaderRunning = readerStatsData?.isRunning ?? false;
   const leaveQueue = leaveQueueData?.queue ?? [];
 
+  const resetJoinForNewAccountMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/join/reset-for-new-account", {}),
+    onSuccess: (data: any) => {
+      toast({ title: `تمت إعادة التعيين — ${data.resetCount} رابط جاهز للحساب الجديد` });
+      void refetchRepoCounts();
+      void refetchJoinProgress2();
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   const startJoin2Mutation = useMutation({
     mutationFn: () => {
       const max = parseInt(joinMaxLinks, 10);
@@ -1086,6 +1096,24 @@ export default function Home() {
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-blue-50 dark:bg-blue-900/20 rounded p-2">
                     <Shield className="w-3 h-3 flex-shrink-0 mt-0.5 text-blue-500" />
                     <span className="text-blue-700 dark:text-blue-400">ملاحظة: زر الإيقاف يوقف جلسة الانضمام فقط — اتصال واتساب يبقى نشطاً</span>
+                  </div>
+
+                  {/* ── New account reset ── */}
+                  <div className="border-t border-border pt-2 mt-1">
+                    <p className="text-[10px] text-muted-foreground mb-1.5">حساب واتساب جديد؟ أعد تعيين الروابط المنضم إليها بالحساب السابق:</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full text-xs h-8 border-orange-400/60 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20"
+                      onClick={() => resetJoinForNewAccountMutation.mutate()}
+                      disabled={resetJoinForNewAccountMutation.isPending || waStatus !== "connected"}
+                      data-testid="button-reset-join-for-new-account"
+                    >
+                      {resetJoinForNewAccountMutation.isPending
+                        ? <Loader2 className="w-3 h-3 ml-1 animate-spin" />
+                        : <RefreshCw className="w-3 h-3 ml-1" />}
+                      مزامنة مع الحساب الحالي
+                    </Button>
                   </div>
                 </div>
               )}

@@ -969,6 +969,21 @@ export async function registerRoutes(
     res.json({ progress: joinManager.getProgress() });
   });
 
+  /**
+   * Reset links joined by a DIFFERENT phone back to Pending.
+   * Call when switching to a new WhatsApp account.
+   */
+  app.post("/api/join/reset-for-new-account", async (_req, res) => {
+    try {
+      const phone = baileysManager.getConnectedPhone();
+      if (!phone) return res.status(400).json({ error: "لا يوجد حساب واتساب متصل حالياً." });
+      const count = await linksRepository.resetJoinedByOtherPhone(phone);
+      res.json({ success: true, resetCount: count, phone });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Leave Manager ──────────────────────────────────────────────────────────
   app.get("/api/leave/queue", async (_req, res) => {
     try {

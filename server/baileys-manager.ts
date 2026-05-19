@@ -110,6 +110,12 @@ class SessionsManager extends EventEmitter {
   getQrCode(): string | null { return this.getActiveState()?.qrCode ?? null; }
   getPairingCode(): string | null { return this.getActiveState()?.pairingCode ?? null; }
 
+  /** Returns the phone number of the currently connected WhatsApp account. */
+  getConnectedPhone(): string | null {
+    const state = this.getActiveState();
+    return state?.phoneNumber ?? null;
+  }
+
   isConnected(): boolean {
     const s = this.getActiveState();
     return s?.status === "connected" && !!s.sock;
