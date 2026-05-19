@@ -494,6 +494,26 @@ class SessionsManager extends EventEmitter {
           if (update.type === "notify") this._messageHandler!(update.messages ?? []);
         });
       }
+
+      // Detect when bot is removed/kicked from a group
+      sock.ev.on("group-participants.update", async (update: any) => {
+        if (update.action !== "remove") return;
+        const botJid = sock.user?.id;
+        if (!botJid) return;
+        // Normalize JID — strip device suffix
+        const botId = botJid.split(":")[0] + "@s.whatsapp.net";
+        const participants: string[] = update.participants ?? [];
+        if (!participants.includes(botId)) return;
+        // Bot was removed from this group — mark as Left in repository
+        const groupJid: string = update.id;
+        console.log(`[Sessions] Removed from group: ${groupJid} — updating repository`);
+        try {
+          const { linksRepository } = await import("./modules/links-repository.js");
+          await linksRepository.handleGroupRemoval(groupJid);
+        } catch (err) {
+          console.warn("[Sessions] Failed to handle group removal:", (err as Error).message);
+        }
+      });
     } catch (err) {
       console.error(`[Sessions] Init error for ${id}:`, err);
       const cur = this.sessions.get(id);
@@ -527,6 +547,59 @@ class SessionsManager extends EventEmitter {
     this._checkStopped = false;
     const session = linkStore.startNewRoundSession();
     this._runChecks(session).catch(console.error);
+  }
+
+  /** Resume checking on the current session without resetting it (for retry-errors). */
+  async resumeChecking(): Promise<void> {
+    if (!this.isConnected()) throw new Error("واتساب غير متصل");
+    const session = linkStore.checkSession;
+    if (!session) throw new Error("لا توجد جلسة فحص محفوظة");
+    if (!session.results.some((r) => r.status === "pending")) throw new Error("لا توجد روابط معلقة للفحص");
+    this._checkPaused = false;
+    this._checkStopped = false;
+    session.status = "running";
+    linkStore.updateProgress();
+    this._runChecks(session).catch(console.error);
+  }
+
+  /**
+   * Check a list of URLs independently of the linkStore session.
+   * Used by the message-reader sequential pipeline.
+   */
+  async checkLinksForPipeline(urls: string[]): Promise<Array<{
+    url: string;
+    status: "valid" | "invalid" | "error";
+    name?: string;
+    members?: number;
+    description?: string;
+  }>> {
+    const results: Array<{
+      url: string; status: "valid" | "invalid" | "error";
+      name?: string; members?: number; description?: string;
+    }> = [];
+
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      const match = url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
+      if (!match) {
+        results.push({ url, status: "invalid" });
+        continue;
+      }
+      try {
+        const info = await this.checkGroupLink(match[1]);
+        results.push({ url, ...info });
+        console.log(`[PipelineCheck] ${info.status.toUpperCase()} | ${url}${info.name ? ` | ${info.name}` : ""}${info.members !== undefined ? ` | ${info.members} عضو` : ""}`);
+      } catch (err: any) {
+        results.push({ url, status: "error" });
+        console.warn(`[PipelineCheck] ERROR | ${url} | ${err.message}`);
+      }
+      // Anti-ban delay between checks (skip after last)
+      if (i < urls.length - 1) {
+        await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2000));
+      }
+    }
+
+    return results;
   }
 
   async checkGroupLink(inviteCode: string): Promise<{

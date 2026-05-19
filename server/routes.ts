@@ -221,11 +221,82 @@ export async function registerRoutes(
       const extracted = extractLinks(textResult.value, htmlResult.value);
       if (!extracted.whatsapp.length && !extracted.telegram.length)
         return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملف" });
+
+      // Dedup WhatsApp links against MongoDB repository if available
+      if (process.env.MONGODB_URI) {
+        try {
+          const knownUrls = await linksRepository.getAllUrls();
+          const before = extracted.whatsapp.length;
+          extracted.whatsapp = extracted.whatsapp.filter((u) => !knownUrls.has(u));
+          const skipped = before - extracted.whatsapp.length;
+          if (skipped > 0) console.log(`[Upload] Deduped ${skipped} already-known links from repository`);
+        } catch { /* DB unavailable — proceed without dedup */ }
+      }
+
       linkStore.setExtracted(extracted);
       linkStore.saveLinksToFile(req.file.originalname, extracted).catch(console.error);
       res.json({ success: true, whatsapp: extracted.whatsapp.length, telegram: extracted.telegram.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message ?? "خطأ في معالجة الملف" });
+    }
+  });
+
+  // ── Upload multiple DOCX files (merge + dedup) ─────────────────────────────
+  app.post("/api/upload-multiple", upload.array("files", 20), async (req: any, res: any) => {
+    try {
+      const files: Express.Multer.File[] = req.files;
+      if (!files?.length) return res.status(400).json({ error: "لم يتم إرسال ملفات" });
+
+      const allWhatsapp = new Set<string>();
+      const allTelegram = new Set<string>();
+      let processedFiles = 0;
+
+      for (const file of files) {
+        try {
+          const [htmlResult, textResult] = await Promise.all([
+            mammoth.convertToHtml({ buffer: file.buffer }),
+            mammoth.extractRawText({ buffer: file.buffer }),
+          ]);
+          const extracted = extractLinks(textResult.value, htmlResult.value);
+          extracted.whatsapp.forEach((l) => allWhatsapp.add(l));
+          extracted.telegram.forEach((l) => allTelegram.add(l));
+          processedFiles++;
+        } catch (err: any) {
+          console.warn(`[UploadMultiple] Failed to process ${file.originalname}:`, err.message);
+        }
+      }
+
+      if (!allWhatsapp.size && !allTelegram.size) {
+        return res.status(400).json({ error: "لم يتم العثور على روابط في الملفات" });
+      }
+
+      // Dedup against MongoDB repository if available
+      if (process.env.MONGODB_URI) {
+        try {
+          const knownUrls = await linksRepository.getAllUrls();
+          for (const url of [...allWhatsapp]) {
+            if (knownUrls.has(url)) allWhatsapp.delete(url);
+          }
+        } catch { /* skip if DB unavailable */ }
+      }
+
+      const mergedLinks = {
+        whatsapp: [...allWhatsapp],
+        telegram: [...allTelegram],
+      };
+
+      const combinedName = `multi-${files.map((f) => f.originalname.replace(/\.docx?$/i, "")).join("-").slice(0, 50)}.docx`;
+      linkStore.setExtracted(mergedLinks);
+      linkStore.saveLinksToFile(combinedName, mergedLinks).catch(console.error);
+
+      res.json({
+        success: true,
+        filesProcessed: processedFiles,
+        whatsapp: mergedLinks.whatsapp.length,
+        telegram: mergedLinks.telegram.length,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? "خطأ في معالجة الملفات" });
     }
   });
 
@@ -427,6 +498,19 @@ export async function registerRoutes(
   app.post("/api/whatsapp/check/stop", (_req, res) => {
     baileysManager.stopCheck();
     res.json({ success: true });
+  });
+
+  // ── Retry error links (reset to pending + resume checking) ─────────────────
+  app.post("/api/whatsapp/check/retry-errors", async (_req, res) => {
+    if (!baileysManager.isConnected()) return res.status(400).json({ error: "واتساب غير متصل" });
+    const count = linkStore.retryErrors();
+    if (count === 0) return res.status(400).json({ error: "لا توجد أخطاء للإعادة" });
+    try {
+      await baileysManager.resumeChecking();
+      res.json({ success: true, retrying: count });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
   });
 
   // ── Start joining groups ─────────────────────────────────────────────────
@@ -727,6 +811,14 @@ export async function registerRoutes(
       }
       // Auto-save filtered results to LinksjsonEndRe
       linkStore.saveFilteredResults(summary).catch(console.error);
+      // Auto-save filtered results to MongoDB repository (as Pending for join manager)
+      if (process.env.MONGODB_URI && (summary.groups.length + summary.ads.length > 0)) {
+        linksRepository.saveFilteredLinks(
+          summary.groups,
+          summary.ads,
+          summary.descriptionLinks.filter((l) => l.includes("chat.whatsapp.com"))
+        ).catch((err) => console.warn("[Routes] Failed to save filtered to DB:", err.message));
+      }
     }
     res.json({
       groups: summary.groups.length,

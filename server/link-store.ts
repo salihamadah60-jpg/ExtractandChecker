@@ -15,15 +15,26 @@ const AD_ONLY_MEDICAL_TERMS = [
   // Medical excuse services
   "أعذار طبية", "اعذار طبية", "عذر طبي", "اعذار طبيه", "أعذار طبيه",
   "عذر طبيه", "عذر طبية",
+  "إجازة مرضية", "اجازة مرضية", "إجازات مرضية", "اجازات مرضية",
   // Research opportunity ads
   "فرص بحثية", "فرص ابحاث", "فرص أبحاث", "فرص للأبحاث",
-  "فرص بحثيه",
+  "فرص بحثيه", "فرص لابحاث", "فرص لأبحاث",
+  "أبحاث صحية", "ابحاث صحية", "بحوث صحية",
   // Research publishing services
   "نشر أبحاث", "نشر ابحاث", "نشر الابحاث", "نشر البحوث",
-  "نشر بحوث", "نشر الأبحاث",
+  "نشر بحوث", "نشر الأبحاث", "لنشر الابحاث", "لنشر الأبحاث",
+  "نشر الأبحاث العلمية", "نشر بحوث طبية",
   "تساهيل لنشر",
   // General research-ad groups
   "دعم الأبحاث", "دعم البحوث",
+  // Platform / portal ads
+  "منصة صحتي", "بوابة طبية",
+  // Student help / grade guarantee services
+  "student help center", "student support center", "help center",
+  "خدمات طلابية", "مساعدة طلابية", "دعم طلابي",
+  "ضمان الدرجات", "حل اختبارات", "حل الاختبارات",
+  // Medical tourism / visa ads
+  "سياحة علاجية", "تأشيرة علاجية",
 ];
 
 // Full medical / health-related classifier — determines the "الطب والصحة" section
@@ -143,6 +154,44 @@ const MEDICAL_KEYWORDS = [
   "anatomy", "physiol", "biochem", "patholog",
   "internal medicine", "family medicine",
   "دكتوراه",
+  // Urology (comprehensive)
+  "urolog", "بولية",
+  // Geriatrics
+  "geriatric", "طب الشيخوخة", "رعاية مسنين",
+  // Palliative care
+  "palliative", "رعاية تلطيفية", "رعاية ملطفة",
+  // Rehabilitation / Physiotherapy
+  "rehabilit", "فيزيوثيرابي", "فيزيو", "علاج طبيعي",
+  "تأهيل", "إعادة التأهيل",
+  // Speech therapy / Audiology
+  "speech therapy", "نطق وتخاطب", "نطق", "تخاطب",
+  "audiol", "سمعيات", "سمع وتوازن",
+  // Sports medicine
+  "sport medicine", "طب رياضي",
+  // Ministry / health authorities
+  "وزارة الصحة", "هيئة الصحة",
+  // Medical schools
+  "كلية الطب", "كليات الصحة", "كلية الصيدلة", "كلية التمريض",
+  // Licensing / certification exams
+  "OSCE", "USMLE", "step exam", "dha exam", "haad exam", "moh exam", "prometric exam",
+  // Board specializations
+  "بورد سعودي", "بورد عربي",
+  // Clinical / Health informatics
+  "سريري", "المعلوماتية الصحية",
+  // General practice / GP
+  "طب عام", "GP", "الطب العام",
+  // Allergy & Immunology
+  "حساسية وجهاز مناعي", "تحسس",
+  // Endocrinology extras
+  "بنكرياس", "درقية",
+  // Hepatology
+  "كبدية", "التهاب كبد",
+  // Vascular surgery
+  "جراحة الأوعية",
+  // Cardiac surgery
+  "جراحة القلب",
+  // Healthcare management
+  "إدارة صحية", "إدارة مستشفى", "إدارة الصحة",
 ];
 
 export function isMedicalGroup(name?: string): boolean {
@@ -711,6 +760,22 @@ class LinkStore {
     const descriptionLinks = [...descLinkSet].filter((l) => !sessionLinkSet.has(l));
 
     return { groups, ads, descriptionLinks };
+  }
+
+  /** Reset all error results back to pending and mark session as idle for retry. */
+  retryErrors(): number {
+    if (!this.checkSession) return 0;
+    const errors = this.checkSession.results.filter((r) => r.status === "error");
+    for (const r of errors) {
+      r.status = "pending";
+      r.info = undefined;
+    }
+    const done = this.checkSession.results.filter((r) => r.status !== "pending").length;
+    this.checkSession.progress = done;
+    this.checkSession.status = "idle";
+    this.saveToDisk().catch(console.error);
+    console.log(`[LinkStore] Retry errors: ${errors.length} links reset to pending`);
+    return errors.length;
   }
 
   updateProgress() {

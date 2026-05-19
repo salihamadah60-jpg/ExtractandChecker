@@ -12,6 +12,7 @@
  *   - Saves new links to Links_Repository (source: "message")
  *   - Tracks last_read_message_id in System_State for crash recovery
  *   - Coordinator lock: blocks other functions while active
+ *   - Sequential pipeline: reader → check → filter → save to DB → join → resume
  */
 
 import { baileysManager } from "../baileys-manager.js";
@@ -20,6 +21,7 @@ import { systemState } from "./system-state.js";
 import { linksRepository } from "./links-repository.js";
 import { classifyMessage } from "./nlp-classifier.js";
 import { extractGroupLinks } from "./link-filter.js";
+import { isAdOnlyMedicalGroup } from "../link-store.js";
 
 export interface ReaderStats {
   status: "running" | "stopped" | "error";
@@ -30,10 +32,123 @@ export interface ReaderStats {
   startedAt: string;
   stoppedAt?: string;
   lastMessageId?: string;
+  pipelineRuns?: number;
 }
 
 let _stats: ReaderStats | null = null;
 let _running = false;
+
+// ── Pipeline buffer ────────────────────────────────────────────────────────────
+// Accumulates newly discovered links between pipeline runs
+let _pipelineBuffer: string[] = [];
+let _pipelineLock = false;
+let _pipelineDebounce: ReturnType<typeof setTimeout> | null = null;
+const PIPELINE_DEBOUNCE_MS = 30_000; // trigger pipeline 30s after last new link
+
+function _cleanLink(link: string): string {
+  try { const u = new URL(link.trim()); return `${u.origin}${u.pathname}`; }
+  catch { return link.trim(); }
+}
+
+/** Run the sequential pipeline: pause reader → check → filter → save → join → resume. */
+async function _runPipeline(): Promise<void> {
+  _pipelineDebounce = null;
+  if (_pipelineLock || _pipelineBuffer.length === 0 || !_running) return;
+  _pipelineLock = true;
+
+  const linksToCheck = [..._pipelineBuffer];
+  _pipelineBuffer = [];
+
+  console.log(`[Pipeline] Starting pipeline with ${linksToCheck.length} buffered links`);
+
+  try {
+    // 1. Pause reader — release coordinator so joinManager can later acquire it
+    _running = false;
+    baileysManager.clearMessageHandler();
+    coordinator.release();
+    await systemState.setActiveFunction(null);
+    if (_stats) {
+      _stats.status = "stopped";
+      _stats.stoppedAt = new Date().toISOString();
+    }
+    console.log("[Pipeline] Reader paused");
+
+    // 2. Check links via Baileys (with anti-ban delays)
+    const checkResults = await baileysManager.checkLinksForPipeline(linksToCheck);
+
+    // 3. Filter results using same logic as getFilteredSummary
+    const validGroups = checkResults.filter(
+      (r) => r.status === "valid" && r.url.includes("chat.whatsapp.com")
+    );
+
+    const groups = validGroups
+      .filter((r) => {
+        if (isAdOnlyMedicalGroup(r.name, r.description)) return false;
+        const m = r.members ?? 0;
+        return m > 150 || (m > 10 && m <= 150 && !r.description?.trim());
+      })
+      .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
+
+    const ads = validGroups
+      .filter((r) => {
+        const m = r.members ?? 0;
+        if (m <= 10) return false;
+        if (isAdOnlyMedicalGroup(r.name, r.description)) return true;
+        return m <= 150 && !!r.description?.trim();
+      })
+      .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
+
+    // 4. Save to DB and start join manager if anything was found
+    if (groups.length + ads.length > 0) {
+      await linksRepository.saveFilteredLinks(groups, ads);
+      console.log(`[Pipeline] Saved ${groups.length} groups + ${ads.length} ads to DB`);
+
+      // 5. Trigger join manager (it acquires coordinator internally)
+      try {
+        const { joinManager } = await import("./join-manager.js");
+        await joinManager.start();
+        console.log("[Pipeline] Join manager completed");
+      } catch (err) {
+        console.warn("[Pipeline] Join manager skipped:", (err as Error).message);
+      }
+    } else {
+      console.log("[Pipeline] No valid groups after filtering — skipping join");
+    }
+
+    if (_stats) {
+      _stats.pipelineRuns = (_stats.pipelineRuns ?? 0) + 1;
+    }
+  } catch (err) {
+    console.error("[Pipeline] Error during pipeline:", (err as Error).message);
+  } finally {
+    // 6. Always try to resume reader if WhatsApp is still connected
+    if (baileysManager.isConnected()) {
+      try {
+        const acquired = await coordinator.acquire("reading");
+        if (acquired) {
+          await systemState.setActiveFunction("reading");
+          _running = true;
+          if (_stats) {
+            _stats.status = "running";
+            _stats.stoppedAt = undefined;
+          }
+          baileysManager.setMessageHandler(async (msgs: any[]) => {
+            for (const msg of msgs) {
+              if (!_running) break;
+              await messageReader._handleMessage(msg);
+            }
+          });
+          console.log("[Pipeline] Reader resumed after pipeline");
+        } else {
+          console.warn("[Pipeline] Could not re-acquire coordinator — reader not resumed");
+        }
+      } catch (err) {
+        console.error("[Pipeline] Failed to resume reader:", (err as Error).message);
+      }
+    }
+    _pipelineLock = false;
+  }
+}
 
 export const messageReader = {
   getStats(): ReaderStats | null {
@@ -57,6 +172,7 @@ export const messageReader = {
     }
 
     _running = true;
+    _pipelineBuffer = [];
     _stats = {
       status: "running",
       messagesReceived: 0,
@@ -64,6 +180,7 @@ export const messageReader = {
       linksFound: 0,
       linksNew: 0,
       startedAt: new Date().toISOString(),
+      pipelineRuns: 0,
     };
 
     await systemState.setActiveFunction("reading");
@@ -86,6 +203,12 @@ export const messageReader = {
 
   /** Stop listening for messages. */
   async stop(): Promise<void> {
+    // Cancel any pending pipeline
+    if (_pipelineDebounce) {
+      clearTimeout(_pipelineDebounce);
+      _pipelineDebounce = null;
+    }
+
     _running = false;
     baileysManager.clearMessageHandler();
 
@@ -136,7 +259,11 @@ export const messageReader = {
         const added = await linksRepository.addIfNew(url, "Group", "message");
         if (added) {
           if (_stats) _stats.linksNew++;
-          console.log(`[MessageReader] New link found: ${url}`);
+          // Add to pipeline buffer and schedule debounced pipeline run
+          _pipelineBuffer.push(url);
+          if (_pipelineDebounce) clearTimeout(_pipelineDebounce);
+          _pipelineDebounce = setTimeout(() => _runPipeline(), PIPELINE_DEBOUNCE_MS);
+          console.log(`[MessageReader] New link → buffer (${_pipelineBuffer.length}): ${url}`);
         }
       }
 

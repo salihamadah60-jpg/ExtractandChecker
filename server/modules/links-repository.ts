@@ -153,4 +153,58 @@ export const linksRepository = {
     agg.forEach((d: any) => { result[d._id] = d.count; });
     return result as Record<LinkStatus, number>;
   },
+
+  /**
+   * Save filtered results (groups + ads + description links) as Pending links.
+   * Skips duplicates. Returns counts of newly added records.
+   */
+  async saveFilteredLinks(
+    groups: { link: string; name?: string; members?: number; description?: string }[],
+    ads: { link: string; name?: string; members?: number; description?: string }[],
+    descLinks?: string[]
+  ): Promise<{ newGroups: number; newAds: number; newDescLinks: number }> {
+    let newGroups = 0;
+    let newAds = 0;
+    let newDescLinks = 0;
+
+    for (const g of groups) {
+      const added = await this.addIfNew(g.link, "Group", "upload", {
+        name: g.name, members: g.members, description: g.description,
+      });
+      if (added) newGroups++;
+    }
+
+    for (const a of ads) {
+      const added = await this.addIfNew(a.link, "Group", "upload", {
+        name: a.name, members: a.members, description: a.description,
+      });
+      if (added) newAds++;
+    }
+
+    if (descLinks) {
+      for (const url of descLinks) {
+        if (!url.includes("chat.whatsapp.com")) continue;
+        const added = await this.addIfNew(url, "Group", "description");
+        if (added) newDescLinks++;
+      }
+    }
+
+    console.log(`[LinksRepository] Filtered saved → ${newGroups} new groups, ${newAds} new ads, ${newDescLinks} new desc links`);
+    return { newGroups, newAds, newDescLinks };
+  },
+
+  /**
+   * Handle group removal/kick — mark the record as Left by groupJid.
+   * Called when the bot is removed from a group.
+   */
+  async handleGroupRemoval(groupJid: string): Promise<void> {
+    const c = await col();
+    const result = await c.updateOne(
+      { groupJid, status: { $in: ["Joined", "Pending"] } },
+      { $set: { status: "Left" as LinkStatus, leftAt: new Date(), updatedAt: new Date() } }
+    );
+    if (result.modifiedCount > 0) {
+      console.log(`[LinksRepository] Marked as Left (kicked/removed): ${groupJid}`);
+    }
+  },
 };

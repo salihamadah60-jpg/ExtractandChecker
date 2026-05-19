@@ -297,6 +297,25 @@ export default function Home() {
     },
   });
 
+  const uploadMultipleMutation = useMutation({
+    mutationFn: async (files: File[]) => {
+      const fd = new FormData();
+      files.forEach((f) => fd.append("files", f));
+      const res = await fetch("/api/upload-multiple", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
+      return data;
+    },
+    onSuccess: (data) => {
+      setLinkCounts({ whatsapp: data.whatsapp, telegram: data.telegram });
+      setStep("links");
+      toast({ title: `تم استخراج الروابط من ${data.filesProcessed} ملف`, description: `${data.whatsapp} واتساب، ${data.telegram} تيليغرام` });
+    },
+    onError: (err: any) => {
+      toast({ title: "خطأ", description: err.message, variant: "destructive" });
+    },
+  });
+
   const newRoundUploadMutation = useMutation({
     mutationFn: async (file: File) => {
       const fd = new FormData();
@@ -399,6 +418,16 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
+  const retryErrorsMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/check/retry-errors", {}),
+    onSuccess: (data: any) => {
+      setStep("checking");
+      toast({ title: `إعادة فحص ${data.retrying} رابط بها أخطاء` });
+      qc.invalidateQueries({ queryKey: ["/api/whatsapp/progress"] });
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   const connectQRMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/connect", {}),
     onSuccess: () => { setIsConnecting(true); setConnectMode("qr"); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
@@ -496,13 +525,21 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [session?.rateLimitInfo]);
 
-  const handleFile = useCallback((file: File) => {
-    if (!file.name.match(/\.docx?$/i)) {
-      toast({ title: "خطأ", description: "يجب أن يكون الملف بصيغة DOCX", variant: "destructive" });
+  const handleFiles = useCallback((fileList: FileList | File[]) => {
+    const arr = Array.from(fileList);
+    const valid = arr.filter((f) => f.name.match(/\.docx?$/i));
+    if (!valid.length) {
+      toast({ title: "خطأ", description: "يجب أن تكون الملفات بصيغة DOCX", variant: "destructive" });
       return;
     }
-    uploadMutation.mutate(file);
-  }, [uploadMutation]);
+    if (valid.length === 1) {
+      uploadMutation.mutate(valid[0]);
+    } else {
+      uploadMultipleMutation.mutate(valid);
+    }
+  }, [uploadMutation, uploadMultipleMutation]);
+
+  const handleFile = useCallback((file: File) => handleFiles([file]), [handleFiles]);
 
   const handleNewRoundFile = useCallback((file: File) => {
     if (!file.name.match(/\.docx?$/i)) {
@@ -522,8 +559,8 @@ export default function Home() {
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setIsDragging(false);
-    const file = e.dataTransfer.files[0]; if (file) handleFile(file);
-  }, [handleFile]);
+    if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+  }, [handleFiles]);
 
   const onNewRoundDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setIsNewRoundDragging(false);
@@ -1151,22 +1188,22 @@ export default function Home() {
               onDragLeave={() => setIsDragging(false)}
               onDrop={onDrop}>
               <CardContent className="flex flex-col items-center justify-center py-16 gap-4">
-                {uploadMutation.isPending ? (
-                  <><Loader2 className="w-12 h-12 text-primary animate-spin" /><p className="text-muted-foreground">جاري استخراج الروابط...</p></>
+                {(uploadMutation.isPending || uploadMultipleMutation.isPending) ? (
+                  <><Loader2 className="w-12 h-12 text-primary animate-spin" /><p className="text-muted-foreground">{uploadMultipleMutation.isPending ? "جاري دمج الملفات واستخراج الروابط..." : "جاري استخراج الروابط..."}</p></>
                 ) : (
                   <>
                     <div className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${isDragging ? "bg-primary" : "bg-muted"}`}>
                       <Upload className={`w-8 h-8 ${isDragging ? "text-primary-foreground" : "text-muted-foreground"}`} />
                     </div>
                     <div className="text-center">
-                      <p className="font-semibold">اسحب وأفلت ملف DOCX هنا</p>
-                      <p className="text-sm text-muted-foreground mt-1">أو اضغط لاختيار الملف</p>
+                      <p className="font-semibold">اسحب وأفلت ملفات DOCX هنا</p>
+                      <p className="text-sm text-muted-foreground mt-1">أو اضغط لاختيار ملف أو أكثر</p>
                     </div>
                     <Button variant="outline" onClick={() => fileRef.current?.click()} data-testid="button-browse-file">
-                      <FileText className="w-4 h-4 ml-2" />اختيار ملف DOCX
+                      <FileText className="w-4 h-4 ml-2" />اختيار ملف أو ملفات DOCX
                     </Button>
-                    <input ref={fileRef} type="file" accept=".docx,.doc" className="hidden"
-                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+                    <input ref={fileRef} type="file" accept=".docx,.doc" multiple className="hidden"
+                      onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ""; }}
                       data-testid="input-file" />
                   </>
                 )}
@@ -1551,6 +1588,17 @@ export default function Home() {
                 <Pause className="w-3.5 h-3.5 text-orange-600 flex-shrink-0" />
                 <span className="text-orange-700 dark:text-orange-400">الفحص متوقف مؤقتاً — اضغط استئناف لمتابعة الفحص أو إيقاف نهائي للانتقال للنتائج</span>
               </div>
+            )}
+
+            {/* Retry errors — shown when checking is done and there are errors */}
+            {session.status === "done" && errorCount > 0 && (
+              <Button variant="outline" className="w-full gap-2 border-orange-300 text-orange-700 hover:bg-orange-50 dark:hover:bg-orange-900/20"
+                onClick={() => retryErrorsMutation.mutate()}
+                disabled={retryErrorsMutation.isPending || waStatus !== "connected"}
+                data-testid="button-retry-errors">
+                {retryErrorsMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                إعادة فحص الأخطاء ({errorCount})
+              </Button>
             )}
 
             <Card>
