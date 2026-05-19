@@ -2,10 +2,7 @@
  * function-coordinator.ts — Function isolation / mutex
  *
  * Ensures only ONE heavy WhatsApp function runs at a time.
- * If one is running, others are blocked until it completes.
- * This reduces the risk of WhatsApp detecting automation.
- *
- * Functions: checking, joining, reading, publishing, leaving
+ * During an active join window, ALL other functions are strictly blocked.
  */
 
 export type BotFunction = "checking" | "joining" | "reading" | "publishing" | "leaving";
@@ -13,55 +10,71 @@ export type BotFunction = "checking" | "joining" | "reading" | "publishing" | "l
 export interface FunctionState {
   active: BotFunction | null;
   startedAt: Date | null;
+  joinWindowActive: boolean;
   queuedRequests: BotFunction[];
 }
 
 class FunctionCoordinator {
-  private _active: BotFunction | null = null;
-  private _startedAt: Date | null = null;
+  private _active:          BotFunction | null = null;
+  private _startedAt:       Date        | null = null;
+  private _joinWindowActive             = false;
 
-  /** Returns the currently running function, or null if idle. */
-  getActive(): BotFunction | null {
-    return this._active;
-  }
+  getActive(): BotFunction | null { return this._active; }
 
-  /** Returns true if any function is currently running. */
-  isRunning(): boolean {
-    return this._active !== null;
+  isRunning(): boolean { return this._active !== null; }
+
+  /** True while the join-manager is executing a join slot (strict 10-min window) */
+  isJoinWindowActive(): boolean { return this._joinWindowActive; }
+
+  /** Called by join-manager to raise / lower the join-window flag */
+  setWindowActive(active: boolean): void {
+    this._joinWindowActive = active;
+    if (active) {
+      console.log("[Coordinator] 🔒 Join window OPEN — all other functions blocked");
+    } else {
+      console.log("[Coordinator] 🔓 Join window CLOSED");
+    }
   }
 
   /**
    * Try to acquire the lock for a given function.
-   * Returns true if acquired, false if another function is already running.
+   * Returns true if acquired, false if another function is already running
+   * OR if a join window is currently active.
    */
   async acquire(fn: BotFunction): Promise<boolean> {
+    if (this._joinWindowActive && fn !== "joining") {
+      console.warn(
+        `[Coordinator] ⛔ Cannot start "${fn}" — join window is active. ` +
+        `WhatsApp sees all outgoing requests; parallel calls are forbidden.`
+      );
+      return false;
+    }
     if (this._active !== null) {
       console.warn(`[Coordinator] Cannot start "${fn}" — "${this._active}" is already running`);
       return false;
     }
-    this._active = fn;
+    this._active    = fn;
     this._startedAt = new Date();
     console.log(`[Coordinator] Started "${fn}"`);
     return true;
   }
 
-  /**
-   * Release the lock. Should always be called in a finally block.
-   */
+  /** Release the lock. Always call in a finally block. */
   release(): void {
     if (this._active) {
       console.log(`[Coordinator] Released "${this._active}" (ran for ${this._elapsedSec()}s)`);
     }
-    this._active = null;
-    this._startedAt = null;
+    this._active          = null;
+    this._startedAt       = null;
+    this._joinWindowActive = false;
   }
 
-  /** Returns the current state snapshot. */
   getState(): FunctionState {
     return {
-      active: this._active,
-      startedAt: this._startedAt,
-      queuedRequests: [],
+      active:           this._active,
+      startedAt:        this._startedAt,
+      joinWindowActive: this._joinWindowActive,
+      queuedRequests:   [],
     };
   }
 

@@ -122,9 +122,14 @@ interface PreviousResultsRes {
 interface CoordinatorStatus { active: string | null; isRunning: boolean; }
 interface RepoCounts { Pending: number; Joined: number; Ignored: number; Left: number; }
 interface JoinProgress2 {
-  status: "running" | "done" | "paused" | "stopped" | "error";
+  status: "running" | "waiting" | "sleeping" | "cooldown" | "paused" | "done" | "stopped" | "error";
   total: number; processed: number; joined: number; ignored: number; failed: number; skipped_ads: number;
-  currentLink?: string; stopReason?: string; startedAt: string; completedAt?: string;
+  currentLink?: string; stopReason?: string; startedAt?: string; completedAt?: string;
+  windowNumber?: number;
+  nextJoinAt?:   string;
+  sleepUntil?:   string;
+  cooldownUntil?: string;
+  telemetry?: { avgLatencyMs: number; lastLatencyMs: number; cooldownActive: boolean; warning?: string; };
 }
 interface LeaveQueueEntry { url: string; groupJid?: string; enqueuedAt: string; reason?: string; }
 interface AdMessage { _id: string; text: string; createdAt: string; sentCount: number; lastSentAt?: string; }
@@ -594,12 +599,22 @@ export default function Home() {
 
   const startJoin2Mutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/join/start", {}),
-    onSuccess: () => { toast({ title: "بدأ الانضمام من المستودع" }); void refetchJoinProgress2(); },
+    onSuccess: () => { toast({ title: "بدأ الانضمام — رابطان كل 10 دقائق" }); void refetchJoinProgress2(); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
   const stopJoin2Mutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/join/stop", {}),
-    onSuccess: () => { toast({ title: "جاري إيقاف الانضمام..." }); void refetchJoinProgress2(); },
+    onSuccess: () => { toast({ title: "تم إيقاف الانضمام" }); void refetchJoinProgress2(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const pauseJoin2Mutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/join/pause", {}),
+    onSuccess: () => { toast({ title: "تم إيقاف الانضمام مؤقتاً" }); void refetchJoinProgress2(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const resumeJoin2Mutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/join/resume", {}),
+    onSuccess: () => { toast({ title: "تم استئناف الانضمام" }); void refetchJoinProgress2(); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
@@ -795,43 +810,157 @@ export default function Home() {
               </Button>
               {showJoinSidePanel && (
                 <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
-                  {joinProgress2?.status === "running" && (
+
+                  {/* ── Active session (running / waiting / sleeping / cooldown / paused) ── */}
+                  {joinProgress2 && ["running","waiting","sleeping","cooldown","paused"].includes(joinProgress2.status) && (
                     <div className="space-y-2">
+
+                      {/* Status badge row */}
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />جاري الانضمام...</span>
-                        <Badge variant="outline" className="text-xs">{joinProgress2.processed}/{joinProgress2.total}</Badge>
+                        {joinProgress2.status === "running" && (
+                          <span className="text-xs font-medium flex items-center gap-1.5">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />جاري الانضمام...
+                          </span>
+                        )}
+                        {joinProgress2.status === "waiting" && (
+                          <span className="text-xs font-medium flex items-center gap-1.5 text-amber-600">
+                            <Clock className="w-3.5 h-3.5" />انتظار الفترة الزمنية
+                          </span>
+                        )}
+                        {joinProgress2.status === "sleeping" && (
+                          <span className="text-xs font-medium flex items-center gap-1.5 text-blue-600">
+                            <Clock className="w-3.5 h-3.5" />نوم ليلي حتى الـ 7:30 ص
+                          </span>
+                        )}
+                        {joinProgress2.status === "cooldown" && (
+                          <span className="text-xs font-medium flex items-center gap-1.5 text-orange-600">
+                            <Shield className="w-3.5 h-3.5" />تبريد وقائي
+                          </span>
+                        )}
+                        {joinProgress2.status === "paused" && (
+                          <span className="text-xs font-medium flex items-center gap-1.5 text-muted-foreground">
+                            <Pause className="w-3.5 h-3.5" />متوقف مؤقتاً
+                          </span>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                          {joinProgress2.windowNumber != null && joinProgress2.windowNumber > 0 && (
+                            <Badge variant="outline" className="text-[10px]">نافذة {joinProgress2.windowNumber}</Badge>
+                          )}
+                          <Badge variant="outline" className="text-xs">{joinProgress2.processed}/{joinProgress2.total}</Badge>
+                        </div>
                       </div>
+
+                      {/* Progress bar */}
                       <Progress value={join2Pct} className="h-1.5" />
+
+                      {/* Stats grid */}
                       <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
-                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-green-600">{joinProgress2.joined}</p><p className="text-muted-foreground">ناجح</p></div>
-                        <div className="bg-red-50 dark:bg-red-900/20 rounded p-1.5"><p className="font-bold text-red-600">{joinProgress2.failed}</p><p className="text-muted-foreground">فشل</p></div>
-                        <div className="bg-muted rounded p-1.5"><p className="font-bold">{joinProgress2.ignored}</p><p className="text-muted-foreground">متجاهل</p></div>
+                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5">
+                          <p className="font-bold text-green-600">{joinProgress2.joined}</p>
+                          <p className="text-muted-foreground">ناجح</p>
+                        </div>
+                        <div className="bg-red-50 dark:bg-red-900/20 rounded p-1.5">
+                          <p className="font-bold text-red-600">{joinProgress2.failed}</p>
+                          <p className="text-muted-foreground">فشل</p>
+                        </div>
+                        <div className="bg-muted rounded p-1.5">
+                          <p className="font-bold">{joinProgress2.ignored}</p>
+                          <p className="text-muted-foreground">متجاهل</p>
+                        </div>
                       </div>
-                      {joinProgress2.currentLink && <p className="text-[10px] text-muted-foreground font-mono truncate bg-muted rounded px-2 py-1">{joinProgress2.currentLink}</p>}
-                      {joinProgress2.stopReason && <p className="text-[10px] text-destructive bg-destructive/10 rounded p-1.5">{joinProgress2.stopReason}</p>}
-                      <Button size="sm" variant="outline" className="w-full text-xs h-8 border-destructive/50 text-destructive hover:bg-destructive/5" onClick={() => stopJoin2Mutation.mutate()} disabled={stopJoin2Mutation.isPending}>
-                        <Square className="w-3 h-3 ml-1" />إيقاف
-                      </Button>
+
+                      {/* Current link */}
+                      {joinProgress2.currentLink && (
+                        <p className="text-[10px] text-muted-foreground font-mono truncate bg-muted rounded px-2 py-1">
+                          {joinProgress2.currentLink}
+                        </p>
+                      )}
+
+                      {/* Next join time */}
+                      {joinProgress2.nextJoinAt && joinProgress2.status !== "running" && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1.5">
+                          <Clock className="w-3 h-3 flex-shrink-0" />
+                          <span>الانضمام القادم: {new Date(joinProgress2.nextJoinAt).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                        </div>
+                      )}
+
+                      {/* Sleep mode indicator */}
+                      {joinProgress2.status === "sleeping" && joinProgress2.sleepUntil && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded px-2 py-1.5">
+                          <Clock className="w-3 h-3 flex-shrink-0" />
+                          <span>نوم حتى: {new Date(joinProgress2.sleepUntil).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}</span>
+                        </div>
+                      )}
+
+                      {/* Telemetry warning */}
+                      {joinProgress2.telemetry?.warning && (
+                        <div className="flex items-start gap-1.5 text-[10px] text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 rounded px-2 py-1.5">
+                          <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                          <span>{joinProgress2.telemetry.warning}</span>
+                        </div>
+                      )}
+
+                      {/* Stop reason */}
+                      {joinProgress2.stopReason && (
+                        <p className="text-[10px] text-destructive bg-destructive/10 rounded p-1.5">
+                          {joinProgress2.stopReason}
+                        </p>
+                      )}
+
+                      {/* Pause / Resume + Stop buttons */}
+                      <div className="flex gap-1.5">
+                        {joinProgress2.status === "paused" ? (
+                          <Button size="sm" variant="outline"
+                            className="flex-1 text-xs h-8 border-primary/50 text-primary hover:bg-primary/5"
+                            onClick={() => resumeJoin2Mutation.mutate()}
+                            disabled={resumeJoin2Mutation.isPending}>
+                            <Play className="w-3 h-3 ml-1" />استئناف
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline"
+                            className="flex-1 text-xs h-8 border-amber-500/50 text-amber-600 hover:bg-amber-50"
+                            onClick={() => pauseJoin2Mutation.mutate()}
+                            disabled={pauseJoin2Mutation.isPending}>
+                            <Pause className="w-3 h-3 ml-1" />تعليق
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline"
+                          className="flex-1 text-xs h-8 border-destructive/50 text-destructive hover:bg-destructive/5"
+                          onClick={() => stopJoin2Mutation.mutate()}
+                          disabled={stopJoin2Mutation.isPending}>
+                          <Square className="w-3 h-3 ml-1" />إيقاف
+                        </Button>
+                      </div>
                     </div>
                   )}
+
+                  {/* ── Session ended ── */}
                   {(joinProgress2?.status === "done" || joinProgress2?.status === "stopped") && (
                     <div className="flex items-center gap-1.5 text-xs bg-green-50 dark:bg-green-900/20 rounded p-2 border border-green-200 dark:border-green-800">
                       <CheckCheck className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
-                      <span className="text-green-700 dark:text-green-400 font-medium">اكتمل — {joinProgress2.joined} ناجح، {joinProgress2.failed} فشل، {joinProgress2.ignored} متجاهل</span>
+                      <span className="text-green-700 dark:text-green-400 font-medium">
+                        اكتمل — {joinProgress2.joined} ناجح، {joinProgress2.failed} فشل، {joinProgress2.ignored} متجاهل
+                      </span>
                     </div>
                   )}
-                  {(!joinProgress2 || joinProgress2.status === "done" || joinProgress2.status === "stopped" || joinProgress2.status === "paused") && (
+
+                  {/* ── Start button (idle / done / stopped) ── */}
+                  {(!joinProgress2 || joinProgress2.status === "done" || joinProgress2.status === "stopped") && (
                     <Button size="sm" className="w-full text-xs h-8"
                       onClick={() => startJoin2Mutation.mutate()}
                       disabled={startJoin2Mutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
                       data-testid="sidebar-start-join2">
-                      {startJoin2Mutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <UserPlus className="w-3.5 h-3.5 ml-1" />}
-                      {joinProgress2?.status === "paused" ? "استئناف الانضمام" : "بدء الانضمام"}
+                      {startJoin2Mutation.isPending
+                        ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" />
+                        : <UserPlus className="w-3.5 h-3.5 ml-1" />}
+                      بدء الانضمام
                     </Button>
                   )}
+
+                  {/* ── Rate info ── */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
                     <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                    <span>يتوقف تلقائياً عند أي خطأ يهدد الحساب (421، حظر، بلاغ)</span>
+                    <span>معدل آمن: رابطان كل 10 دقائق — نوم ليلي 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر</span>
                   </div>
                 </div>
               )}

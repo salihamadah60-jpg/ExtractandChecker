@@ -954,6 +954,16 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  app.post("/api/join/pause", (_req, res) => {
+    joinManager.requestPause();
+    res.json({ success: true });
+  });
+
+  app.post("/api/join/resume", (_req, res) => {
+    joinManager.requestResume();
+    res.json({ success: true });
+  });
+
   app.get("/api/join/progress", (_req, res) => {
     res.json({ progress: joinManager.getProgress() });
   });

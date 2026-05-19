@@ -1,26 +1,32 @@
 /**
  * human-mimicry.ts — Randomized delays and human-like pacing
+ *
  * All bot actions use these utilities to avoid detection.
  * NO fixed timings — everything is within a human-plausible range.
+ *
+ * JOIN TIMING MODEL (anti-ban):
+ *   Window = 10 minutes.  2 links processed per window.
+ *   Slot 0 → random offset within  0:30 – 4:30  (first half)
+ *   Slot 1 → random offset within  5:00 – 9:30  (second half)
+ *   Coordinator lock is held for the ENTIRE window so no other
+ *   WhatsApp function can fire simultaneously.
  */
 
-/**
- * Sleep for a random duration between [minMs, maxMs] milliseconds.
- */
+export const WINDOW_DURATION_MS = 10 * 60_000; // 10 minutes per window
+
+/** Sleep for a random duration between [minMs, maxMs] */
 export function randomDelay(minMs: number, maxMs: number): Promise<void> {
   const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Gaussian-like jitter — clusters around the midpoint, rarely hits extremes.
- */
+/** Gaussian-like jitter — clusters around midpoint, rarely hits extremes */
 function gaussianDelay(minMs: number, maxMs: number): number {
   let u = 0, v = 0;
   while (u === 0) u = Math.random();
   while (v === 0) v = Math.random();
-  const std = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-  const mid = (minMs + maxMs) / 2;
+  const std   = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  const mid   = (minMs + maxMs) / 2;
   const range = (maxMs - minMs) / 6;
   return Math.max(minMs, Math.min(maxMs, Math.round(mid + std * range)));
 }
@@ -30,18 +36,28 @@ export function gaussianRandomDelay(minMs: number, maxMs: number): Promise<void>
 }
 
 /**
- * Predefined delay profiles for different actions.
- * All intervals are human-plausible ranges, never fixed.
+ * Returns the random ms offset for each join slot within a 10-minute window.
+ *   slot 0 → first half  (30 s – 4 min 30 s)
+ *   slot 1 → second half (5 min – 9 min 30 s)
  */
+export function joinSlotOffset(slot: 0 | 1): number {
+  if (slot === 0) return randomInt(30_000, 270_000);   //  0:30 – 4:30
+  return randomInt(300_000, 570_000);                   //  5:00 – 9:30
+}
+
+/** Predefined delay profiles for different actions */
 export const DELAYS = {
   /** Between sequential link checks: 2–5 seconds */
   betweenChecks: () => randomDelay(2000, 5000),
 
-  /** Between sequential group joins: 3–8 seconds */
-  betweenJoins: () => gaussianRandomDelay(3000, 8000),
+  /**
+   * NOT used for the main join loop (which uses the window scheduler).
+   * Kept for pipeline / fallback paths: 45–90 seconds.
+   */
+  betweenJoins: () => randomDelay(45_000, 90_000),
 
-  /** Rest pause after every ~25–35 joins: 60–120 seconds */
-  batchRestAfterJoins: () => randomDelay(60_000, 120_000),
+  /** Rest pause after every ~25–35 joins: 3–6 minutes */
+  batchRestAfterJoins: () => randomDelay(180_000, 360_000),
 
   /** Between messages sent to a group: 8–25 seconds */
   betweenPublishedMessages: () => gaussianRandomDelay(8000, 25_000),
@@ -52,30 +68,24 @@ export const DELAYS = {
   /** Rest pause after every ~20–30 messages read: 30–60 seconds */
   batchRestAfterReads: () => randomDelay(30_000, 60_000),
 
-  /** Simulated typing time before sending a message: 500ms–3s */
-  typingBeforeSend: () => gaussianRandomDelay(500, 3000),
+  /** Simulated typing time before sending a message: 1–4 seconds */
+  typingBeforeSend: () => gaussianRandomDelay(1000, 4000),
 
   /** Short pause before leaving a group: 5–15 seconds */
   beforeLeave: () => randomDelay(5000, 15_000),
 } as const;
 
-/**
- * Returns a random integer between min and max (inclusive).
- */
+/** Returns a random integer between min and max (inclusive) */
 export function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-/**
- * Pick a random item from an array.
- */
+/** Pick a random item from an array */
 export function randomPick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/**
- * Shuffle an array in-place (Fisher-Yates).
- */
+/** Shuffle an array in-place (Fisher-Yates) */
 export function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -85,9 +95,7 @@ export function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-/**
- * Returns true with the given probability (0–1).
- */
+/** Returns true with the given probability (0–1) */
 export function withChance(probability: number): boolean {
   return Math.random() < probability;
 }
