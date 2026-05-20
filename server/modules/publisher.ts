@@ -141,8 +141,11 @@ export const publisher = {
       const ads = await publisher.listAds();
       if (!ads.length) throw new Error("لا توجد إعلانات محفوظة. أضف إعلاناً أولاً.");
 
-      const joinedGroups = await linksRepository.findJoined();
-      if (!joinedGroups.length) throw new Error("لا توجد مجموعات منضم إليها للنشر.");
+      const currentPhone = baileysManager.getConnectedPhone() ?? undefined;
+      console.log(`[Publisher] Starting — phone: ${currentPhone ?? "unknown"}`);
+
+      const joinedGroups = await linksRepository.findJoined(currentPhone);
+      if (!joinedGroups.length) throw new Error("لا توجد مجموعات منضم إليها بهذا الحساب للنشر.");
 
       const state = await systemState.get();
       let adIdx = ((state.last_published_ad_index ?? -1) + 1) % ads.length;
@@ -179,6 +182,15 @@ export const publisher = {
 
         if (!baileysManager.isConnected()) {
           _progress.status = "stopped"; break;
+        }
+
+        // ── User-activity guard ───────────────────────────────────────────
+        if (baileysManager.isUserActive(90_000)) {
+          console.log("[Publisher] 👤 User active — pausing 2 min");
+          if (_progress) _progress.status = "cooldown";
+          const outcome = await interruptibleSleep(2 * 60_000);
+          if (outcome === "stopped") { _progress.status = "stopped"; break; }
+          if (_progress) _progress.status = "running";
         }
 
         // ── Proactive telemetry cooldown check ───────────────────────────

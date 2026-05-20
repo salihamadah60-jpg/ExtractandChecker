@@ -61,6 +61,12 @@ class SessionsManager extends EventEmitter {
   private _checkStopped = false;
   private _messageHandler: ((msgs: any[]) => void) | null = null;
 
+  // ── User-activity detection ────────────────────────────────────────────────
+  /** IDs of messages sent BY the bot — used to distinguish bot vs user activity. */
+  private _botSentIds   = new Set<string>();
+  /** Timestamp of last detected MANUAL user action on WhatsApp (0 = none). */
+  private _lastUserActivity = 0;
+
   pauseCheck(): void {
     this._checkPaused = true;
     if (linkStore.checkSession && linkStore.checkSession.status === "running") {
@@ -114,6 +120,33 @@ class SessionsManager extends EventEmitter {
   getConnectedPhone(): string | null {
     const state = this.getActiveState();
     return state?.phoneNumber ?? null;
+  }
+
+  /**
+   * Returns true if the user sent a manual WhatsApp message within the last `withinMs` ms.
+   * Used by join / publish / read managers to pause when the user is active.
+   */
+  isUserActive(withinMs = 2 * 60_000): boolean {
+    if (this._lastUserActivity === 0) return false;
+    return Date.now() - this._lastUserActivity < withinMs;
+  }
+
+  /** Mark the bot is about to send — so incoming fromMe echoes are ignored. */
+  private _trackBotSend(msgId: string | undefined): void {
+    if (!msgId) return;
+    this._botSentIds.add(msgId);
+    setTimeout(() => this._botSentIds.delete(msgId), 60_000);
+  }
+
+  /** Process incoming messages: detect user activity + delegate to handler. */
+  private _onMessages(messages: any[]): void {
+    for (const msg of messages) {
+      if (msg.key?.fromMe && msg.key?.id && !this._botSentIds.has(msg.key.id as string)) {
+        this._lastUserActivity = Date.now();
+        console.log(`[Sessions] 👤 User activity detected (msgId: ${msg.key.id})`);
+      }
+    }
+    this._messageHandler?.(messages);
   }
 
   isConnected(): boolean {
@@ -494,12 +527,10 @@ class SessionsManager extends EventEmitter {
 
       sock.ev.on("creds.update", saveCreds);
 
-      // Attach message handler if one is registered
-      if (this._messageHandler) {
-        sock.ev.on("messages.upsert", (update: any) => {
-          if (update.type === "notify") this._messageHandler!(update.messages ?? []);
-        });
-      }
+      // Always register messages.upsert — handles both activity detection and delegating to handler
+      sock.ev.on("messages.upsert", (update: any) => {
+        if (update.type === "notify") this._onMessages(update.messages ?? []);
+      });
 
       // Detect when bot is removed/kicked from a group
       sock.ev.on("group-participants.update", async (update: any) => {
@@ -859,29 +890,23 @@ class SessionsManager extends EventEmitter {
   async sendTextMessage(jid: string, text: string): Promise<void> {
     const s = this.getActiveState();
     if (!s?.sock) throw new Error("Not connected");
-    await s.sock.sendMessage(jid, { text });
+    const result = await s.sock.sendMessage(jid, { text });
+    // Track this as a bot-sent message so activity detection ignores its echo
+    this._trackBotSend(result?.key?.id);
   }
 
-  /** Register a handler for incoming group messages across all active sockets. */
+  /**
+   * Register a handler for incoming group messages.
+   * No need to re-register socket listeners — _connectSession always calls _onMessages
+   * which delegates to _messageHandler.
+   */
   setMessageHandler(handler: (msgs: any[]) => void): void {
     this._messageHandler = handler;
-    // Attach to all already-connected sockets
-    for (const [, sess] of this.sessions) {
-      if (sess.sock) {
-        sess.sock.ev.removeAllListeners("messages.upsert");
-        sess.sock.ev.on("messages.upsert", (update: any) => {
-          if (update.type === "notify") handler(update.messages ?? []);
-        });
-      }
-    }
   }
 
-  /** Remove the message handler. */
+  /** Remove the message handler (socket listener stays active for activity detection). */
   clearMessageHandler(): void {
     this._messageHandler = null;
-    for (const [, sess] of this.sessions) {
-      if (sess.sock) sess.sock.ev.removeAllListeners("messages.upsert");
-    }
   }
 
   // ── Legacy join-groups flow ──────────────────────────────────────────────────

@@ -942,8 +942,21 @@ export async function registerRoutes(
   // ── Join Manager ───────────────────────────────────────────────────────────
   app.post("/api/join/start", async (req, res) => {
     try {
+      if (!baileysManager.isConnected()) {
+        return res.status(400).json({ error: "واتساب غير متصل. يُرجى الاتصال أولاً." });
+      }
       const maxLinks: number | undefined = req.body?.maxLinks ? Number(req.body.maxLinks) : undefined;
-      joinManager.start(maxLinks).catch(console.error);
+
+      let startError: string | null = null;
+      const p = joinManager.start(maxLinks).catch((err: Error) => {
+        startError = err.message;
+        console.error("[JoinManager] Start failed:", err.message);
+      });
+
+      // Wait up to 700ms — enough for coordinator check + pending-links check to fail fast
+      await Promise.race([p, new Promise(r => setTimeout(r, 700))]);
+
+      if (startError) return res.status(400).json({ error: startError });
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
