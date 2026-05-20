@@ -143,6 +143,11 @@ interface ReaderStats {
   messagesReceived: number; messagesSkippedAds: number; linksFound: number; linksNew: number;
   startedAt: string; stoppedAt?: string;
 }
+interface PublishSession {
+  _id?: string; startedAt: string; completedAt: string;
+  status: "done" | "stopped" | "error";
+  total: number; processed: number; sent: number; failed: number; phone?: string;
+}
 
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "رفع الملف" },
@@ -178,6 +183,7 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showJoinSidePanel, setShowJoinSidePanel] = useState(false);
   const [showPublisherPanel, setShowPublisherPanel] = useState(false);
+  const [showPublishHistory, setShowPublishHistory] = useState(false);
   const [showReaderPanel, setShowReaderPanel] = useState(false);
   const [showLeavePanel, setShowLeavePanel] = useState(false);
   const [newAdText, setNewAdText] = useState("");
@@ -233,6 +239,11 @@ export default function Home() {
     queryKey: ["/api/publisher/ads"],
     refetchInterval: false,
     enabled: true,
+  });
+  const { data: publishHistoryData, refetch: refetchPublishHistory } = useQuery<{ sessions: PublishSession[] }>({
+    queryKey: ["/api/publisher/history"],
+    enabled: showPublishHistory,
+    refetchInterval: false,
   });
   const { data: publisherProgressData } = useQuery<{ progress: PublishProgress | null }>({
     queryKey: ["/api/publisher/progress"],
@@ -1214,6 +1225,51 @@ export default function Home() {
                       {startPublishMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <Send className="w-3.5 h-3.5 ml-1" />}
                       بدء النشر للمجموعات المنضمة
                     </Button>
+                  )}
+
+                  {/* ── سجل جلسات النشر ── */}
+                  <Button variant="ghost" size="sm" className="w-full text-xs h-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => { setShowPublishHistory(o => !o); if (!publishHistoryData) void refetchPublishHistory(); }}
+                    data-testid="button-publish-history">
+                    <History className="w-3 h-3 ml-1" />
+                    {showPublishHistory ? "إخفاء السجل" : "سجل جلسات النشر"}
+                    {showPublishHistory ? <ChevronUp className="w-3 h-3 mr-1" /> : <ChevronDown className="w-3 h-3 mr-1" />}
+                  </Button>
+                  {showPublishHistory && (
+                    <div className="space-y-1.5 mt-1">
+                      {!publishHistoryData ? (
+                        <div className="flex justify-center py-2"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
+                      ) : publishHistoryData.sessions.length === 0 ? (
+                        <p className="text-[10px] text-muted-foreground text-center py-2">لا توجد جلسات سابقة</p>
+                      ) : (
+                        <div className="space-y-1 max-h-52 overflow-y-auto">
+                          {publishHistoryData.sessions.map((s, i) => {
+                            const startD = new Date(s.startedAt);
+                            const endD   = new Date(s.completedAt);
+                            const durMin = Math.round((endD.getTime() - startD.getTime()) / 60_000);
+                            return (
+                              <div key={s._id ?? i} className="bg-background border rounded p-2 text-[10px] space-y-1" data-testid={`publish-session-${i}`}>
+                                <div className="flex items-center justify-between">
+                                  <span className={`font-semibold ${s.status === "done" ? "text-green-600" : s.status === "stopped" ? "text-yellow-600" : "text-red-600"}`}>
+                                    {s.status === "done" ? "✓ مكتملة" : s.status === "stopped" ? "◼ موقوفة" : "✗ خطأ"}
+                                  </span>
+                                  <span className="text-muted-foreground">
+                                    {startD.toLocaleDateString("ar", { month: "short", day: "numeric" })} — {startD.toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" })}
+                                  </span>
+                                </div>
+                                <div className="flex gap-2 text-center">
+                                  <div className="flex-1 bg-green-50 dark:bg-green-900/20 rounded p-1"><p className="font-bold text-green-700">{s.sent}</p><p className="text-muted-foreground">أُرسل</p></div>
+                                  <div className="flex-1 bg-red-50 dark:bg-red-900/20 rounded p-1"><p className="font-bold text-red-600">{s.failed}</p><p className="text-muted-foreground">فشل</p></div>
+                                  <div className="flex-1 bg-gray-50 dark:bg-gray-800 rounded p-1"><p className="font-bold">{durMin}د</p><p className="text-muted-foreground">مدة</p></div>
+                                  <div className="flex-1 bg-gray-50 dark:bg-gray-800 rounded p-1"><p className="font-bold">{s.total}</p><p className="text-muted-foreground">إجمالي</p></div>
+                                </div>
+                                {s.phone && <p className="text-muted-foreground text-right">📱 +{s.phone}</p>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}

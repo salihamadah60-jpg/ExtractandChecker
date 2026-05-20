@@ -19,6 +19,7 @@ import { linksRepository }  from "./links-repository.js";
 import { classifyWAError }  from "./wa-error-handler.js";
 import { telemetry }        from "./telemetry.js";
 import { DELAYS, shuffle, randomInt } from "./human-mimicry.js";
+import { publishHistory }   from "./publish-history.js";
 
 export interface AdMessage {
   _id?: string;
@@ -297,6 +298,20 @@ export const publisher = {
       }
 
       console.log(`[Publisher] Done — sent: ${_progress.sent}, failed: ${_progress.failed}`);
+
+      // ── Persist session to history ──────────────────────────────────────
+      if (_progress.completedAt) {
+        void publishHistory.save({
+          startedAt:   _progress.startedAt,
+          completedAt: _progress.completedAt,
+          status:      _progress.status as "done" | "stopped" | "error",
+          total:       _progress.total,
+          processed:   _progress.processed,
+          sent:        _progress.sent,
+          failed:      _progress.failed,
+          phone:       baileysManager.getConnectedPhone() ?? undefined,
+        });
+      }
     } finally {
       if (_progress) _progress.currentGroup = undefined;
       coordinator.release();

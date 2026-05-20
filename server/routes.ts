@@ -1118,6 +1118,16 @@ export async function registerRoutes(
     res.json({ progress: publisher.getProgress() });
   });
 
+  app.get("/api/publisher/history", async (_req, res) => {
+    try {
+      const { publishHistory } = await import("./modules/publish-history.js");
+      const sessions = await publishHistory.list(30);
+      res.json({ sessions });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Message Reader ─────────────────────────────────────────────────────────
   app.post("/api/reader/start", async (_req, res) => {
     try {
