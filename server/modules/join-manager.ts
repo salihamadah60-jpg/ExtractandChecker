@@ -467,6 +467,27 @@ export const joinManager = {
         }
 
         coordinator.setWindowActive(false);
+
+        // ── Record window stats to telemetry history ──────────────────────
+        {
+          const progressSnap = _progress;
+          if (progressSnap) {
+            const report = telemetry.getReport();
+            telemetry.recordWindow({
+              windowNumber:  windowNum,
+              slotsExecuted: Math.min(3, queueIdx),
+              joined:        progressSnap.joined,
+              failed:        progressSnap.failed,
+              ignored:       progressSnap.ignored,
+              startedAt:     new Date(windowStart).toISOString(),
+              completedAt:   new Date().toISOString(),
+              durationMs:    Date.now() - windowStart,
+              avgLatencyMs:  report.avgLatencyMs,
+              hadCooldown:   report.cooldownActive,
+            });
+          }
+        }
+
         if (windowBroken) break;
 
         // ── Wait for remainder of the 10-minute window ────────────────────

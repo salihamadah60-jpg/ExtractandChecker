@@ -15,6 +15,7 @@ import {
   FolderOpen, PlusCircle, FileJson, History, ChevronDown,
   ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
   Pause, Play, Square, Menu, X, MessageCircle, Send, LayoutDashboard,
+  TrendingUp, Activity, Zap, BarChart2, AlertTriangle,
 } from "lucide-react";
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
@@ -131,6 +132,15 @@ interface JoinProgress2 {
   cooldownUntil?: string;
   telemetry?: { avgLatencyMs: number; lastLatencyMs: number; cooldownActive: boolean; warning?: string; };
 }
+interface WindowRecord {
+  windowNumber: number; slotsExecuted: number; joined: number; failed: number; ignored: number;
+  startedAt: string; completedAt: string; durationMs: number; avgLatencyMs: number; hadCooldown: boolean;
+}
+interface TelemetryRes {
+  report: { avgLatencyMs: number; lastLatencyMs: number; sampleCount: number; cooldownActive: boolean; cooldownUntil?: string; warning?: string; };
+  windowHistory: WindowRecord[];
+  joinProgress: JoinProgress2 | null;
+}
 interface LeaveQueueEntry { url: string; groupJid?: string; enqueuedAt: string; reason?: string; }
 interface AdMessage { _id: string; text: string; createdAt: string; sentCount: number; lastSentAt?: string; }
 interface PublishProgress {
@@ -186,6 +196,7 @@ export default function Home() {
   const [showPublishHistory, setShowPublishHistory] = useState(false);
   const [showReaderPanel, setShowReaderPanel] = useState(false);
   const [showLeavePanel, setShowLeavePanel] = useState(false);
+  const [showTelemetryPanel, setShowTelemetryPanel] = useState(false);
   const [newAdText, setNewAdText] = useState("");
   const [joinMaxLinks, setJoinMaxLinks] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -252,6 +263,11 @@ export default function Home() {
   const { data: readerStatsData } = useQuery<{ stats: ReaderStats | null; isRunning: boolean }>({
     queryKey: ["/api/reader/stats"],
     refetchInterval: 5000,
+  });
+
+  const { data: telemetryData } = useQuery<TelemetryRes>({
+    queryKey: ["/api/telemetry"],
+    refetchInterval: showTelemetryPanel || coordinatorData?.active === "joining" ? 3000 : 30000,
   });
 
   // Restore check session state on page refresh — runs once when data arrives
@@ -632,7 +648,7 @@ export default function Home() {
     },
     onSuccess: () => {
       const max = parseInt(joinMaxLinks, 10);
-      toast({ title: max > 0 ? `بدأ الانضمام التجريبي — ${max} روابط فقط` : "بدأ الانضمام — رابطان كل 10 دقائق" });
+      toast({ title: max > 0 ? `بدأ الانضمام التجريبي — ${max} روابط فقط` : "بدأ الانضمام — 3 روابط كل 10 دقائق" });
       void refetchJoinProgress2();
     },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
@@ -1126,7 +1142,7 @@ export default function Home() {
                   {/* ── Rate info ── */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
                     <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                    <span>معدل آمن: رابطان كل 10 دقائق — نوم ليلي 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر</span>
+                    <span>معدل آمن: 3 روابط كل 10 دقائق (60 ث فاصل) — نوم 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر</span>
                   </div>
                   {/* Note about Stop vs WhatsApp connection */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-blue-50 dark:bg-blue-900/20 rounded p-2">
@@ -1151,6 +1167,77 @@ export default function Home() {
                       مزامنة مع الحساب الحالي
                     </Button>
                   </div>
+                </div>
+              )}
+
+              {/* ── لوحة التلميترى ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showTelemetryPanel ? "border-primary bg-primary/5" : ""}`}
+                onClick={() => setShowTelemetryPanel(o => !o)}
+                data-testid="sidebar-telemetry">
+                <Activity className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">التلميترى والنوافذ</span>
+                {telemetryData?.report.cooldownActive && <Badge className="text-[10px] bg-orange-500">تبريد</Badge>}
+                {showTelemetryPanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showTelemetryPanel && (
+                <div className="border border-primary/20 rounded-lg p-3 space-y-3 bg-primary/5">
+                  {/* ── Current latency / cooldown ── */}
+                  <div>
+                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                      <Zap className="w-3 h-3" />زمن الاستجابة
+                    </p>
+                    <div className="grid grid-cols-2 gap-1 text-[10px] text-center">
+                      <div className="bg-background rounded p-1.5 border">
+                        <p className="font-bold text-sm">{telemetryData?.report.avgLatencyMs ?? 0} <span className="text-[10px] font-normal">ms</span></p>
+                        <p className="text-muted-foreground">متوسط</p>
+                      </div>
+                      <div className="bg-background rounded p-1.5 border">
+                        <p className="font-bold text-sm">{telemetryData?.report.lastLatencyMs ?? 0} <span className="text-[10px] font-normal">ms</span></p>
+                        <p className="text-muted-foreground">آخر قياس</p>
+                      </div>
+                    </div>
+                    {telemetryData?.report.cooldownActive && (
+                      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 rounded p-2 border border-orange-200 dark:border-orange-800">
+                        <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                        <span>تبريد نشط حتى {telemetryData.report.cooldownUntil ? new Date(telemetryData.report.cooldownUntil).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+                      </div>
+                    )}
+                    {telemetryData?.report.warning && !telemetryData.report.cooldownActive && (
+                      <p className="text-[10px] text-amber-600 mt-1 bg-amber-50 rounded p-1.5">{telemetryData.report.warning}</p>
+                    )}
+                  </div>
+
+                  {/* ── Window history ── */}
+                  {telemetryData?.windowHistory && telemetryData.windowHistory.length > 0 ? (
+                    <div>
+                      <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                        <BarChart2 className="w-3 h-3" />آخر {Math.min(telemetryData.windowHistory.length, 10)} نوافذ
+                      </p>
+                      <div className="space-y-1">
+                        {[...telemetryData.windowHistory].reverse().slice(0, 10).map((w) => (
+                          <div key={w.windowNumber} className={`flex items-center gap-1.5 rounded p-1.5 text-[10px] border ${w.hadCooldown ? "bg-orange-50 dark:bg-orange-900/10 border-orange-200 dark:border-orange-800" : "bg-background border-border"}`}>
+                            <span className="font-bold text-muted-foreground w-5 text-center">#{w.windowNumber}</span>
+                            <div className="flex-1 grid grid-cols-3 gap-1 text-center">
+                              <span className="text-green-600 font-bold">✓ {w.joined}</span>
+                              <span className="text-destructive font-bold">✗ {w.failed}</span>
+                              <span className="text-muted-foreground">{w.slotsExecuted} فتحات</span>
+                            </div>
+                            <span className="text-muted-foreground text-[9px] whitespace-nowrap">{Math.round(w.durationMs / 1000)}ث</span>
+                            {w.hadCooldown && <AlertTriangle className="w-2.5 h-2.5 text-orange-500 flex-shrink-0" />}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-1.5 flex gap-2 text-[9px] text-muted-foreground border-t pt-1.5">
+                        <span>إجمالي النوافذ: <b>{telemetryData.windowHistory.length}</b></span>
+                        <span>·</span>
+                        <span>إجمالي الانضمام: <b className="text-green-600">{telemetryData.windowHistory.reduce((a, w) => a + w.joined, 0)}</b></span>
+                        <span>·</span>
+                        <span>فشل: <b className="text-destructive">{telemetryData.windowHistory.reduce((a, w) => a + w.failed, 0)}</b></span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground text-center py-2">لم تنتهِ أي نافذة بعد — ابدأ الانضمام لرؤية البيانات</p>
+                  )}
                 </div>
               )}
 

@@ -9,6 +9,7 @@ import { checkLinksHTTP } from "./http-checker.js";
 import { coordinator } from "./modules/function-coordinator.js";
 import { linksRepository } from "./modules/links-repository.js";
 import { joinManager } from "./modules/join-manager.js";
+import { telemetry } from "./modules/telemetry.js";
 import { leaveManager } from "./modules/leave-manager.js";
 import { publisher } from "./modules/publisher.js";
 import { messageReader } from "./modules/message-reader.js";
@@ -991,6 +992,14 @@ export async function registerRoutes(
 
   app.get("/api/join/progress", (_req, res) => {
     res.json({ progress: joinManager.getProgress() });
+  });
+
+  app.get("/api/telemetry", (_req, res) => {
+    res.json({
+      report:        telemetry.getReport(),
+      windowHistory: telemetry.getWindowHistory(),
+      joinProgress:  joinManager.getProgress(),
+    });
   });
 
   /**

@@ -1,9 +1,8 @@
 import fs from "fs/promises";
 import path from "path";
-import { fileURLToPath } from "url";
 
-const _dir = path.dirname(fileURLToPath(import.meta.url));
-const ROOT_DIR = path.resolve(_dir, "..");
+// process.cwd() is always the project root in both ESM dev and CJS production bundle
+const ROOT_DIR = process.cwd();
 const STATE_FILE     = path.join(ROOT_DIR, ".session-state.json");
 const STATE_FILE_TMP = STATE_FILE + ".tmp";
 const DESC_LINKS_FILE = path.join(ROOT_DIR, "description-links.json");

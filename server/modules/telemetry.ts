@@ -14,6 +14,7 @@ const SLOW_THRESHOLD_MS     = 3_000;       // avg above this = slow trend
 const SPIKE_THRESHOLD_MS    = 8_000;       // single sample above this = spike
 const PREDICTIVE_COOLDOWN_MS = 2 * 60_000; // 2 min on slow trend
 const EMERGENCY_COOLDOWN_MS  = 8 * 60_000; // 8 min on spike
+const MAX_WINDOW_HISTORY    = 30;          // keep last 30 join windows
 
 export interface TelemetryReport {
   avgLatencyMs: number;
@@ -24,10 +25,24 @@ export interface TelemetryReport {
   warning?: string;
 }
 
+export interface WindowRecord {
+  windowNumber: number;
+  slotsExecuted: number;
+  joined: number;
+  failed: number;
+  ignored: number;
+  startedAt: string;   // ISO
+  completedAt: string; // ISO
+  durationMs: number;
+  avgLatencyMs: number;
+  hadCooldown: boolean;
+}
+
 class TelemetrySensor {
   private _latencies: number[] = [];
   private _cooldownUntil = 0;
   private _lastWarning?: string;
+  private _windowHistory: WindowRecord[] = [];
 
   /** Record a completed operation's round-trip time in milliseconds */
   record(latencyMs: number): void {
@@ -78,10 +93,24 @@ class TelemetrySensor {
     };
   }
 
+  /** Record a completed join window's stats for history display */
+  recordWindow(rec: WindowRecord): void {
+    this._windowHistory.push(rec);
+    if (this._windowHistory.length > MAX_WINDOW_HISTORY) {
+      this._windowHistory.shift();
+    }
+  }
+
+  /** Returns a copy of the last N window records (newest last) */
+  getWindowHistory(): WindowRecord[] {
+    return [...this._windowHistory];
+  }
+
   reset(): void {
     this._latencies     = [];
     this._cooldownUntil = 0;
     this._lastWarning   = undefined;
+    this._windowHistory = [];
   }
 
   private _avg(): number {
