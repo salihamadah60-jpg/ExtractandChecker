@@ -10,19 +10,28 @@ const SLEEP_START_MIN  = 30;
 const WAKE_HOUR        = 7;
 const WAKE_MIN         = 30;
 
+/** Timezone used for sleep window calculations — Yemen / Gulf (UTC+3) */
+const TZ = "Asia/Riyadh";
+
 export interface SleepStatus {
   isSleeping: boolean;
   sleepUntil?: Date;
   msUntilWake?: number;
 }
 
-/** Returns the current local hour (0-23) adjusted for the configured timezone offset. */
+/** Returns current local hour & total minutes since midnight in the configured timezone. */
 function localHourMin(): { hours: number; mins: number } {
-  // Server may run in UTC; we apply a fixed offset (UTC+3 = Yemen/Gulf)
-  const TIMEZONE_OFFSET_HOURS = 3;
-  const nowMs = Date.now() + TIMEZONE_OFFSET_HOURS * 3_600_000;
-  const d     = new Date(nowMs);
-  return { hours: d.getUTCHours(), mins: d.getUTCHours() * 60 + d.getUTCMinutes() };
+  const now   = new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    hour:   "numeric",
+    minute: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+
+  const hours = parseInt(parts.find((p) => p.type === "hour")?.value   ?? "0", 10);
+  const mins  = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
+  return { hours, mins: hours * 60 + mins };
 }
 
 /** Returns true if the current local time is inside the sleep window (01:30 – 07:30) */

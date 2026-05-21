@@ -909,6 +909,18 @@ class SessionsManager extends EventEmitter {
     this._messageHandler = null;
   }
 
+  /**
+   * Fetch live group metadata (name, participants, announce flag, etc.).
+   * Returns null on any error (e.g. not connected, JID not found).
+   */
+  async getGroupMetadata(jid: string): Promise<any | null> {
+    const s = this.getActiveState();
+    if (!s?.sock) return null;
+    try {
+      return await s.sock.groupMetadata(jid);
+    } catch { return null; }
+  }
+
   // ── Legacy join-groups flow ──────────────────────────────────────────────────
 
   async startJoiningGroups(): Promise<void> {

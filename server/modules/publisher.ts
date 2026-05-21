@@ -227,6 +227,16 @@ export const publisher = {
           continue;
         }
 
+        // Dynamic announce check: skip groups where only admins can post
+        try {
+          const meta = await baileysManager.getGroupMetadata(jid);
+          if (meta?.announce === true) {
+            console.log(`[Publisher] ⏭ Admins-only (announce:true) — skipping: ${group.url}`);
+            _progress.processed++;
+            continue;
+          }
+        } catch { /* ignore metadata errors — attempt send anyway */ }
+
         const ad  = ads[adIdx % ads.length];
         adIdx     = (adIdx + 1) % ads.length;
 

@@ -1,9 +1,12 @@
 import fs from "fs/promises";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const STATE_FILE = path.resolve(".session-state.json");
+const _dir = path.dirname(fileURLToPath(import.meta.url));
+const ROOT_DIR = path.resolve(_dir, "..");
+const STATE_FILE     = path.join(ROOT_DIR, ".session-state.json");
 const STATE_FILE_TMP = STATE_FILE + ".tmp";
-const DESC_LINKS_FILE = path.resolve("description-links.json");
+const DESC_LINKS_FILE = path.join(ROOT_DIR, "description-links.json");
 
 // ── Comprehensive medical keyword lists ───────────────────────────────────────
 
@@ -354,6 +357,8 @@ class LinkStore {
 
   async saveToDisk(): Promise<void> {
     try {
+      // Ensure the directory exists before writing (guards against ENOENT on first run)
+      await fs.mkdir(ROOT_DIR, { recursive: true });
       const state: PersistedState = {
         extractedLinks: this.extractedLinks,
         checkSession: this.checkSession,

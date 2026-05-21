@@ -403,6 +403,12 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
+  const reconnectSessionMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/sessions/${id}/reconnect`, {}),
+    onSuccess: () => { setIsConnecting(true); qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }); },
+    onError: (err: any) => toast({ title: "فشل إعادة الاتصال", description: err.message, variant: "destructive" }),
+  });
+
   const activateSessionMutation = useMutation({
     mutationFn: (id: string) => apiRequest("POST", `/api/sessions/${id}/activate`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/whatsapp/status"] }),
@@ -704,12 +710,23 @@ export default function Home() {
   const prevCooldownRef     = useRef<boolean>(false);
   const prevPublishStatusRef = useRef<string | null>(null);
 
-  // Request permission once on mount
+  // Sync current permission state on mount WITHOUT auto-requesting
+  // (browsers block auto-prompts; permission is requested on explicit user action)
   useEffect(() => {
     if ("Notification" in window) {
-      Notification.requestPermission().then(p => { notifPermRef.current = p; });
+      notifPermRef.current = Notification.permission;
     }
   }, []);
+
+  /** Call this on an explicit user gesture (e.g. "Start Bot") to request permission */
+  function requestNotifPermIfNeeded() {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission().then(p => { notifPermRef.current = p; });
+    } else {
+      notifPermRef.current = Notification.permission;
+    }
+  }
 
   function sendNotif(title: string, body: string, icon = "/favicon.ico") {
     if (!("Notification" in window)) return;
@@ -848,6 +865,14 @@ export default function Home() {
                         </Button>
                       ) : (
                         <Badge variant="default" className="text-[10px] h-5 px-1.5">نشط</Badge>
+                      )}
+                      {(sess.status === "disconnected" || sess.status === "auth_failed") && (
+                        <Button size="sm" variant="ghost" className="h-6 w-6 p-0 hover:bg-primary/10" title="إعادة الاتصال"
+                          onClick={() => reconnectSessionMutation.mutate(sess.id)}
+                          disabled={reconnectSessionMutation.isPending}
+                          data-testid={`sidebar-reconnect-${sess.id}`}>
+                          <RefreshCw className="w-3 h-3 text-primary" />
+                        </Button>
                       )}
                       {sess.status === "connected" && (
                         <Button size="sm" variant="ghost" className="h-6 w-6 p-0 hover:bg-orange-50 dark:hover:bg-orange-900/20" title="قطع الاتصال"
@@ -1087,7 +1112,7 @@ export default function Home() {
                         </p>
                       )}
                       <Button size="sm" className="w-full text-xs h-8"
-                        onClick={() => startJoin2Mutation.mutate()}
+                        onClick={() => { requestNotifPermIfNeeded(); startJoin2Mutation.mutate(); }}
                         disabled={startJoin2Mutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
                         data-testid="sidebar-start-join2">
                         {startJoin2Mutation.isPending
@@ -1219,7 +1244,7 @@ export default function Home() {
                   {/* Start button */}
                   {(!publishProgress || publishProgress.status !== "running") && (
                     <Button size="sm" className="w-full text-xs h-8 bg-orange-500 hover:bg-orange-600 text-white"
-                      onClick={() => startPublishMutation.mutate()}
+                      onClick={() => { requestNotifPermIfNeeded(); startPublishMutation.mutate(); }}
                       disabled={startPublishMutation.isPending || waStatus !== "connected" || isCoordinatorBusy || !publisherAdsData?.length}
                       data-testid="button-start-publish">
                       {startPublishMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <Send className="w-3.5 h-3.5 ml-1" />}

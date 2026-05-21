@@ -21,7 +21,7 @@ import { coordinator }               from "./function-coordinator.js";
 import { systemState }               from "./system-state.js";
 import { linksRepository }           from "./links-repository.js";
 import { classifyWAError }           from "./wa-error-handler.js";
-import { WINDOW_DURATION_MS, joinSlotOffset, shuffle } from "./human-mimicry.js";
+import { WINDOW_DURATION_MS, computeSlotOffsets, shuffle } from "./human-mimicry.js";
 import { isSleepTime, msUntilWakeUp } from "./sleep-scheduler.js";
 import { telemetry }                 from "./telemetry.js";
 
@@ -58,6 +58,9 @@ export interface JoinProgress {
 let _progress:       JoinProgress | null = null;
 let _stopRequested  = false;
 let _pauseRequested = false;
+
+/** In-memory set of invite codes currently being processed — prevents duplicate join attempts on rapid restart */
+const _joiningCache = new Set<string>();
 
 // ── Core sleep helper ─────────────────────────────────────────────────────────
 
@@ -139,6 +142,26 @@ async function joinOne(
   }
 
   const inviteCode = codeMatch[1];
+
+  // In-memory duplicate guard: don't send two join requests for the same code simultaneously
+  if (_joiningCache.has(inviteCode)) {
+    console.log(`[JoinManager] ℹ Cache hit — already joining: ${inviteCode}`);
+    return { result: "ignored" };
+  }
+  _joiningCache.add(inviteCode);
+
+  // Pre-flight MongoDB check: skip if already joined by THIS phone to avoid re-join spam
+  try {
+    const db  = (await import("../mongo-auth-state.js")).getDb;
+    const c   = (await db()).collection("Links_Repository");
+    const doc = await c.findOne({ url: record.url }, { projection: { status: 1, joinedByPhone: 1 } });
+    if (doc?.status === "Joined" && doc?.joinedByPhone === currentPhone) {
+      console.log(`[JoinManager] ℹ Pre-flight: already joined by ${currentPhone} — skipping ${record.url}`);
+      _joiningCache.delete(inviteCode);
+      return { result: "joined" };
+    }
+  } catch { /* non-fatal — continue with join attempt */ }
+
   const t0 = Date.now();
 
   try {
@@ -200,6 +223,8 @@ async function joinOne(
         console.warn(`[JoinManager] ✗ ${classified.reason} | ${record.url}`);
         return { result: "failed" };
     }
+  } finally {
+    _joiningCache.delete(inviteCode);
   }
 }
 
@@ -354,139 +379,97 @@ export const joinManager = {
           continue;
         }
 
-        // ── 5. Open a new 10-minute window ───────────────────────────────────
+        // ── 5. Open a new 10-minute window (3 slots) ─────────────────────────
         const windowStart = Date.now();
         const windowEnd   = windowStart + WINDOW_DURATION_MS;
         const windowNum   = (_progress?.windowNumber ?? 0) + 1;
 
         if (_progress) { _progress.windowNumber = windowNum; _progress.status = "waiting"; }
 
-        // Pick up to 2 links for this window
-        const slot0Link = queue[queueIdx];
-        const slot1Link = queue[queueIdx + 1] ?? null;
-
-        const offset0 = joinSlotOffset(0); // 30s – 4m30s
-        const offset1 = joinSlotOffset(1); // 5m00s – 9m30s
-
-        const joinAt0 = windowStart + offset0;
-        const joinAt1 = windowStart + offset1;
+        // Compute 3 randomised join offsets with anti-clustering safeguard
+        const [off0, off1, off2] = computeSlotOffsets();
+        const slotTimes = [
+          windowStart + off0,
+          windowStart + off1,
+          windowStart + off2,
+        ];
+        const slotNames = ["الأولى", "الثانية", "الثالثة"];
 
         console.log(
           `[JoinManager] 🪟 Window ${windowNum}: ` +
-          `slot0 @+${Math.round(offset0 / 1000)}s, ` +
-          `slot1 @+${Math.round(offset1 / 1000)}s — ` +
+          `slot0 @+${Math.round(off0 / 1000)}s, ` +
+          `slot1 @+${Math.round(off1 / 1000)}s, ` +
+          `slot2 @+${Math.round(off2 / 1000)}s — ` +
           `queue[${queueIdx}/${queue.length}]`
         );
 
-        // ── Slot 0: wait then join ─────────────────────────────────────────
         coordinator.setWindowActive(true);
+        let windowBroken = false;
 
-        const wait0 = joinAt0 - Date.now();
-        if (wait0 > 0) {
-          if (_progress) _progress.nextJoinAt = new Date(joinAt0).toISOString();
-          const outcome = await interruptibleSleep(
-            wait0,
-            `نافذة ${windowNum} — انتظار الفتحة الأولى`,
-            "waiting",
-            () => new Date(joinAt0).toISOString()
-          );
-          if (outcome === "stopped") { coordinator.setWindowActive(false); break; }
-        }
+        // ── Execute up to 3 slots per window ─────────────────────────────
+        for (let slotIdx = 0; slotIdx < 3; slotIdx++) {
+          if (queueIdx >= queue.length || _stopRequested) break;
 
-        // Pause check AFTER sleep, BEFORE join
-        if ((await pauseGate()) === "stopped") { coordinator.setWindowActive(false); break; }
-        if (_stopRequested) { coordinator.setWindowActive(false); break; }
-        if (!baileysManager.isConnected()) { coordinator.setWindowActive(false); continue; }
+          const joinAt   = slotTimes[slotIdx];
+          const slotLink = queue[queueIdx];
+          const waitMs   = joinAt - Date.now();
 
-        // User-activity check before actual join
-        if (baileysManager.isUserActive(60_000)) {
-          console.log("[JoinManager] 👤 User active before slot 0 — skipping window");
-          coordinator.setWindowActive(false);
-          continue;
-        }
-
-        // ── Execute slot 0 ────────────────────────────────────────────────
-        if (_progress) { _progress.status = "running"; _progress.currentLink = slot0Link.url; }
-        console.log(`[JoinManager] ▶ [W${windowNum}] Slot 0: ${slot0Link.url}`);
-
-        const r0 = await joinOne(slot0Link, consecutiveFailures, currentPhone);
-
-        if (r0.result === "stop_all") {
-          if (_progress) { _progress.status = "stopped"; _progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }
-          coordinator.setWindowActive(false);
-          break;
-        }
-        if (r0.result === "stop_join") {
-          const waitMs = r0.waitMs ?? 15 * 60_000;
-          console.warn(`[JoinManager] ⛔ stop_join — waiting ${Math.round(waitMs / 60_000)} min`);
-          syncTelemetry();
-          const outcome = await interruptibleSleep(waitMs, "توقف واتساب المؤقت", "cooldown");
-          if (outcome === "stopped") { coordinator.setWindowActive(false); break; }
-          coordinator.setWindowActive(false);
-          continue;
-        }
-
-        if (r0.result === "joined")       { consecutiveFailures = 0; if (_progress) _progress.joined++; }
-        else if (r0.result === "ignored") { if (_progress) _progress.ignored++; }
-        else                              { consecutiveFailures++; if (_progress) _progress.failed++; }
-
-        queueIdx++;
-        if (_progress) { _progress.processed++; _progress.currentLink = undefined; }
-        syncTelemetry();
-        await systemState.setExtra({ joinProgress: _progress }).catch(() => {});
-
-        // ── Slot 1: wait then join (if a second link exists) ───────────────
-        if (slot1Link && queueIdx < queue.length && !_stopRequested) {
-          const wait1 = joinAt1 - Date.now();
-          if (wait1 > 0) {
-            if (_progress) _progress.nextJoinAt = new Date(joinAt1).toISOString();
+          // Wait until slot time
+          if (waitMs > 0) {
+            if (_progress) _progress.nextJoinAt = new Date(joinAt).toISOString();
             const outcome = await interruptibleSleep(
-              wait1,
-              `نافذة ${windowNum} — انتظار الفتحة الثانية`,
+              waitMs,
+              `نافذة ${windowNum} — انتظار الفتحة ${slotNames[slotIdx]}`,
               "waiting",
-              () => new Date(joinAt1).toISOString()
+              () => new Date(joinAt).toISOString()
             );
-            if (outcome === "stopped") { coordinator.setWindowActive(false); break; }
+            if (outcome === "stopped") { windowBroken = true; break; }
           }
 
-          // Pause check AFTER sleep, BEFORE join
-          if ((await pauseGate()) === "stopped") { coordinator.setWindowActive(false); break; }
-          if (_stopRequested) { coordinator.setWindowActive(false); break; }
+          // Pause / stop checks before actual join
+          if ((await pauseGate()) === "stopped") { windowBroken = true; break; }
+          if (_stopRequested) { windowBroken = true; break; }
+          if (!baileysManager.isConnected()) break; // skip to next window iteration
 
-          if (baileysManager.isConnected() && !baileysManager.isUserActive(60_000)) {
-            if (_progress) { _progress.status = "running"; _progress.currentLink = slot1Link.url; }
-            console.log(`[JoinManager] ▶ [W${windowNum}] Slot 1: ${slot1Link.url}`);
+          if (baileysManager.isUserActive(60_000)) {
+            console.log(`[JoinManager] 👤 User active before slot ${slotIdx} — skipping slot`);
+            continue;
+          }
 
-            const r1 = await joinOne(slot1Link, consecutiveFailures, currentPhone);
+          // Execute join
+          if (_progress) { _progress.status = "running"; _progress.currentLink = slotLink.url; }
+          console.log(`[JoinManager] ▶ [W${windowNum}] Slot ${slotIdx}: ${slotLink.url}`);
 
-            if (r1.result === "stop_all") {
-              if (_progress) { _progress.status = "stopped"; _progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }
-              coordinator.setWindowActive(false);
-              break;
-            }
-            if (r1.result === "stop_join") {
-              const waitMs = r1.waitMs ?? 15 * 60_000;
-              syncTelemetry();
-              const outcome = await interruptibleSleep(waitMs, "توقف واتساب المؤقت", "cooldown");
-              if (outcome === "stopped") { coordinator.setWindowActive(false); break; }
-              coordinator.setWindowActive(false);
-              continue;
-            }
+          const r = await joinOne(slotLink, consecutiveFailures, currentPhone);
 
-            if (r1.result === "joined")       { consecutiveFailures = 0; if (_progress) _progress.joined++; }
-            else if (r1.result === "ignored") { if (_progress) _progress.ignored++; }
-            else                              { consecutiveFailures++; if (_progress) _progress.failed++; }
-
-            queueIdx++;
-            if (_progress) { _progress.processed++; _progress.currentLink = undefined; }
+          if (r.result === "stop_all") {
+            if (_progress) { _progress.status = "stopped"; _progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }
+            windowBroken = true;
+            break;
+          }
+          if (r.result === "stop_join") {
+            const wMs = r.waitMs ?? 15 * 60_000;
+            console.warn(`[JoinManager] ⛔ stop_join — waiting ${Math.round(wMs / 60_000)} min`);
             syncTelemetry();
-            await systemState.setExtra({ joinProgress: _progress }).catch(() => {});
+            const outcome = await interruptibleSleep(wMs, "توقف واتساب المؤقت", "cooldown");
+            if (outcome === "stopped") { windowBroken = true; }
+            break; // end this window, re-evaluate at top of outer loop
           }
+
+          if (r.result === "joined")       { consecutiveFailures = 0; if (_progress) _progress.joined++; }
+          else if (r.result === "ignored") { if (_progress) _progress.ignored++; }
+          else                             { consecutiveFailures++; if (_progress) _progress.failed++; }
+
+          queueIdx++;
+          if (_progress) { _progress.processed++; _progress.currentLink = undefined; }
+          syncTelemetry();
+          await systemState.setExtra({ joinProgress: _progress }).catch(() => {});
         }
 
         coordinator.setWindowActive(false);
+        if (windowBroken) break;
 
-        // ── Wait until end of 10-minute window ────────────────────────────
+        // ── Wait for remainder of the 10-minute window ────────────────────
         if (queueIdx < queue.length && !_stopRequested) {
           const remainingWindow = windowEnd - Date.now();
           if (remainingWindow > 1000) {

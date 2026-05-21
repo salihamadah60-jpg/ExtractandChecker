@@ -27,6 +27,11 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+// ── Keep-alive ping (for external uptime monitors on free tier) ──────────────
+app.get("/ping", (_req, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",

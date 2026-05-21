@@ -393,6 +393,17 @@ export async function registerRoutes(
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  /** Reconnect a disconnected / auth_failed session using its saved credentials */
+  app.post("/api/sessions/:id/reconnect", async (req, res) => {
+    try {
+      const id = req.params.id;
+      // Make this the active session first, then connect with saved creds
+      await baileysManager.activateSession(id);
+      await baileysManager.connect(false, undefined, true); // skipClearAuth = true
+      res.json({ success: true, sessions: baileysManager.getSessions() });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── WhatsApp status ────────────────────────────────────────────────────────
   app.get("/api/whatsapp/status", async (_req, res) => {
     const hasSaved = await baileysManager.hasSavedCredentials();

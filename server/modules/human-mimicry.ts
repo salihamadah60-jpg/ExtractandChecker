@@ -12,7 +12,10 @@
  *   WhatsApp function can fire simultaneously.
  */
 
-export const WINDOW_DURATION_MS = 10 * 60_000; // 10 minutes per window
+export const WINDOW_DURATION_MS  = 10 * 60_000;  // 10 minutes per window
+export const SLOTS_PER_WINDOW    = 3;             // 3 joins per window (was 2)
+export const SLOT_PERIOD_MS      = WINDOW_DURATION_MS / SLOTS_PER_WINDOW; // 200 s each
+export const MIN_SEPARATION_MS   = 60_000;         // absolute minimum gap between consecutive joins
 
 /** Sleep for a random duration between [minMs, maxMs] */
 export function randomDelay(minMs: number, maxMs: number): Promise<void> {
@@ -36,13 +39,40 @@ export function gaussianRandomDelay(minMs: number, maxMs: number): Promise<void>
 }
 
 /**
- * Returns the random ms offset for each join slot within a 10-minute window.
- *   slot 0 → first half  (30 s – 4 min 30 s)
- *   slot 1 → second half (5 min – 9 min 30 s)
+ * Compute randomised offsets for all 3 join slots within a 10-minute window.
+ *
+ * Each slot owns a 200-second period:
+ *   Slot 0 →   0 – 200 s
+ *   Slot 1 → 200 – 400 s
+ *   Slot 2 → 400 – 600 s
+ *
+ * Anti-clustering safeguard: if two consecutive slots land within
+ * MIN_SEPARATION_MS (60 s) of each other, the later slot is pushed
+ * forward by enough to guarantee the safe gap.
  */
+export function computeSlotOffsets(): [number, number, number] {
+  const P = SLOT_PERIOD_MS; // 200 000 ms
+
+  let off0 = randomInt(0,       P     - 1);
+  let off1 = randomInt(P,       2 * P - 1);
+  let off2 = randomInt(2 * P,   WINDOW_DURATION_MS - 1);
+
+  // Enforce minimum separation between slot 0 → 1
+  if (off1 - off0 < MIN_SEPARATION_MS) {
+    off1 = Math.min(off0 + MIN_SEPARATION_MS + randomInt(0, 15_000), 2 * P - 1);
+  }
+  // Enforce minimum separation between slot 1 → 2
+  if (off2 - off1 < MIN_SEPARATION_MS) {
+    off2 = Math.min(off1 + MIN_SEPARATION_MS + randomInt(0, 15_000), WINDOW_DURATION_MS - 1);
+  }
+
+  return [off0, off1, off2];
+}
+
+/** @deprecated Use computeSlotOffsets() instead */
 export function joinSlotOffset(slot: 0 | 1): number {
-  if (slot === 0) return randomInt(30_000, 270_000);   //  0:30 – 4:30
-  return randomInt(300_000, 570_000);                   //  5:00 – 9:30
+  if (slot === 0) return randomInt(30_000, 270_000);
+  return randomInt(300_000, 570_000);
 }
 
 /** Predefined delay profiles for different actions */

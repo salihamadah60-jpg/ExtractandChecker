@@ -1,0 +1,22 @@
+{
+  "name": "Link Checker Pro",
+  "short_name": "LinkChecker",
+  "description": "فاحص روابط واتساب وتيليغرام",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#25d366",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+Please review the attached screenshots of the console logs (dated May 21, 2026). The system is suffering from rapid execution windows, state-saving failures (ENOENT), and temporary session disconnections (Code 428/440) due to WhatsApp rate-limiting. We must refactor the architecture immediately based on the instructions below.
+
+---
+
+### PART 1: Verification of Existing Features (Verify & Enforce)
+Before writing new logic, verify and ensure the following existing systems are correctly synchronized:
+1. Daily Sleep Mode: Ensure the 6-hour daily sleep configuration is intact.
+2. Time Synchronization: Fix the 3-minute time offset between the server environment and the user's local time (Sync directly with local timezone metrics).
+3. Strict Assertions: Confirm that the FunctionCoordinator strictly suppresses any parallel operations (like reading or posting) while a other operation is active within its window.
+4. UI State: Ensure the UI "Pause/Resume" button functionality is linked perfectly next to the "Stop" button.
+
+---
+
+### PART 2: Bug Fixes & Log Diagnostics (Based on Attached Images)
+1. Fix State-Saving Crash: In the logs, `[LinkStore] Failed to save state` throws an `ENOENT: no such file or directory, rename...` error. Ensure the path for `session-state.json` and temporary files is absolute, and explicitly verify/create the directory before executing any file operations.
+2. Prevent Duplicate Join Requests: The bot frequently retries joining groups it has already joined because the local state is lost during crashes. Implement an in-memory cache and query MongoDB to verify group membership status using the invite code *before* sending any join payload. Joining an already-joined group triggers anti-spam radars.
+
+---
+
+### PART 3: New Feature Enhancements & Advanced Scheduling Logic
+
+1. 3 Links per 10-Minutes with Buffer Safeguards:
+   - Divide the 10-minute window (600 seconds) into 3 equal periods of 200 seconds each.
+   - Allocate exactly 1 link per period, processed at a randomized second within that period.
+   - CRITICAL SAFEGUARD (Anti-Clustering): Implement a strict `Minimum Separation Interval` constraint (e.g., minimum 60 seconds of absolute separation). If a randomized time falls too close to the previous operation (e.g., at second 199 and second 201), the scheduler must automatically re-roll the time to guarantee a safe, protective gap between actions.
+
+2. Dynamic Group Status Check During Posting (Not Joining):
+   - Do NOT permanently skip groups that are marked as "Admins Only" during the initial invite check, because group permissions change over time.
+   - Instead, allow the bot to join the group, but *during the posting phase*, the bot must dynamically inspect the group state. If it detects "Only admins can send messages" (`announce: true`), it must gracefully skip posting at that moment without exiting the flow.
+
+3. Background Execution Lifeline (Free Tier Optimization):
+   - Since the app is published but sleeps when the browser tab is closed on the free tier, optimize the server entry point (`index.js`/`server.ts`) to support external keep-alive pings. Ensure it exposes a clean, lightweight lightweight HTTP GET `/ping` endpoint that can respond to external uptime monitors to keep the background process alive for the 18-hour cycle.
+
+4. Web Notification Permission Fix:
+   - Web browsers block `Notification.requestPermission()` if fired automatically on load. Re-engineer the notification request to trigger explicitly upon a direct user interaction, such as when the user clicks the UI "Start Bot" or "Resume" button.
+5. Make sure the users can restore the session connection if it is interrupted directly from the interface without needing to refresh the browser page. 
+
+"Please add a standard PWA configuration to the frontend. Create a simple manifest.jsonwith the app icon and a basic service-worker.js
+just to enable install on home screen.
+
+
+mongodb+srv://Thaker:772951869Th@cluster0.mkp6hlu.mongodb.net/CheckWa_Links?retryWrites=true&w=majority
+
+git config user.name "salihamadah60-jpg"
+git config user.email "salihamadah60-jpg@users.noreply.github.com"
+
+git remote set-url origin https://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@github.com/salihamadah60-jpg/ExtractandChecker.git
+
