@@ -162,6 +162,102 @@ const MEDICAL_KEYWORDS = [
   "geriatric", "طب الشيخوخة", "رعاية مسنين",
   // Palliative care
   "palliative", "رعاية تلطيفية", "رعاية ملطفة",
+  // ── Arabic transliterations of English medical terms ───────────────────────
+  // "medicine / medical"
+  "ميدسين", "ميديسين", "ميدسن", "ميدكل", "ميديكال", "ميديك",
+  // "health"
+  "هيلث",
+  // "clinic"
+  "كلينيك", "كلينيكال",
+  // "hospital"
+  "هوسبيتال", "هوسبيتل",
+  // "doctor / Dr"
+  "دكتور", "دكتوره",
+  // Internal Medicine — IM (arabic transliterations only; bare "IM" too short)
+  "انترنال", "انترنال ميدسين", "إنترنال ميدسين", "إنترنال",
+  // General Surgery — GS (arabic transliterations + safe long form)
+  "جنرال سيرجري", "جنرال سيرج", "general surgery",
+  // Emergency Medicine (arabic transliterations only; bare "EM" too short)
+  "ايمرجنسي", "امرجنسي", "إيمرجنسي",
+  // General Practice — GP (arabic)
+  "جي بي",
+  // Pediatrics — Peds / Paeds
+  "Peds", "Paeds", "بيدز", "بيديز", "بيدياتريكس", "بيديتريكس",
+  // Obstetrics & Gynaecology — OB/GYN
+  "OB/GYN", "OBGYN", "GYN", "Gyne", "Gynaecol",
+  "جايني", "جاينيكولوجي", "اوبي جاين", "نسا وولادة", "نساء وولادة",
+  // Family Medicine — FM (arabic transliterations only; bare "FM" too short)
+  "فاميلي", "فاميلي ميدسين", "فاميلي ميدكل",
+  // Nutrition / Dietetics
+  "Nutrition", "Dietitian", "Dietetic", "Nutr",
+  "نيوتريشن", "نيوتريشينست", "تغذية علاجية", "دايتيشن",
+  // Psychiatry / Psychology — Psych
+  "Psych", "سايك", "سايكياتري", "سيكياتري", "سايكولوجي",
+  // Neurology — Neuro
+  "Neuro", "نيورولوجي",
+  // Neurosurgery — Neuro Surg (bare "NS" too short)
+  "نيوروسيرج", "نيورو سيرج", "neuro surg",
+  // Urology — Uro
+  "Uro", "يورو", "يورولوجي",
+  // Gastroenterology — GI / Gastro (bare "GE" too short)
+  "GI", "جي آي", "جاسترو", "جاستروانتيرولوجي",
+  // Pulmonology / Chest — Pulm
+  "Pulm", "Chest", "بالم", "تشيست", "بولمنولوجي",
+  // Cardiology — Cardio
+  "Cardio", "كارديو", "كارديولوجي",
+  // Radiology — Radio / Rad
+  "Radio", "Radiol", "راديولوجي",
+  // Toxicology — Tox
+  "Tox", "توكس", "توكسيكولوجي",
+  // Orthopaedics — Ortho
+  "Ortho", "اورثو", "اورثوبيدكس",
+  // Dermatology — Derm
+  "Derm", "ديرم", "ديرماتولوجي",
+  // Ophthalmology — Ophthal
+  "Ophthal", "اوفثالمولوجي",
+  // ENT — Otolaryngology
+  "ENT", "ORL", "اوتولارينجولوجي",
+  // Anaesthesia / Anesthesia
+  "Anaesthesia", "Anesthesia", "انيستيزيا", "انسثيزيا",
+  // Oncology — Onco
+  "Onco", "اونكولوجي",
+  // Haematology / Hematology — Hema
+  "Hema", "هيماتولوجي", "هيما",
+  // Nephrology — Nephro
+  "Nephro", "نيفرولوجي",
+  // Rheumatology — Rheum
+  "Rheum", "ريوماتولوجي",
+  // Endocrinology — Endo
+  "Endo", "انديكرينولوجي",
+  // Immunology — Immuno
+  "Immuno", "ايمونولوجي",
+  // Pathology — Path
+  "Path", "باثولوجي", "باثولوج",
+  // Microbiology — Micro
+  "Micro", "مايكروبيولوجي",
+  // Biochemistry — Biochem
+  "Biochem", "بايوكيم", "بايوكيمستري",
+  // Forensic Medicine
+  "Forensic", "فورنسيك",
+  // Plastic Surgery — Plastics
+  "Plastics", "Plast Surg", "بلاستيك سيرج",
+  // Vascular Surgery
+  "Vasc", "فاسك",
+  // Cardiothoracic Surgery — CTS
+  "CTS", "سي تي سيرج",
+  // Critical Care — CCU / CC (bare "CC" too short — already have "CCU")
+  "كريتيكال كير",
+  // Paediatric Surgery — Peds Surg
+  "Peds Surg", "بيدز سيرج",
+  // Geriatrics — Geri
+  "Geri", "جيرياتريكس",
+  // Palliative — Palliat
+  "Palliat", "باليتف",
+  // Medical abbreviations safely long enough for group name context
+  "Med.", "Surg.", "Peds.", "Psych.", "Neuro.", "Ortho.",
+  "Derm.", "Gastro.", "Pulm.", "Cardio.", "Radio.", "Path.", "Micro.",
+  // Common bilingual group name patterns
+  "dr.", "hosp.",
   // Rehabilitation / Physiotherapy
   "rehabilit", "فيزيوثيرابي", "فيزيو", "علاج طبيعي",
   "تأهيل", "إعادة التأهيل",

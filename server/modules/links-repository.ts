@@ -232,21 +232,14 @@ export const linksRepository = {
     descLinks?: string[]
   ): Promise<{ newGroups: number; newAds: number; newDescLinks: number }> {
     let newGroups = 0;
-    let newAds = 0;
     let newDescLinks = 0;
 
+    // Only groups (>50 members) are saved for joining — ads links are NOT added to the join queue
     for (const g of groups) {
       const added = await this.addIfNew(g.link, "Group", "upload", {
         name: g.name, members: g.members, description: g.description,
       });
       if (added) newGroups++;
-    }
-
-    for (const a of ads) {
-      const added = await this.addIfNew(a.link, "Group", "upload", {
-        name: a.name, members: a.members, description: a.description,
-      });
-      if (added) newAds++;
     }
 
     if (descLinks) {
@@ -257,8 +250,8 @@ export const linksRepository = {
       }
     }
 
-    console.log(`[LinksRepository] Filtered saved → ${newGroups} new groups, ${newAds} new ads, ${newDescLinks} new desc links`);
-    return { newGroups, newAds, newDescLinks };
+    console.log(`[LinksRepository] Filtered saved → ${newGroups} new groups, 0 ads (excluded), ${newDescLinks} new desc links`);
+    return { newGroups, newAds: 0, newDescLinks };
   },
 
   /** Get daily additions for the last N days (for trend chart). */

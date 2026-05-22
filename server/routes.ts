@@ -111,9 +111,8 @@ async function buildGroupsDocx(groups: FilteredGroup[]): Promise<Buffer> {
 
 // ── Build DOCX for ads groups ─────────────────────────────────────────────────
 async function buildAdsDocx(ads: FilteredGroup[]): Promise<Buffer> {
-  // Split into medical groups (top) and non-medical (below separator)
-  const medAds   = ads.filter((g) => isMedicalGroup(g.name));
-  const otherAds = ads.filter((g) => !isMedicalGroup(g.name));
+  // Ads file contains ONLY non-medical groups — medical groups go in the groups file
+  const adsList = ads.filter((g) => !isMedicalGroup(g.name));
 
   const children: any[] = [
     new Paragraph({
@@ -121,42 +120,19 @@ async function buildAdsDocx(ads: FilteredGroup[]): Promise<Buffer> {
       heading: HeadingLevel.HEADING_1,
     }),
     new Paragraph({
-      text: `إجمالي المجموعات: ${ads.length}`,
+      text: `إجمالي المجموعات: ${adsList.length}`,
       spacing: { after: 300 },
     }),
   ];
 
-  const renderAdList = (list: FilteredGroup[]) => {
-    list.forEach((g, idx) => {
-      if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
-        children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
-      }
-      const headerText = g.name ? `${g.name} ${g.members} عضو` : `${g.members} عضو`;
-      children.push(new Paragraph({ children: [new TextRun({ text: headerText, bold: true })], spacing: { after: 40 } }));
-      children.push(new Paragraph({ children: [new TextRun({ text: g.link, color: "1a73e8" })], spacing: { after: 160 } }));
-    });
-  };
-
-  // Medical groups first (no heading unless there are both sections)
-  if (medAds.length > 0) {
-    if (otherAds.length > 0) {
-      children.push(new Paragraph({
-        children: [new TextRun({ text: `[ الطب والصحة — ${medAds.length} مجموعة ]`, bold: true, size: 26, color: "1a5276" })],
-        spacing: { before: 200, after: 120 },
-      }));
+  adsList.forEach((g, idx) => {
+    if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
+      children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
     }
-    renderAdList(medAds);
-  }
-
-  // Separator then non-medical ads
-  if (otherAds.length > 0) {
-    children.push(new Paragraph({ text: "", spacing: { before: 400, after: 0 } }));
-    children.push(new Paragraph({
-      children: [new TextRun({ text: "من هنا تعتبر إعلانات", bold: true, size: 28, color: "c0392b" })],
-      spacing: { before: 100, after: 200 },
-    }));
-    renderAdList(otherAds);
-  }
+    const headerText = g.name ? `${g.name} ${g.members} عضو` : `${g.members} عضو`;
+    children.push(new Paragraph({ children: [new TextRun({ text: headerText, bold: true })], spacing: { after: 40 } }));
+    children.push(new Paragraph({ children: [new TextRun({ text: g.link, color: "1a73e8" })], spacing: { after: 160 } }));
+  });
 
   const doc = new Document({ sections: [{ children }] });
   return (await Packer.toBuffer(doc)) as unknown as Buffer;
