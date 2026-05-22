@@ -197,6 +197,10 @@ export default function Home() {
   const [showReaderPanel, setShowReaderPanel] = useState(false);
   const [showLeavePanel, setShowLeavePanel] = useState(false);
   const [showTelemetryPanel, setShowTelemetryPanel] = useState(false);
+  const [showManualUpload, setShowManualUpload] = useState(false);
+  const [manualUploadResult, setManualUploadResult] = useState<{ total: number; added: number; duplicates: number } | null>(null);
+  const [isManualUploading, setIsManualUploading] = useState(false);
+  const manualUploadRef = useRef<HTMLInputElement>(null);
   const [newAdText, setNewAdText] = useState("");
   const [joinMaxLinks, setJoinMaxLinks] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1237,6 +1241,72 @@ export default function Home() {
                     </div>
                   ) : (
                     <p className="text-[10px] text-muted-foreground text-center py-2">لم تنتهِ أي نافذة بعد — ابدأ الانضمام لرؤية البيانات</p>
+                  )}
+                </div>
+              )}
+
+              {/* ── رفع روابط يدوي → MongoDB ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showManualUpload ? "border-primary bg-primary/5" : ""}`}
+                onClick={() => { setShowManualUpload(o => !o); setManualUploadResult(null); }}
+                data-testid="sidebar-manual-upload">
+                <FolderOpen className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">رفع روابط مفلترة يدوياً</span>
+                {showManualUpload ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showManualUpload && (
+                <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
+                  <p className="text-[10px] text-muted-foreground leading-relaxed">
+                    ارفع ملف DOCX يحتوي على روابط واتساب — ستُضاف مباشرةً إلى قاعدة البيانات بحيث تستخدمها وظيفة الانضمام. الروابط المكررة تُتجاهل تلقائياً.
+                  </p>
+                  <input
+                    ref={manualUploadRef}
+                    type="file"
+                    accept=".docx,.doc"
+                    className="hidden"
+                    data-testid="input-manual-upload"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setIsManualUploading(true);
+                      setManualUploadResult(null);
+                      try {
+                        const fd = new FormData();
+                        fd.append("file", file);
+                        const resp = await fetch("/api/links-repository/manual-upload", { method: "POST", body: fd });
+                        const data = await resp.json();
+                        if (!resp.ok) throw new Error(data.error || "خطأ في الرفع");
+                        setManualUploadResult(data);
+                        void refetchRepoCounts();
+                      } catch (err: any) {
+                        toast({ title: "خطأ في الرفع", description: err.message, variant: "destructive" });
+                      } finally {
+                        setIsManualUploading(false);
+                        if (manualUploadRef.current) manualUploadRef.current.value = "";
+                      }
+                    }}
+                  />
+                  <Button size="sm" className="w-full h-8 text-xs gap-1.5" disabled={isManualUploading}
+                    onClick={() => manualUploadRef.current?.click()}
+                    data-testid="button-manual-upload-pick">
+                    {isManualUploading
+                      ? <><Loader2 className="w-3 h-3 animate-spin" />جاري الرفع...</>
+                      : <><PlusCircle className="w-3 h-3" />اختيار ملف DOCX</>}
+                  </Button>
+                  {manualUploadResult && (
+                    <div className="grid grid-cols-3 gap-1 text-[10px] text-center mt-1">
+                      <div className="bg-background rounded p-1.5 border">
+                        <p className="font-bold text-sm">{manualUploadResult.total}</p>
+                        <p className="text-muted-foreground">إجمالي</p>
+                      </div>
+                      <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5">
+                        <p className="font-bold text-sm text-green-600">{manualUploadResult.added}</p>
+                        <p className="text-muted-foreground">جديد</p>
+                      </div>
+                      <div className="bg-muted rounded p-1.5">
+                        <p className="font-bold text-sm text-muted-foreground">{manualUploadResult.duplicates}</p>
+                        <p className="text-muted-foreground">مكرر</p>
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

@@ -477,11 +477,13 @@ class SessionsManager extends EventEmitter {
             if (cur) cur.pairingCode = null;
             console.log(`[Sessions] ${id} — connection replaced by another device. Manual reconnect required.`);
             this._setStatus(id, "disconnected");
-          } else if (code === 428 || code === 408 || !code) {
+          } else if (code === 428 || code === 408 || code === 503 || !code) {
+            // 428 = precondition required, 408 = timeout, 503 = server unavailable — all transient, safe to retry
             const cur = this.sessions.get(id);
             if (cur) cur.pairingCode = null;
             this._setStatus(id, "connecting");
-            setTimeout(() => this._connectSession(id, usePairing, phoneNumber, true), 3000);
+            const retryDelay = code === 503 ? 8000 : 3000; // longer backoff for 503
+            setTimeout(() => this._connectSession(id, usePairing, phoneNumber, true), retryDelay);
           } else {
             const cur = this.sessions.get(id);
             if (cur) cur.pairingCode = null;

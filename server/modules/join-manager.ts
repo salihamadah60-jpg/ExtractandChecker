@@ -386,28 +386,30 @@ export const joinManager = {
 
         if (_progress) { _progress.windowNumber = windowNum; _progress.status = "waiting"; }
 
-        // Compute 3 randomised join offsets with anti-clustering safeguard
-        const [off0, off1, off2] = computeSlotOffsets();
+        // Compute 4 randomised join offsets with anti-clustering safeguard
+        const [off0, off1, off2, off3] = computeSlotOffsets();
         const slotTimes = [
           windowStart + off0,
           windowStart + off1,
           windowStart + off2,
+          windowStart + off3,
         ];
-        const slotNames = ["الأولى", "الثانية", "الثالثة"];
+        const slotNames = ["الأولى", "الثانية", "الثالثة", "الرابعة"];
 
         console.log(
           `[JoinManager] 🪟 Window ${windowNum}: ` +
           `slot0 @+${Math.round(off0 / 1000)}s, ` +
           `slot1 @+${Math.round(off1 / 1000)}s, ` +
-          `slot2 @+${Math.round(off2 / 1000)}s — ` +
+          `slot2 @+${Math.round(off2 / 1000)}s, ` +
+          `slot3 @+${Math.round(off3 / 1000)}s — ` +
           `queue[${queueIdx}/${queue.length}]`
         );
 
         coordinator.setWindowActive(true);
         let windowBroken = false;
 
-        // ── Execute up to 3 slots per window ─────────────────────────────
-        for (let slotIdx = 0; slotIdx < 3; slotIdx++) {
+        // ── Execute up to SLOTS_PER_WINDOW slots per window ──────────────
+        for (let slotIdx = 0; slotIdx < SLOTS_PER_WINDOW; slotIdx++) {
           if (queueIdx >= queue.length || _stopRequested) break;
 
           const joinAt   = slotTimes[slotIdx];
@@ -475,7 +477,7 @@ export const joinManager = {
             const report = telemetry.getReport();
             telemetry.recordWindow({
               windowNumber:  windowNum,
-              slotsExecuted: Math.min(3, queueIdx),
+              slotsExecuted: Math.min(SLOTS_PER_WINDOW, queueIdx),
               joined:        progressSnap.joined,
               failed:        progressSnap.failed,
               ignored:       progressSnap.ignored,

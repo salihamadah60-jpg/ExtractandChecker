@@ -13,9 +13,9 @@
  */
 
 export const WINDOW_DURATION_MS  = 10 * 60_000;  // 10 minutes per window
-export const SLOTS_PER_WINDOW    = 3;             // 3 joins per window (was 2)
-export const SLOT_PERIOD_MS      = WINDOW_DURATION_MS / SLOTS_PER_WINDOW; // 200 s each
-export const MIN_SEPARATION_MS   = 60_000;         // absolute minimum gap between consecutive joins
+export const SLOTS_PER_WINDOW    = 4;             // 4 joins per window
+export const SLOT_PERIOD_MS      = WINDOW_DURATION_MS / SLOTS_PER_WINDOW; // 150 s each
+export const MIN_SEPARATION_MS   = 55_000;         // absolute minimum gap between consecutive joins
 
 /** Sleep for a random duration between [minMs, maxMs] */
 export function randomDelay(minMs: number, maxMs: number): Promise<void> {
@@ -39,34 +39,32 @@ export function gaussianRandomDelay(minMs: number, maxMs: number): Promise<void>
 }
 
 /**
- * Compute randomised offsets for all 3 join slots within a 10-minute window.
+ * Compute randomised offsets for all 4 join slots within a 10-minute window.
  *
- * Each slot owns a 200-second period:
- *   Slot 0 →   0 – 200 s
- *   Slot 1 → 200 – 400 s
- *   Slot 2 → 400 – 600 s
+ * Each slot owns a 150-second period:
+ *   Slot 0 →   0 – 150 s
+ *   Slot 1 → 150 – 300 s
+ *   Slot 2 → 300 – 450 s
+ *   Slot 3 → 450 – 600 s
  *
  * Anti-clustering safeguard: if two consecutive slots land within
- * MIN_SEPARATION_MS (60 s) of each other, the later slot is pushed
+ * MIN_SEPARATION_MS (55 s) of each other, the later slot is pushed
  * forward by enough to guarantee the safe gap.
  */
-export function computeSlotOffsets(): [number, number, number] {
-  const P = SLOT_PERIOD_MS; // 200 000 ms
+export function computeSlotOffsets(): [number, number, number, number] {
+  const P = SLOT_PERIOD_MS; // 150 000 ms
 
   let off0 = randomInt(0,       P     - 1);
   let off1 = randomInt(P,       2 * P - 1);
-  let off2 = randomInt(2 * P,   WINDOW_DURATION_MS - 1);
+  let off2 = randomInt(2 * P,   3 * P - 1);
+  let off3 = randomInt(3 * P,   WINDOW_DURATION_MS - 1);
 
-  // Enforce minimum separation between slot 0 → 1
-  if (off1 - off0 < MIN_SEPARATION_MS) {
-    off1 = Math.min(off0 + MIN_SEPARATION_MS + randomInt(0, 15_000), 2 * P - 1);
-  }
-  // Enforce minimum separation between slot 1 → 2
-  if (off2 - off1 < MIN_SEPARATION_MS) {
-    off2 = Math.min(off1 + MIN_SEPARATION_MS + randomInt(0, 15_000), WINDOW_DURATION_MS - 1);
-  }
+  // Enforce minimum separation between consecutive slots
+  if (off1 - off0 < MIN_SEPARATION_MS) off1 = Math.min(off0 + MIN_SEPARATION_MS + randomInt(0, 12_000), 2 * P - 1);
+  if (off2 - off1 < MIN_SEPARATION_MS) off2 = Math.min(off1 + MIN_SEPARATION_MS + randomInt(0, 12_000), 3 * P - 1);
+  if (off3 - off2 < MIN_SEPARATION_MS) off3 = Math.min(off2 + MIN_SEPARATION_MS + randomInt(0, 12_000), WINDOW_DURATION_MS - 1);
 
-  return [off0, off1, off2];
+  return [off0, off1, off2, off3];
 }
 
 /** @deprecated Use computeSlotOffsets() instead */

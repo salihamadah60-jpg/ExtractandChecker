@@ -111,6 +111,10 @@ async function buildGroupsDocx(groups: FilteredGroup[]): Promise<Buffer> {
 
 // ── Build DOCX for ads groups ─────────────────────────────────────────────────
 async function buildAdsDocx(ads: FilteredGroup[]): Promise<Buffer> {
+  // Split into medical groups (top) and non-medical (below separator)
+  const medAds   = ads.filter((g) => isMedicalGroup(g.name));
+  const otherAds = ads.filter((g) => !isMedicalGroup(g.name));
+
   const children: any[] = [
     new Paragraph({
       text: "ملف الإعلانات (10–150 عضواً مع وصف)",
@@ -122,27 +126,37 @@ async function buildAdsDocx(ads: FilteredGroup[]): Promise<Buffer> {
     }),
   ];
 
-  ads.forEach((g, idx) => {
-    // Batch separator every 40 entries
-    if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
-      children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
+  const renderAdList = (list: FilteredGroup[]) => {
+    list.forEach((g, idx) => {
+      if (idx > 0 && idx % BATCH_SIZE_EXPORT === 0) {
+        children.push(new Paragraph({ text: "", spacing: { before: 400, after: 400 } }));
+      }
+      const headerText = g.name ? `${g.name} ${g.members} عضو` : `${g.members} عضو`;
+      children.push(new Paragraph({ children: [new TextRun({ text: headerText, bold: true })], spacing: { after: 40 } }));
+      children.push(new Paragraph({ children: [new TextRun({ text: g.link, color: "1a73e8" })], spacing: { after: 160 } }));
+    });
+  };
+
+  // Medical groups first (no heading unless there are both sections)
+  if (medAds.length > 0) {
+    if (otherAds.length > 0) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: `[ الطب والصحة — ${medAds.length} مجموعة ]`, bold: true, size: 26, color: "1a5276" })],
+        spacing: { before: 200, after: 120 },
+      }));
     }
-    // Header line: Name + member count
-    const headerText = g.name ? `${g.name} ${g.members} عضو` : `${g.members} عضو`;
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: headerText, bold: true })],
-        spacing: { after: 40 },
-      })
-    );
-    // Link line
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: g.link, color: "1a73e8" })],
-        spacing: { after: 160 },
-      })
-    );
-  });
+    renderAdList(medAds);
+  }
+
+  // Separator then non-medical ads
+  if (otherAds.length > 0) {
+    children.push(new Paragraph({ text: "", spacing: { before: 400, after: 0 } }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "من هنا تعتبر إعلانات", bold: true, size: 28, color: "c0392b" })],
+      spacing: { before: 100, after: 200 },
+    }));
+    renderAdList(otherAds);
+  }
 
   const doc = new Document({ sections: [{ children }] });
   return (await Packer.toBuffer(doc)) as unknown as Buffer;
@@ -946,6 +960,36 @@ export async function registerRoutes(
     try {
       const links = await linksRepository.findPendingForJoin();
       res.json(links);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Manual upload: DOCX → insert links into MongoDB directly ───────────────
+  app.post("/api/links-repository/manual-upload", upload.single("file"), async (req: any, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "لم يتم رفع ملف" });
+
+      const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+      const htmlResult = await mammoth.convertToHtml({ buffer: req.file.buffer });
+      const combined = result.value + " " + htmlResult.value;
+
+      const waRegex = /https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+/g;
+      const rawLinks = [...combined.matchAll(waRegex)].map((m) =>
+        m[0].replace(/[.,;)>\]'"»«]+$/, "").trim()
+      );
+      const uniqueLinks = [...new Set(rawLinks.filter(Boolean))];
+
+      let added = 0;
+      let duplicates = 0;
+      for (const url of uniqueLinks) {
+        const wasNew = await linksRepository.addIfNew(url, "Group", "manual");
+        if (wasNew) added++;
+        else duplicates++;
+      }
+
+      console.log(`[ManualUpload] Processed ${uniqueLinks.length} links — added: ${added}, duplicates: ${duplicates}`);
+      res.json({ total: uniqueLinks.length, added, duplicates });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

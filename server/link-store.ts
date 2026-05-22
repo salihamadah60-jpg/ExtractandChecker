@@ -194,6 +194,55 @@ const MEDICAL_KEYWORDS = [
   "جراحة القلب",
   // Healthcare management
   "إدارة صحية", "إدارة مستشفى", "إدارة الصحة",
+  // Prosthodontics / Orthodontics / Oral Medicine / Periodontics / Endodontics
+  "prosthodont", "orthodont", "periodon", "endodont",
+  "oral medicine", "oral surgery",
+  "تقويم أسنان", "تركيبات أسنان", "زرع أسنان", "جراحة الفم", "طب الفم",
+  // Maxillofacial
+  "maxillofacial", "جراحة الفكين", "فك وجه",
+  // Neurosurgery (separate from neurology)
+  "neurosurgery", "جراحة المخ", "جراحة الأعصاب",
+  // Preventive medicine / Public health
+  "preventive medicine", "public health", "طب وقائي", "الوقائية", "الوقائي",
+  "epidemiol", "وبائيات", "صحة عامة",
+  // Physical therapy / Occupational therapy
+  "physical therapy", "physio", "occupational therapy",
+  "فيزيائي", "علاج وظيفي",
+  // Midwifery
+  "midwife", "midwifery", "قابلة", "قبالة",
+  // Nursing specialties
+  "ICN", "تمريض طوارئ", "تمريض جراحي",
+  // Toxicology / Pharmacology
+  "toxicol", "pharmacol", "علم السموم",
+  // Critical care
+  "critical care", "CCU", "رعاية حرجة",
+  // Intensive care
+  "intensive care", "وحدة العناية المركزة",
+  // Plastic surgery
+  "plastic surgery", "جراحة تجميل", "تجميلية",
+  // Medical education / training
+  "medical education", "clinical training", "تدريب ميداني", "تدريب سريري",
+  "دبلوم طب", "ماجستير طب", "دكتوراه طب",
+  // Hospital acceptees / matching groups
+  "مقبولين بالمستشفيات", "مقبولين في المستشفيات",
+  // Saudi Commission for Health Specialties
+  "الهيئة السعودية للتخصصات", "scfhs", "hcac",
+  // Prometric / licensing exam variants
+  "dha exam", "haad exam", "moh exam", "omsb", "smle",
+  // Infection control / microbiology
+  "infection control", "microbiol", "مكروبيولوجيا", "جراثيم",
+  // Forensic medicine
+  "forensic", "طب شرعي",
+  // Nuclear medicine
+  "nuclear medicine", "طب نووي",
+  // Cytology / Histology
+  "cytol", "histol", "خلوية", "نسيجية",
+  // Interventional radiology
+  "interventional", "تدخلي",
+  // General matching (without specialty — still medical context)
+  "matching 2026", "matching 2025", "مطابقة", "مرشحين",
+  // Hospital groups by city (strong medical indicator)
+  "مستشفى الملك", "مستشفى الأمير", "مستشفى الجامعة",
 ];
 
 export function isMedicalGroup(name?: string): boolean {
