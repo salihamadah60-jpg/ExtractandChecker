@@ -5,8 +5,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ArrowRight, Database, Users, CheckCircle2, XCircle, Clock,
-  TrendingUp, Wifi, WifiOff, BookOpen, Loader2, RefreshCw,
-  MessageSquare, UserPlus, Link2, FileText,
+  TrendingUp, BookOpen, Loader2, RefreshCw,
+  MessageSquare, UserPlus, Link2, Moon, Thermometer,
+  PauseCircle, Activity, AlertTriangle,
 } from "lucide-react";
 
 interface DashboardStats {
@@ -25,7 +26,11 @@ interface DashboardStats {
   } | null;
   joinProgress: {
     status: string; total: number; processed: number;
-    joined: number; ignored: number; failed: number; startedAt: string;
+    joined: number; ignored: number; failed: number; skipped_ads: number;
+    startedAt: string; completedAt?: string;
+    windowNumber: number; currentLink?: string; stopReason?: string;
+    nextJoinAt?: string; sleepUntil?: string; cooldownUntil?: string;
+    telemetry?: { avgLatencyMs: number; lastLatencyMs: number; cooldownActive: boolean; warning?: string };
   } | null;
 }
 
@@ -258,10 +263,25 @@ export default function Dashboard() {
                     <UserPlus className="w-4 h-4 text-primary" />
                     مدير الانضمام
                     {data.joinProgress ? (
-                      <Badge variant={data.joinProgress.status === "running" ? "default" : "secondary"} className="mr-auto text-xs">
-                        {data.joinProgress.status === "running" ? "يعمل" :
-                         data.joinProgress.status === "done" ? "مكتمل" :
-                         data.joinProgress.status === "paused" ? "متوقف مؤقتاً" : "متوقف"}
+                      <Badge
+                        variant={
+                          data.joinProgress.status === "running" ? "default" :
+                          data.joinProgress.status === "done" ? "secondary" : "outline"
+                        }
+                        className={`mr-auto text-xs ${
+                          data.joinProgress.status === "sleeping" ? "text-blue-600 border-blue-300" :
+                          data.joinProgress.status === "cooldown" ? "text-orange-600 border-orange-300" :
+                          data.joinProgress.status === "paused" ? "text-yellow-600 border-yellow-300" :
+                          data.joinProgress.status === "waiting" ? "text-sky-600 border-sky-300" : ""
+                        }`}
+                      >
+                        {data.joinProgress.status === "running"  ? "يعمل" :
+                         data.joinProgress.status === "waiting"  ? "انتظار" :
+                         data.joinProgress.status === "sleeping" ? "نائم" :
+                         data.joinProgress.status === "cooldown" ? "تبريد" :
+                         data.joinProgress.status === "paused"   ? "متوقف مؤقتاً" :
+                         data.joinProgress.status === "done"     ? "مكتمل" :
+                         data.joinProgress.status === "stopped"  ? "موقوف" : "خطأ"}
                       </Badge>
                     ) : (
                       <Badge variant="outline" className="mr-auto text-xs">غير نشط</Badge>
@@ -271,29 +291,83 @@ export default function Dashboard() {
                 <CardContent>
                   {data.joinProgress ? (
                     <div className="space-y-3">
-                      <div className="grid grid-cols-3 gap-2 text-sm">
-                        <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2.5 text-center">
-                          <p className="text-lg font-bold text-green-600">{data.joinProgress.joined}</p>
-                          <p className="text-xs text-muted-foreground">انضم</p>
+                      {/* Stats grid */}
+                      <div className="grid grid-cols-4 gap-1.5 text-sm">
+                        <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2 text-center">
+                          <p className="text-base font-bold text-green-600">{data.joinProgress.joined}</p>
+                          <p className="text-[10px] text-muted-foreground">انضم</p>
                         </div>
-                        <div className="bg-muted/50 rounded-lg p-2.5 text-center">
-                          <p className="text-lg font-bold text-muted-foreground">{data.joinProgress.ignored}</p>
-                          <p className="text-xs text-muted-foreground">تجاهل</p>
+                        <div className="bg-muted/50 rounded-lg p-2 text-center">
+                          <p className="text-base font-bold text-muted-foreground">{data.joinProgress.ignored}</p>
+                          <p className="text-[10px] text-muted-foreground">تجاهل</p>
                         </div>
-                        <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2.5 text-center">
-                          <p className="text-lg font-bold text-red-600">{data.joinProgress.failed}</p>
-                          <p className="text-xs text-muted-foreground">فشل</p>
+                        <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2 text-center">
+                          <p className="text-base font-bold text-red-600">{data.joinProgress.failed}</p>
+                          <p className="text-[10px] text-muted-foreground">فشل</p>
+                        </div>
+                        <div className="bg-orange-50 dark:bg-orange-900/20 rounded-lg p-2 text-center">
+                          <p className="text-base font-bold text-orange-500">{data.joinProgress.skipped_ads}</p>
+                          <p className="text-[10px] text-muted-foreground">إعلان</p>
                         </div>
                       </div>
-                      <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all"
-                          style={{ width: `${data.joinProgress.total > 0 ? Math.round((data.joinProgress.processed / data.joinProgress.total) * 100) : 0}%` }}
-                        />
+
+                      {/* Progress bar */}
+                      <div>
+                        <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                          <span>نافذة #{data.joinProgress.windowNumber}</span>
+                          <span>{data.joinProgress.processed} / {data.joinProgress.total}</span>
+                        </div>
+                        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-primary rounded-full transition-all"
+                            style={{ width: `${data.joinProgress.total > 0 ? Math.round((data.joinProgress.processed / data.joinProgress.total) * 100) : 0}%` }}
+                          />
+                        </div>
                       </div>
-                      <p className="text-xs text-muted-foreground text-center">
-                        {data.joinProgress.processed} / {data.joinProgress.total} تمت معالجتها
-                      </p>
+
+                      {/* Status info rows */}
+                      {data.joinProgress.status === "sleeping" && data.joinProgress.sleepUntil && (
+                        <div className="flex items-center gap-2 text-xs bg-blue-50 dark:bg-blue-900/20 rounded-lg px-3 py-2 text-blue-700 dark:text-blue-300">
+                          <Moon className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span>نائم حتى {new Date(data.joinProgress.sleepUntil).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}</span>
+                        </div>
+                      )}
+                      {data.joinProgress.status === "cooldown" && data.joinProgress.cooldownUntil && (
+                        <div className="flex items-center gap-2 text-xs bg-orange-50 dark:bg-orange-900/20 rounded-lg px-3 py-2 text-orange-700 dark:text-orange-300">
+                          <Thermometer className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span>تبريد حتى {new Date(data.joinProgress.cooldownUntil).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}</span>
+                        </div>
+                      )}
+                      {data.joinProgress.status === "paused" && (
+                        <div className="flex items-center gap-2 text-xs bg-yellow-50 dark:bg-yellow-900/20 rounded-lg px-3 py-2 text-yellow-700 dark:text-yellow-300">
+                          <PauseCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span>{data.joinProgress.stopReason ?? "متوقف مؤقتاً"}</span>
+                        </div>
+                      )}
+                      {(data.joinProgress.status === "waiting" || data.joinProgress.status === "running") && data.joinProgress.nextJoinAt && (
+                        <div className="flex items-center gap-2 text-xs bg-sky-50 dark:bg-sky-900/20 rounded-lg px-3 py-2 text-sky-700 dark:text-sky-300">
+                          <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span>الانضمام التالي: {new Date(data.joinProgress.nextJoinAt).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}</span>
+                        </div>
+                      )}
+                      {data.joinProgress.currentLink && (
+                        <div className="flex items-center gap-2 text-xs bg-muted/40 rounded-lg px-3 py-2">
+                          <Activity className="w-3.5 h-3.5 text-primary flex-shrink-0 animate-pulse" />
+                          <span className="truncate text-muted-foreground font-mono">{data.joinProgress.currentLink.replace("https://chat.whatsapp.com/", "")}</span>
+                        </div>
+                      )}
+                      {data.joinProgress.telemetry?.warning && (
+                        <div className="flex items-center gap-2 text-xs bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2 text-red-600">
+                          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span>{data.joinProgress.telemetry.warning}</span>
+                        </div>
+                      )}
+                      {data.joinProgress.telemetry && (
+                        <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
+                          <span>زمن الاستجابة: {Math.round(data.joinProgress.telemetry.avgLatencyMs)}ms</span>
+                          <span>آخر: {Math.round(data.joinProgress.telemetry.lastLatencyMs)}ms</span>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground py-2">لم يبدأ مدير الانضمام بعد في هذه الجلسة</p>

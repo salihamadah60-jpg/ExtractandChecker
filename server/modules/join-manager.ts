@@ -21,7 +21,7 @@ import { coordinator }               from "./function-coordinator.js";
 import { systemState }               from "./system-state.js";
 import { linksRepository }           from "./links-repository.js";
 import { classifyWAError }           from "./wa-error-handler.js";
-import { WINDOW_DURATION_MS, computeSlotOffsets, shuffle } from "./human-mimicry.js";
+import { WINDOW_DURATION_MS, SLOTS_PER_WINDOW, computeSlotOffsets, shuffle } from "./human-mimicry.js";
 import { isSleepTime, msUntilWakeUp } from "./sleep-scheduler.js";
 import { telemetry }                 from "./telemetry.js";
 
