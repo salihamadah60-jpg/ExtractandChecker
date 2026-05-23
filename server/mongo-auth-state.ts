@@ -8,10 +8,22 @@ export async function getDb(): Promise<Db> {
   if (_db) return _db;
   if (!MONGO_URI) throw new Error("MONGODB_URI environment variable not set");
   _client = new MongoClient(MONGO_URI, {
-    serverSelectionTimeoutMS: 15000,
-    connectTimeoutMS: 15000,
+    serverSelectionTimeoutMS: 30_000,   // 30s to find/select a server
+    connectTimeoutMS:         30_000,   // 30s initial TCP connect
+    socketTimeoutMS:          60_000,   // 60s per operation socket idle
+    retryWrites:              true,     // auto-retry failed writes once
+    retryReads:               true,     // auto-retry failed reads once
+    maxPoolSize:              10,
+    minPoolSize:              1,
+    waitQueueTimeoutMS:       10_000,
+    heartbeatFrequencyMS:     10_000,   // check server health every 10s
   });
   await _client.connect();
+  // Reset cached references if the topology closes unexpectedly
+  _client.on("topologyClosed", () => {
+    _db     = null;
+    _client = null;
+  });
   _db = _client.db();
   return _db;
 }

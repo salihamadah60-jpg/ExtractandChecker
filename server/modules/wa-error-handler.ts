@@ -32,6 +32,28 @@ export interface WAErrorResult {
 
 // ── Patterns that map message → action ────────────────────────────────────────
 
+/**
+ * Low-level network errors — transient, safe to retry after a delay.
+ * These should NEVER mark a link as Ignored/Skip.
+ */
+const NETWORK_ERROR_PATTERNS: RegExp[] = [
+  /ETIMEDOUT/,   /ECONNRESET/,   /ECONNREFUSED/,
+  /ENOTFOUND/,   /ENETUNREACH/,  /EHOSTUNREACH/,
+  /ECONNABORTED/,/ENETDOWN/,     /EPIPE/,
+  /socket hang up/i,
+  /network.*error/i,
+  /connection.*reset/i,
+  /connection.*refused/i,
+  /getaddrinfo ENOTFOUND/i,
+  /connect ETIMEDOUT/i,
+  /read ECONNRESET/i,
+  /write ECONNRESET/i,
+  /network timeout/i,
+  /request timeout/i,
+  /socket closed/i,
+  /websocket.*close/i,
+];
+
 const SKIP_PATTERNS: RegExp[] = [
   /item-not-found/i,
   /not-found/i,
@@ -116,6 +138,15 @@ export function classifyWAError(
   const statusCode = (err as any)?.output?.statusCode ??
     (err as any)?.statusCode ??
     parseInt(raw.match(/\b(\d{3})\b/)?.[1] ?? "0", 10);
+
+  // ── NETWORK ERROR — transient, retry after delay ────────────────────────────
+  if (NETWORK_ERROR_PATTERNS.some((p) => p.test(raw))) {
+    return {
+      action: "retry",
+      reason: `خطأ شبكي مؤقت — سيُعاد المحاولة: ${raw}`,
+      critical: false,
+    };
+  }
 
   // ── STOP ALL — account threatening ─────────────────────────────────────────
   if (

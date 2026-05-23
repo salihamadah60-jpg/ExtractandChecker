@@ -41,6 +41,19 @@ export const getQueryFn: <T>(options: {
     return await res.json();
   };
 
+/**
+ * Retry policy for background polling queries.
+ * Retries on network errors and 5xx responses, not on 4xx (client errors).
+ */
+function shouldRetry(failureCount: number, error: unknown): boolean {
+  if (failureCount >= 2) return false; // max 2 retries per poll cycle
+  const msg = error instanceof Error ? error.message : String(error);
+  // Don't retry on client-side auth/permission errors
+  if (/^4[0-9][0-9]:/.test(msg)) return false;
+  // Retry on network errors or 5xx
+  return true;
+}
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -48,7 +61,8 @@ export const queryClient = new QueryClient({
       refetchInterval: false,
       refetchOnWindowFocus: false,
       staleTime: Infinity,
-      retry: false,
+      retry: shouldRetry,
+      retryDelay: (attemptIndex) => Math.min(2000 * 2 ** attemptIndex, 15_000),
     },
     mutations: {
       retry: false,

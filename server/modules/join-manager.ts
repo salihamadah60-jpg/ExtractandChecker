@@ -127,7 +127,8 @@ async function pauseGate(): Promise<"ok" | "stopped"> {
 async function joinOne(
   record: { url: string },
   consecutiveFailures: number,
-  currentPhone?: string
+  currentPhone?: string,
+  retryCount = 0
 ): Promise<{ result: "joined" | "ignored" | "failed" | "stop_all" | "stop_join"; waitMs?: number }> {
   const codeMatch    = record.url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
   const channelMatch = record.url.match(/whatsapp\.com\/channel\/([A-Za-z0-9_-]+)/);
@@ -217,6 +218,26 @@ async function joinOne(
         await linksRepository.setStatus(record.url, "Ignored");
         console.warn(`[JoinManager] Rate-limit skip: ${record.url}`);
         return { result: "failed" };
+
+      case "retry": {
+        // Transient network error — do NOT mark as Ignored; retry with backoff.
+        // After max retries the link stays Pending for the next session.
+        const MAX_NET_RETRIES = 3;
+        if (retryCount < MAX_NET_RETRIES) {
+          const delayMs = Math.min(15_000 * (retryCount + 1), 60_000); // 15s → 30s → 45s
+          console.warn(
+            `[JoinManager] ⚠ Network hiccup (attempt ${retryCount + 1}/${MAX_NET_RETRIES}) ` +
+            `— waiting ${delayMs / 1000}s before retry: ${record.url}`
+          );
+          _joiningCache.delete(inviteCode); // release cache lock during wait
+          await new Promise((r) => setTimeout(r, delayMs));
+          if (_stopRequested) return { result: "failed" };
+          return joinOne(record, consecutiveFailures, currentPhone, retryCount + 1);
+        }
+        // All retries exhausted — leave Pending so future session can try again
+        console.warn(`[JoinManager] ⚠ Network error — ${MAX_NET_RETRIES} retries exhausted, leaving Pending: ${record.url}`);
+        return { result: "failed" };
+      }
 
       default:
         await linksRepository.setStatus(record.url, "Ignored");

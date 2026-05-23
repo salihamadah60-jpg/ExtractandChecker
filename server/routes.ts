@@ -201,6 +201,11 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // ── Health check (used by frontend to detect server reachability) ──────────
+  app.get("/api/health", (_req, res) => {
+    res.json({ ok: true, ts: Date.now() });
+  });
+
   // ── Upload DOCX ────────────────────────────────────────────────────────────
   app.post("/api/upload", upload.single("file"), async (req: any, res: any) => {
     try {

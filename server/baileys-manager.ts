@@ -400,11 +400,12 @@ class SessionsManager extends EventEmitter {
         browser: ["Link Checker Pro", "Chrome", "120.0.0"],
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
-        connectTimeoutMs: 60_000,
-        defaultQueryTimeoutMs: 60_000,
-        keepAliveIntervalMs: 10_000,
-        retryRequestDelayMs: 250,
-        maxMsgRetryCount: 5,
+        connectTimeoutMs:      90_000,  // 90s connect timeout (weak connections need more time)
+        defaultQueryTimeoutMs: 90_000,  // 90s per-query timeout
+        keepAliveIntervalMs:   25_000,  // send WS ping every 25s (less overhead on weak links)
+        retryRequestDelayMs:   2_000,   // 2s between request retries (was 250ms — too aggressive)
+        maxMsgRetryCount:      5,
+        emitOwnEvents:         false,   // reduce internal event noise
       });
 
       s = this.sessions.get(id)!;

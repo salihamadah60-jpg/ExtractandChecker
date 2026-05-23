@@ -201,6 +201,16 @@ export default function Home() {
   const [manualUploadResult, setManualUploadResult] = useState<{ total: number; added: number; duplicates: number } | null>(null);
   const [isManualUploading, setIsManualUploading] = useState(false);
   const manualUploadRef = useRef<HTMLInputElement>(null);
+
+  // ── Network health ────────────────────────────────────────────────────────
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const up   = () => setIsOnline(true);
+    const down = () => setIsOnline(false);
+    window.addEventListener("online",  up);
+    window.addEventListener("offline", down);
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
+  }, []);
   const [newAdText, setNewAdText] = useState("");
   const [joinMaxLinks, setJoinMaxLinks] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -832,6 +842,14 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background" dir="rtl">
+
+      {/* ── Network offline banner ── */}
+      {!isOnline && (
+        <div className="fixed top-0 left-0 right-0 z-[100] bg-destructive text-destructive-foreground text-xs text-center py-2 flex items-center justify-center gap-2 shadow-md">
+          <WifiOff className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>لا يوجد اتصال بالإنترنت — كل العمليات مؤقتة وستستأنف تلقائياً عند عودة الاتصال</span>
+        </div>
+      )}
 
       {/* ── Fixed sidebar toggle button ── */}
       <button

@@ -5,6 +5,7 @@ stack = "FULLSTACK_JS"
 
 [nix]
 channel = "stable-25_05"
+packages = ["python313Packages.pwntools"]
 
 [workflows]
 runButton = "Project"
