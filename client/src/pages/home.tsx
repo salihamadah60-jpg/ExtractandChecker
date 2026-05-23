@@ -662,7 +662,7 @@ export default function Home() {
     },
     onSuccess: () => {
       const max = parseInt(joinMaxLinks, 10);
-      toast({ title: max > 0 ? `بدأ الانضمام التجريبي — ${max} روابط فقط` : "بدأ الانضمام — 3 روابط كل 10 دقائق" });
+      toast({ title: max > 0 ? `بدأ الانضمام التجريبي — ${max} روابط فقط` : "بدأ الانضمام — 4 روابط كل 10 دقائق" });
       void refetchJoinProgress2();
     },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
@@ -1164,7 +1164,7 @@ export default function Home() {
                   {/* ── Rate info ── */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
                     <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                    <span>معدل آمن: 3 روابط كل 10 دقائق (60 ث فاصل) — نوم 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر</span>
+                    <span>معدل آمن: 4 روابط كل 10 دقائق — نوم 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر — إيقاف/استئناف تلقائي عند انقطاع واتساب</span>
                   </div>
                   {/* Note about Stop vs WhatsApp connection */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-blue-50 dark:bg-blue-900/20 rounded p-2">
