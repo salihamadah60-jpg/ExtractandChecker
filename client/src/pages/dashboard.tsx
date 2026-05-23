@@ -7,7 +7,7 @@ import {
   ArrowRight, Database, Users, CheckCircle2, XCircle, Clock,
   TrendingUp, BookOpen, Loader2, RefreshCw,
   MessageSquare, UserPlus, Link2, Moon, Thermometer,
-  PauseCircle, Activity, AlertTriangle,
+  PauseCircle, Activity, AlertTriangle, Zap, Radio,
 } from "lucide-react";
 
 interface DashboardStats {
@@ -21,8 +21,9 @@ interface DashboardStats {
   total: number;
   todayCount: number;
   readerStats: {
-    status: string; messagesReceived: number; messagesSkippedAds: number;
+    status: string; continuous: boolean; messagesReceived: number; messagesSkippedAds: number;
     linksFound: number; linksNew: number; pipelineRuns?: number; startedAt: string;
+    lastMessageId?: string; pausedAt?: string;
   } | null;
   joinProgress: {
     status: string; total: number; processed: number;
@@ -32,6 +33,24 @@ interface DashboardStats {
     nextJoinAt?: string; sleepUntil?: string; cooldownUntil?: string;
     telemetry?: { avgLatencyMs: number; lastLatencyMs: number; cooldownActive: boolean; warning?: string };
   } | null;
+}
+
+interface WindowRecord {
+  windowNumber: number;
+  slotsExecuted: number;
+  joined: number;
+  failed: number;
+  ignored: number;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  avgLatencyMs: number;
+  hadCooldown: boolean;
+}
+
+interface TelemetryData {
+  report: { avgLatencyMs: number; lastLatencyMs: number; sampleCount: number; cooldownActive: boolean; warning?: string };
+  windowHistory: WindowRecord[];
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: React.ReactNode }> = {
@@ -47,6 +66,38 @@ const SOURCE_LABELS: Record<string, string> = {
   message: "رسالة مباشرة",
   manual: "يدوي",
 };
+
+function LatencyBar({ windows }: { windows: WindowRecord[] }) {
+  if (!windows.length) return <p className="text-sm text-muted-foreground text-center py-4">لا توجد نوافذ مسجّلة بعد</p>;
+  const maxMs = Math.max(...windows.map((w) => w.avgLatencyMs), 1);
+  const last20 = windows.slice(-20);
+  return (
+    <div className="flex items-end gap-1 h-28 w-full">
+      {last20.map((w) => {
+        const pct = Math.round((w.avgLatencyMs / maxMs) * 100);
+        const color = w.hadCooldown
+          ? "hsl(0 72% 51%)"
+          : w.avgLatencyMs > 3000
+          ? "hsl(38 92% 50%)"
+          : "hsl(var(--primary))";
+        const label = `نافذة #${w.windowNumber}\nانضم: ${w.joined}\nتأخير: ${Math.round(w.avgLatencyMs)}ms${w.hadCooldown ? "\nتبريد" : ""}`;
+        return (
+          <div key={w.windowNumber} className="flex flex-col items-center flex-1 gap-1 group relative" title={label}>
+            <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-foreground text-background text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 text-center leading-tight">
+              #{w.windowNumber} · {Math.round(w.avgLatencyMs)}ms · {w.joined}✓
+              {w.hadCooldown && " · 🔥"}
+            </div>
+            <div
+              className="w-full rounded-t transition-all"
+              style={{ height: `${Math.max(pct, 4)}%`, backgroundColor: color, opacity: 0.85 }}
+            />
+            <span className="text-[9px] text-muted-foreground">#{w.windowNumber}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function TrendBar({ trend }: { trend: { date: string; count: number }[] }) {
   if (!trend.length) return <p className="text-sm text-muted-foreground text-center py-4">لا توجد بيانات بعد</p>;
@@ -90,7 +141,7 @@ function TrendBar({ trend }: { trend: { date: string; count: number }[] }) {
 }
 
 export default function Dashboard() {
-  const { data, isLoading, refetch, isFetching, isError, error } = useQuery<DashboardStats>({
+  const { data, isLoading, refetch, isFetching } = useQuery<DashboardStats>({
     queryKey: ["/api/dashboard/stats"],
     queryFn: async () => {
       const res = await fetch("/api/dashboard/stats", { credentials: "include" });
@@ -99,6 +150,18 @@ export default function Dashboard() {
     },
     refetchInterval: 15_000,
     staleTime: 10_000,
+    retry: 1,
+  });
+
+  const { data: telemetryData } = useQuery<TelemetryData>({
+    queryKey: ["/api/telemetry"],
+    queryFn: async () => {
+      const res = await fetch("/api/telemetry", { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      return res.json() as Promise<TelemetryData>;
+    },
+    refetchInterval: 20_000,
+    staleTime: 15_000,
     retry: 1,
   });
 
@@ -222,36 +285,58 @@ export default function Dashboard() {
                     <MessageSquare className="w-4 h-4 text-primary" />
                     القارئ التلقائي
                     {data.readerStats ? (
-                      <Badge variant={data.readerStats.status === "running" ? "default" : "secondary"} className="mr-auto text-xs">
-                        {data.readerStats.status === "running" ? "يعمل" : "متوقف"}
-                      </Badge>
+                      <div className="mr-auto flex items-center gap-1.5">
+                        {data.readerStats.continuous && (
+                          <Badge variant="outline" className="text-xs border-primary/50 text-primary gap-1">
+                            <Radio className="w-2.5 h-2.5 animate-pulse" />مستمر
+                          </Badge>
+                        )}
+                        <Badge variant={data.readerStats.status === "running" ? "default" : "secondary"} className="text-xs">
+                          {data.readerStats.status === "running" ? "يعمل" : "متوقف مؤقتاً"}
+                        </Badge>
+                      </div>
                     ) : (
                       <Badge variant="outline" className="mr-auto text-xs">غير نشط</Badge>
                     )}
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
                   {data.readerStats ? (
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div className="bg-muted/50 rounded-lg p-2.5">
-                        <p className="text-lg font-bold">{data.readerStats.messagesReceived.toLocaleString()}</p>
-                        <p className="text-xs text-muted-foreground">رسائل استُقبلت</p>
+                    <>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div className="bg-muted/50 rounded-lg p-2.5">
+                          <p className="text-lg font-bold">{data.readerStats.messagesReceived.toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground">رسائل استُقبلت</p>
+                        </div>
+                        <div className="bg-muted/50 rounded-lg p-2.5">
+                          <p className="text-lg font-bold text-green-600">{data.readerStats.linksNew.toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground">روابط جديدة</p>
+                        </div>
+                        <div className="bg-muted/50 rounded-lg p-2.5">
+                          <p className="text-lg font-bold text-muted-foreground">{data.readerStats.messagesSkippedAds.toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground">إعلانات تجاهل</p>
+                        </div>
+                        <div className="bg-muted/50 rounded-lg p-2.5">
+                          <p className="text-lg font-bold text-primary">{data.readerStats.pipelineRuns ?? 0}</p>
+                          <p className="text-xs text-muted-foreground">تشغيل pipeline</p>
+                        </div>
                       </div>
-                      <div className="bg-muted/50 rounded-lg p-2.5">
-                        <p className="text-lg font-bold text-green-600">{data.readerStats.linksNew.toLocaleString()}</p>
-                        <p className="text-xs text-muted-foreground">روابط جديدة</p>
-                      </div>
-                      <div className="bg-muted/50 rounded-lg p-2.5">
-                        <p className="text-lg font-bold text-muted-foreground">{data.readerStats.messagesSkippedAds.toLocaleString()}</p>
-                        <p className="text-xs text-muted-foreground">رسائل إعلانية (تجاهل)</p>
-                      </div>
-                      <div className="bg-muted/50 rounded-lg p-2.5">
-                        <p className="text-lg font-bold text-primary">{data.readerStats.pipelineRuns ?? 0}</p>
-                        <p className="text-xs text-muted-foreground">تشغيلات pipeline</p>
-                      </div>
-                    </div>
+                      {/* Checkpoint display */}
+                      {data.readerStats.lastMessageId && (
+                        <div className="flex items-center gap-2 text-xs bg-primary/5 border border-primary/20 rounded-lg px-3 py-2">
+                          <Zap className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-muted-foreground">نقطة التوقف المحفوظة</p>
+                            <p className="font-mono text-primary truncate">{data.readerStats.lastMessageId.slice(-16)}</p>
+                          </div>
+                          {data.readerStats.status !== "running" && (
+                            <Badge variant="outline" className="text-[10px] text-green-600 border-green-300 flex-shrink-0">سيستمر من هنا</Badge>
+                          )}
+                        </div>
+                      )}
+                    </>
                   ) : (
-                    <p className="text-sm text-muted-foreground py-2">لم يبدأ القارئ بعد في هذه الجلسة</p>
+                    <p className="text-sm text-muted-foreground py-2">القارئ غير نشط — ابدأه من الصفحة الرئيسية</p>
                   )}
                 </CardContent>
               </Card>
@@ -375,6 +460,56 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
             </div>
+
+            {/* Telemetry window history chart */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-primary" />
+                  تأخير الانضمام لكل نافذة
+                  {telemetryData?.report.cooldownActive && (
+                    <Badge variant="destructive" className="mr-auto text-xs">تبريد نشط</Badge>
+                  )}
+                  {!telemetryData?.report.cooldownActive && telemetryData?.windowHistory.length ? (
+                    <span className="mr-auto text-xs text-muted-foreground">
+                      متوسط: {Math.round(telemetryData.report.avgLatencyMs)}ms
+                    </span>
+                  ) : null}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pb-4 pt-5">
+                {telemetryData ? (
+                  <>
+                    <LatencyBar windows={telemetryData.windowHistory} />
+                    {/* Legend */}
+                    <div className="flex items-center gap-4 mt-3 text-[10px] text-muted-foreground justify-center">
+                      <div className="flex items-center gap-1">
+                        <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "hsl(var(--primary))" }} />
+                        <span>سريع (&lt;3ث)</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "hsl(38 92% 50%)" }} />
+                        <span>بطيء (3-8ث)</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "hsl(0 72% 51%)" }} />
+                        <span>تبريد مُفعَّل</span>
+                      </div>
+                    </div>
+                    {telemetryData.report.warning && (
+                      <div className="flex items-center gap-2 text-xs bg-orange-50 dark:bg-orange-900/20 rounded-lg px-3 py-2 text-orange-700 dark:text-orange-300 mt-3">
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span>{telemetryData.report.warning}</span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="h-28 flex items-center justify-center">
+                    <p className="text-sm text-muted-foreground">جاري التحميل...</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             {/* Recent activity */}
             <Card>

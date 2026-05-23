@@ -9,7 +9,7 @@
  *  - active_function: which function is running
  *  - last_read_message_id: last message processed by the reader
  *  - last_published_ad_index: rotation index for ad publishing
- *  - extra: arbitrary JSON for function-specific state
+ *  - extra: arbitrary JSON for function-specific state (merged, never replaced)
  */
 
 import { getDb } from "../mongo-auth-state.js";
@@ -21,6 +21,7 @@ export interface SystemStateDoc {
   active_function: BotFunction | null;
   last_read_message_id?: string;
   last_published_ad_index?: number;
+  reader_continuous?: boolean;
   last_updated: Date;
   extra?: Record<string, unknown>;
 }
@@ -89,9 +90,33 @@ export const systemState = {
     return next;
   },
 
-  /** Store arbitrary function-specific state. */
+  /**
+   * Merge arbitrary function-specific state into the extra field.
+   * Uses $set with dot-notation keys to avoid overwriting unrelated keys.
+   */
   async setExtra(data: Record<string, unknown>): Promise<void> {
-    await systemState.update({ extra: data });
+    const c = await col();
+    const dotSet: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) {
+      dotSet[`extra.${k}`] = v;
+    }
+    dotSet["last_updated"] = new Date();
+    await c.updateOne(
+      { _id: DOC_ID as any },
+      { $set: dotSet },
+      { upsert: true }
+    );
+  },
+
+  /** Save whether the reader should run continuously (persists across restarts). */
+  async setReaderContinuous(enabled: boolean): Promise<void> {
+    await systemState.update({ reader_continuous: enabled });
+  },
+
+  /** Get whether the reader was set to continuous mode. */
+  async getReaderContinuous(): Promise<boolean> {
+    const state = await systemState.get();
+    return state.reader_continuous ?? false;
   },
 
   /**

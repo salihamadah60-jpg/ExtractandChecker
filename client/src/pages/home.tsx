@@ -935,7 +935,12 @@ export default function Home() {
                 <p className="text-xs text-muted-foreground text-center py-2">لا توجد جلسات بعد</p>
               )}
               <Button size="sm" variant="outline" className="w-full h-8 text-xs gap-1.5 mt-1"
-                onClick={() => createSessionMutation.mutate()}
+                onClick={() => createSessionMutation.mutate(undefined, {
+                  onSuccess: () => {
+                    setSidebarOpen(false);
+                    setStep("links");
+                  }
+                })}
                 disabled={createSessionMutation.isPending}
                 data-testid="sidebar-add-session">
                 {createSessionMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <UserPlus className="w-3 h-3" />}

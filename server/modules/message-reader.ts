@@ -1,14 +1,21 @@
 /**
  * message-reader.ts — Real-time message reader (anti-ban hardened)
  *
+ * Continuous mode:
+ *   - Auto-starts when WhatsApp connects (if _shouldBeRunning = true)
+ *   - Auto-resumes after coordinator releases (join window ends, etc.)
+ *   - Auto-pauses during pipeline execution (releases coordinator briefly)
+ *   - Persists checkpoint (last_read_message_id) in MongoDB
+ *   - Marks pipeline-invalid links as "Ignored" so they don't clog the queue
+ *
  * Safety improvements:
  *   1. Pipeline buffer capped at 30 links — prevents flooding join queue
  *   2. Pipeline skips if join session is already running (coordinator busy)
  *   3. Minimum cooldown between consecutive pipeline runs (10 min)
  *   4. Telemetry integrated: pipeline waits if cooldown is active
  *   5. Hard stop on consecutive handler errors (self-healing)
- *   6. Better logging: shows buffer state and pipeline skip reasons
- *   7. Reader resumes only if WhatsApp is still connected AND idle
+ *   6. Coordinator "released" listener auto-resumes reader
+ *   7. Invalid links marked "Ignored" after WhatsApp validation
  */
 
 import { baileysManager }   from "../baileys-manager.js";
@@ -22,6 +29,7 @@ import { telemetry }        from "./telemetry.js";
 
 export interface ReaderStats {
   status: "running" | "stopped" | "error";
+  continuous: boolean;
   messagesReceived:    number;
   messagesSkippedAds:  number;
   linksFound:          number;
@@ -32,10 +40,12 @@ export interface ReaderStats {
   pipelineRuns?:       number;
   pipelineSkipped?:    number;
   bufferSize?:         number;
+  pausedAt?:           string;
 }
 
 let _stats:   ReaderStats | null = null;
 let _running  = false;
+let _shouldBeRunning = false; // user intent — survives pipeline pauses
 
 // ── Pipeline config ───────────────────────────────────────────────────────────
 const PIPELINE_DEBOUNCE_MS   = 45_000;  // wait 45s of inactivity before running
@@ -105,7 +115,11 @@ async function _runPipeline(): Promise<void> {
     baileysManager.clearMessageHandler();
     coordinator.release();
     await systemState.setActiveFunction(null);
-    if (_stats) { _stats.status = "stopped"; _stats.stoppedAt = new Date().toISOString(); }
+    if (_stats) {
+      _stats.status    = "stopped";
+      _stats.stoppedAt = new Date().toISOString();
+      _stats.pausedAt  = new Date().toISOString();
+    }
     console.log("[Pipeline] Reader paused");
 
     _lastPipelineRun = Date.now();
@@ -113,11 +127,20 @@ async function _runPipeline(): Promise<void> {
     // 2. Check links
     const checkResults = await baileysManager.checkLinksForPipeline(linksToCheck);
 
-    // 3. Filter
+    // 3a. Identify valid groups
     const validGroups = checkResults.filter(
       (r) => r.status === "valid" && r.url.includes("chat.whatsapp.com")
     );
 
+    // 3b. Mark explicitly-invalid links as Ignored so they don't clog Pending queue
+    const validUrls = new Set(validGroups.map((r) => _cleanLink(r.url)));
+    for (const r of checkResults) {
+      if (r.status !== "valid") {
+        await linksRepository.setStatus(_cleanLink(r.url), "Ignored").catch(() => {});
+      }
+    }
+
+    // 3c. Filter into groups / ads categories
     const groups = validGroups
       .filter((r) => {
         if (isAdOnlyMedicalGroup(r.name, r.description)) return false;
@@ -144,7 +167,6 @@ async function _runPipeline(): Promise<void> {
       if (!coordinator.isRunning()) {
         try {
           const { joinManager } = await import("./join-manager.js");
-          // Non-blocking: join manager runs the new safe scheduler independently
           joinManager.start().catch((err: Error) =>
             console.warn("[Pipeline] Join manager deferred:", err.message)
           );
@@ -164,14 +186,18 @@ async function _runPipeline(): Promise<void> {
   } catch (err) {
     console.error("[Pipeline] Error:", (err as Error).message);
   } finally {
-    // 5. Always try to resume reader
-    if (baileysManager.isConnected() && !coordinator.isRunning()) {
+    // 5. Always try to resume reader (if continuous mode or if we want to keep running)
+    if (_shouldBeRunning && baileysManager.isConnected() && !coordinator.isRunning()) {
       try {
         const acquired = await coordinator.acquire("reading");
         if (acquired) {
           await systemState.setActiveFunction("reading");
           _running = true;
-          if (_stats) { _stats.status = "running"; _stats.stoppedAt = undefined; }
+          if (_stats) {
+            _stats.status    = "running";
+            _stats.stoppedAt = undefined;
+            _stats.pausedAt  = undefined;
+          }
           _handlerErrors = 0;
           baileysManager.setMessageHandler(async (msgs: any[]) => {
             for (const msg of msgs) {
@@ -187,17 +213,39 @@ async function _runPipeline(): Promise<void> {
         console.error("[Pipeline] Resume failed:", (err as Error).message);
       }
     } else {
-      console.log("[Pipeline] Reader NOT resumed — WA disconnected or coordinator busy");
+      console.log("[Pipeline] Reader NOT resumed — WA disconnected, coordinator busy, or not continuous");
     }
     _pipelineLock = false;
   }
 }
 
+// ── Auto-resume on coordinator release ────────────────────────────────────────
+// When the join manager (or any other function) finishes, this fires and
+// auto-starts the reader if it's in continuous mode.
+coordinator.on("released", () => {
+  if (!_shouldBeRunning || _running || _pipelineLock) return;
+  // Small delay to let the releasing function fully clean up
+  setTimeout(async () => {
+    if (!_shouldBeRunning || _running || _pipelineLock) return;
+    if (!baileysManager.isConnected()) return;
+    try {
+      await messageReader.start();
+      console.log("[MessageReader] Auto-resumed after coordinator released");
+    } catch {
+      // silently ignore — coordinator may have been re-acquired already
+    }
+  }, 3_000);
+});
+
 export const messageReader = {
   getStats(): ReaderStats | null { return _stats; },
   isRunning(): boolean { return _running; },
+  isContinuous(): boolean { return _shouldBeRunning; },
 
   async start(): Promise<void> {
+    // Guard: already running — no-op
+    if (_running) return;
+
     if (!baileysManager.isConnected()) {
       throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
     }
@@ -208,11 +256,18 @@ export const messageReader = {
       throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
     }
 
-    _running       = true;
-    _pipelineBuffer = [];
-    _handlerErrors  = 0;
+    _shouldBeRunning = true;
+    _running         = true;
+    _pipelineBuffer  = [];
+    _handlerErrors   = 0;
+
+    // Load lastMessageId checkpoint from DB
+    const state = await systemState.get();
+    const lastId = state.last_read_message_id;
+
     _stats = {
       status:              "running",
+      continuous:          true,
       messagesReceived:    0,
       messagesSkippedAds:  0,
       linksFound:          0,
@@ -221,13 +276,12 @@ export const messageReader = {
       pipelineRuns:        0,
       pipelineSkipped:     0,
       bufferSize:          0,
+      lastMessageId:       lastId ?? undefined,
     };
 
     await systemState.setActiveFunction("reading");
-    console.log("[MessageReader] Started — listening for group messages");
-
-    const state = await systemState.get();
-    if (state.last_read_message_id) _stats.lastMessageId = state.last_read_message_id;
+    await systemState.setReaderContinuous(true);
+    console.log(`[MessageReader] Started — continuous mode — checkpoint: ${lastId ?? "none"}`);
 
     baileysManager.setMessageHandler(async (msgs: any[]) => {
       for (const msg of msgs) {
@@ -238,13 +292,31 @@ export const messageReader = {
   },
 
   async stop(): Promise<void> {
+    _shouldBeRunning = false; // user-intent: stop continuous mode
     if (_pipelineDebounce) { clearTimeout(_pipelineDebounce); _pipelineDebounce = null; }
     _running = false;
     baileysManager.clearMessageHandler();
-    if (_stats) { _stats.status = "stopped"; _stats.stoppedAt = new Date().toISOString(); }
+    if (_stats) {
+      _stats.status    = "stopped";
+      _stats.continuous = false;
+      _stats.stoppedAt = new Date().toISOString();
+    }
     coordinator.release();
     await systemState.setActiveFunction(null);
+    await systemState.setReaderContinuous(false);
     console.log(`[MessageReader] Stopped — messages: ${_stats?.messagesReceived ?? 0}, new links: ${_stats?.linksNew ?? 0}`);
+  },
+
+  /** Called on WhatsApp connect — auto-starts reader if continuous mode was saved. */
+  async autoStartIfEnabled(): Promise<void> {
+    try {
+      const enabled = await systemState.getReaderContinuous();
+      if (!enabled || _running || coordinator.isRunning()) return;
+      await messageReader.start();
+      console.log("[MessageReader] Auto-started on WhatsApp connect (continuous mode was enabled)");
+    } catch (err) {
+      console.warn("[MessageReader] Auto-start skipped:", (err as Error).message);
+    }
   },
 
   async _handleMessage(msg: any): Promise<void> {

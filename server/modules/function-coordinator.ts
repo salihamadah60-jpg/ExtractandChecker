@@ -3,7 +3,11 @@
  *
  * Ensures only ONE heavy WhatsApp function runs at a time.
  * During an active join window, ALL other functions are strictly blocked.
+ * Emits "released" event when the lock is freed — used by message-reader
+ * to auto-resume continuous reading.
  */
+
+import { EventEmitter } from "events";
 
 export type BotFunction = "checking" | "joining" | "reading" | "publishing" | "leaving";
 
@@ -14,7 +18,7 @@ export interface FunctionState {
   queuedRequests: BotFunction[];
 }
 
-class FunctionCoordinator {
+class FunctionCoordinator extends EventEmitter {
   private _active:          BotFunction | null = null;
   private _startedAt:       Date        | null = null;
   private _joinWindowActive             = false;
@@ -67,6 +71,8 @@ class FunctionCoordinator {
     this._active          = null;
     this._startedAt       = null;
     this._joinWindowActive = false;
+    // Notify listeners (e.g. message-reader continuous mode)
+    this.emit("released");
   }
 
   getState(): FunctionState {
