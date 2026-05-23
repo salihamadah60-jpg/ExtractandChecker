@@ -59,6 +59,13 @@ let _progress:       JoinProgress | null = null;
 let _stopRequested  = false;
 let _pauseRequested = false;
 
+/**
+ * Set to true when the scheduler is paused automatically due to a WhatsApp
+ * disconnect. Cleared on auto-resume so that a manual pause is never
+ * accidentally overridden by a reconnect event.
+ */
+let _autoPaused = false;
+
 /** In-memory set of invite codes currently being processed — prevents duplicate join attempts on rapid restart */
 const _joiningCache = new Set<string>();
 
@@ -293,6 +300,38 @@ export const joinManager = {
   },
 
   isPaused(): boolean { return _pauseRequested; },
+
+  /**
+   * Called automatically when the active WhatsApp session drops.
+   * Pauses the scheduler only if it is actively running and not already
+   * manually paused — so a manual pause is never silently overridden.
+   */
+  autoPause(): void {
+    if (!_progress) return;
+    const s = _progress.status;
+    if (s === "done" || s === "stopped") return;
+    if (_pauseRequested) return; // already paused (manually) — don't touch it
+    _autoPaused     = true;
+    _pauseRequested = true;
+    if (_progress) _progress.stopReason = "انقطع الاتصال بـ WhatsApp — سيُستأنف تلقائياً عند إعادة الاتصال";
+    console.log("[JoinManager] ⏸ Auto-paused (WhatsApp disconnected)");
+  },
+
+  /**
+   * Called automatically when the active WhatsApp session reconnects.
+   * Only resumes if the scheduler was paused by autoPause() — a manual
+   * pause from the user is left untouched.
+   */
+  autoResume(): void {
+    if (!_autoPaused) return; // we didn't pause it — don't resume it
+    _autoPaused     = false;
+    _pauseRequested = false;
+    if (_progress && _progress.status === "paused") {
+      _progress.status    = "waiting";
+      _progress.stopReason = undefined;
+    }
+    console.log("[JoinManager] ▶ Auto-resumed (WhatsApp reconnected)");
+  },
 
   async start(maxLinks?: number): Promise<void> {
     if (!baileysManager.isConnected()) {
@@ -554,3 +593,20 @@ export const joinManager = {
     }
   },
 };
+
+// ── Auto-pause / auto-resume on WhatsApp connection events ───────────────────
+//
+// baileysManager emits "status" (WAStatus string) whenever the ACTIVE session
+// changes state. We listen here (join-manager already depends on
+// baileysManager, so no circular import is introduced).
+//
+//   disconnect / connecting  →  autoPause()   pauses scheduler instantly
+//   connected                →  autoResume()  resumes only if WE paused it
+//
+baileysManager.on("status", (status: string) => {
+  if (status === "disconnected" || status === "connecting") {
+    joinManager.autoPause();
+  } else if (status === "connected") {
+    joinManager.autoResume();
+  }
+});
