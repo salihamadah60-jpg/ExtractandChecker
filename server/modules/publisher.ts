@@ -1,28 +1,20 @@
 /**
- * publisher.ts — Ad publishing module (anti-ban hardened)
- *
- * Safety layers added:
- *   1. Telemetry tracking on every send — latency spikes trigger cooldowns
- *   2. Proactive cooldown check BEFORE each send (not just after errors)
- *   3. Pause / Resume support (in addition to Stop)
- *   4. Batch rests: after every 10–15 sends, take a 3–7 minute break
- *   5. Coordinator blocks publish entirely during join windows
- *   6. Consecutive failure limit: 5 → stop publish (protects account)
- *   7. Stop-all from WA error: halts everything, not just publishing
+ * publisher.ts — Ad publishing module (per-workspace, anti-ban hardened)
  */
 
 import { getDb }            from "../mongo-auth-state.js";
 import { baileysManager }   from "../baileys-manager.js";
-import { coordinator }      from "./function-coordinator.js";
+import { getCoordinatorFor } from "./function-coordinator.js";
 import { systemState }      from "./system-state.js";
 import { linksRepository }  from "./links-repository.js";
 import { classifyWAError }  from "./wa-error-handler.js";
-import { telemetry }        from "./telemetry.js";
+import { getTelemetryFor }  from "./telemetry.js";
 import { DELAYS, shuffle, randomInt } from "./human-mimicry.js";
 import { publishHistory }   from "./publish-history.js";
 
 export interface AdMessage {
   _id?: string;
+  workspaceId: string;
   text: string;
   createdAt: Date;
   sentCount: number;
@@ -44,288 +36,313 @@ export interface PublishProgress {
 
 const COL = "Keywords_Config";
 const MAX_CONSECUTIVE_FAILURES = 5;
-const BATCH_SIZE_MIN = 10;   // take a long rest after this many sends
+const BATCH_SIZE_MIN = 10;
 const BATCH_SIZE_MAX = 15;
 
-async function col() {
+async function col(workspaceId: string) {
   const db = await getDb();
   return db.collection<AdMessage>(COL);
 }
 
-let _progress:       PublishProgress | null = null;
-let _stopRequested   = false;
-let _pauseRequested  = false;
+// ── Per-workspace state ────────────────────────────────────────────────────────
 
-/** Interruptible sleep — freezes when paused, returns "stopped" if stop requested */
-async function interruptibleSleep(ms: number): Promise<"done" | "stopped"> {
+interface WState {
+  progress:       PublishProgress | null;
+  stopRequested:  boolean;
+  pauseRequested: boolean;
+}
+
+const _stateByWid = new Map<string, WState>();
+
+function _st(wid: string): WState {
+  if (!_stateByWid.has(wid)) {
+    _stateByWid.set(wid, { progress: null, stopRequested: false, pauseRequested: false });
+  }
+  return _stateByWid.get(wid)!;
+}
+
+async function interruptibleSleep(wid: string, ms: number): Promise<"done" | "stopped"> {
+  const s = _st(wid);
   let remaining = ms;
   const TICK = 1_000;
   while (remaining > 0) {
-    if (_stopRequested) return "stopped";
-    if (!_pauseRequested) remaining -= Math.min(TICK, remaining);
-    else if (_progress) _progress.status = "paused";
+    if (s.stopRequested) return "stopped";
+    if (!s.pauseRequested) remaining -= Math.min(TICK, remaining);
+    else if (s.progress) s.progress.status = "paused";
     await new Promise(r => setTimeout(r, Math.min(TICK, remaining > 0 ? remaining : TICK)));
   }
   return "done";
 }
 
-function syncTelemetry() {
-  if (!_progress) return;
-  const r = telemetry.getReport();
-  _progress.telemetry = {
+function syncTelemetry(wid: string): void {
+  const s   = _st(wid);
+  const tel = getTelemetryFor(wid);
+  if (!s.progress) return;
+  const r = tel.getReport();
+  s.progress.telemetry = {
     avgLatencyMs:   r.avgLatencyMs,
     lastLatencyMs:  r.lastLatencyMs,
     cooldownActive: r.cooldownActive,
     warning:        r.warning,
   };
-  _progress.cooldownUntil = r.cooldownActive && r.cooldownUntil
+  s.progress.cooldownUntil = r.cooldownActive && r.cooldownUntil
     ? r.cooldownUntil.toISOString()
     : undefined;
 }
 
-export const publisher = {
-  getProgress(): PublishProgress | null { return _progress; },
+// ── Manager factory ────────────────────────────────────────────────────────────
 
-  requestStop(): void {
-    _stopRequested  = true;
-    _pauseRequested = false;
-    if (_progress && _progress.status !== "done") _progress.status = "stopped";
-  },
+function _createManager(wid: string) {
+  return {
+    getProgress(): PublishProgress | null { return _st(wid).progress; },
 
-  requestPause(): void {
-    if (!_progress || _progress.status === "done" || _progress.status === "stopped") return;
-    _pauseRequested = true;
-  },
+    requestStop(): void {
+      const s = _st(wid);
+      s.stopRequested  = true;
+      s.pauseRequested = false;
+      if (s.progress && s.progress.status !== "done") s.progress.status = "stopped";
+    },
 
-  requestResume(): void {
-    _pauseRequested = false;
-    if (_progress && _progress.status === "paused") _progress.status = "running";
-  },
+    requestPause(): void {
+      const s = _st(wid);
+      if (!s.progress || s.progress.status === "done" || s.progress.status === "stopped") return;
+      s.pauseRequested = true;
+    },
 
-  async addAd(text: string): Promise<string> {
-    const c = await col();
-    const result = await c.insertOne({ text, createdAt: new Date(), sentCount: 0 } as AdMessage);
-    return result.insertedId.toString();
-  },
+    requestResume(): void {
+      const s = _st(wid);
+      s.pauseRequested = false;
+      if (s.progress && s.progress.status === "paused") s.progress.status = "running";
+    },
 
-  async removeAd(id: string): Promise<void> {
-    const { ObjectId } = await import("mongodb");
-    const c = await col();
-    await c.deleteOne({ _id: new ObjectId(id) as any });
-  },
+    async addAd(text: string): Promise<string> {
+      const c = await col(wid);
+      const result = await c.insertOne({ workspaceId: wid, text, createdAt: new Date(), sentCount: 0 } as AdMessage);
+      return result.insertedId.toString();
+    },
 
-  async listAds(): Promise<AdMessage[]> {
-    const c = await col();
-    return c.find({}).sort({ createdAt: 1 }).toArray();
-  },
+    async removeAd(id: string): Promise<void> {
+      const { ObjectId } = await import("mongodb");
+      const c = await col(wid);
+      await c.deleteOne({ workspaceId: wid, _id: new ObjectId(id) as any });
+    },
 
-  async start(onProgress?: (p: PublishProgress) => void): Promise<void> {
-    if (!baileysManager.isConnected()) {
-      throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
-    }
-    if (coordinator.isJoinWindowActive()) {
-      throw new Error("⛔ نافذة انضمام نشطة — لا يمكن النشر حالياً. انتظر انتهاء النافذة.");
-    }
+    async listAds(): Promise<AdMessage[]> {
+      const c = await col(wid);
+      return c.find({ workspaceId: wid }).sort({ createdAt: 1 }).toArray();
+    },
 
-    const acquired = await coordinator.acquire("publishing");
-    if (!acquired) {
-      const active = coordinator.getActive();
-      throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
-    }
+    async start(onProgress?: (p: PublishProgress) => void): Promise<void> {
+      const coord = getCoordinatorFor(wid);
+      const tel   = getTelemetryFor(wid);
 
-    _stopRequested  = false;
-    _pauseRequested = false;
+      if (!baileysManager.isConnectedForWorkspace(wid)) {
+        throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
+      }
+      if (coord.isJoinWindowActive()) {
+        throw new Error("⛔ نافذة انضمام نشطة — لا يمكن النشر حالياً.");
+      }
 
-    try {
-      await systemState.setActiveFunction("publishing");
+      const acquired = await coord.acquire("publishing");
+      if (!acquired) {
+        const active = coord.getActive();
+        throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
+      }
 
-      const ads = await publisher.listAds();
-      if (!ads.length) throw new Error("لا توجد إعلانات محفوظة. أضف إعلاناً أولاً.");
+      const s = _st(wid);
+      s.stopRequested  = false;
+      s.pauseRequested = false;
 
-      const currentPhone = baileysManager.getConnectedPhone() ?? undefined;
-      console.log(`[Publisher] Starting — phone: ${currentPhone ?? "unknown"}`);
+      try {
+        await systemState.setActiveFunction(wid, "publishing");
 
-      const joinedGroups = await linksRepository.findJoined(currentPhone);
-      if (!joinedGroups.length) throw new Error("لا توجد مجموعات منضم إليها بهذا الحساب للنشر.");
+        const self = _createManager(wid);
+        const ads  = await self.listAds();
+        if (!ads.length) throw new Error("لا توجد إعلانات محفوظة. أضف إعلاناً أولاً.");
 
-      const state = await systemState.get();
-      let adIdx = ((state.last_published_ad_index ?? -1) + 1) % ads.length;
+        const currentPhone = baileysManager.getConnectedPhoneForWorkspace(wid) ?? undefined;
+        console.log(`[Publisher:${wid}] Starting — phone: ${currentPhone ?? "unknown"}`);
 
-      const shuffledGroups = shuffle(joinedGroups);
-      const batchLimit = randomInt(BATCH_SIZE_MIN, BATCH_SIZE_MAX);
+        const joinedGroups = await linksRepository.findJoined(wid, currentPhone);
+        if (!joinedGroups.length) throw new Error("لا توجد مجموعات منضم إليها لهذه المساحة.");
 
-      _progress = {
-        status:    "running",
-        total:     shuffledGroups.length,
-        processed: 0,
-        sent:      0,
-        failed:    0,
-        startedAt: new Date().toISOString(),
-      };
+        const state = await systemState.get(wid);
+        let adIdx = ((state.last_published_ad_index ?? -1) + 1) % ads.length;
 
-      onProgress?.(_progress);
+        const shuffledGroups = shuffle(joinedGroups);
+        const batchLimit = randomInt(BATCH_SIZE_MIN, BATCH_SIZE_MAX);
 
-      let consecutiveFailures = 0;
-      let sendsSinceRest      = 0;
+        s.progress = {
+          status:    "running",
+          total:     shuffledGroups.length,
+          processed: 0,
+          sent:      0,
+          failed:    0,
+          startedAt: new Date().toISOString(),
+        };
 
-      for (const group of shuffledGroups) {
-        if (_stopRequested || _progress.status === "stopped") {
-          _progress.status = "stopped"; break;
-        }
+        onProgress?.(s.progress);
 
-        // ── Pause check ──────────────────────────────────────────────────
-        while (_pauseRequested && !_stopRequested) {
-          _progress.status = "paused";
-          await new Promise(r => setTimeout(r, 1000));
-        }
-        if (_stopRequested) { _progress.status = "stopped"; break; }
-        if (_progress.status === "paused") _progress.status = "running";
+        let consecutiveFailures = 0;
+        let sendsSinceRest      = 0;
 
-        if (!baileysManager.isConnected()) {
-          _progress.status = "stopped"; break;
-        }
+        for (const group of shuffledGroups) {
+          if (s.stopRequested || s.progress.status === "stopped") {
+            s.progress.status = "stopped"; break;
+          }
 
-        // ── User-activity guard ───────────────────────────────────────────
-        if (baileysManager.isUserActive(90_000)) {
-          console.log("[Publisher] 👤 User active — pausing 2 min");
-          if (_progress) _progress.status = "cooldown";
-          const outcome = await interruptibleSleep(2 * 60_000);
-          if (outcome === "stopped") { _progress.status = "stopped"; break; }
-          if (_progress) _progress.status = "running";
-        }
+          while (s.pauseRequested && !s.stopRequested) {
+            s.progress.status = "paused";
+            await new Promise(r => setTimeout(r, 1000));
+          }
+          if (s.stopRequested) { s.progress.status = "stopped"; break; }
+          if (s.progress.status === "paused") s.progress.status = "running";
 
-        // ── Proactive telemetry cooldown check ───────────────────────────
-        if (telemetry.isCoolingDown()) {
-          const coolMs = telemetry.cooldownRemaining();
-          console.log(`[Publisher] Telemetry cooldown — ${Math.round(coolMs / 60_000)} min`);
-          syncTelemetry();
-          if (_progress) _progress.status = "cooldown";
-          const outcome = await interruptibleSleep(coolMs);
-          if (outcome === "stopped") { _progress.status = "stopped"; break; }
-          if (_progress) _progress.status = "running";
-        }
+          if (!baileysManager.isConnectedForWorkspace(wid)) {
+            s.progress.status = "stopped"; break;
+          }
 
-        // ── Batch rest ───────────────────────────────────────────────────
-        if (sendsSinceRest >= batchLimit) {
-          const restMs = randomInt(3 * 60_000, 7 * 60_000); // 3–7 min
-          console.log(`[Publisher] Batch rest after ${sendsSinceRest} sends — ${Math.round(restMs / 60_000)} min`);
-          const outcome = await interruptibleSleep(restMs);
-          if (outcome === "stopped") { _progress.status = "stopped"; break; }
-          sendsSinceRest = 0;
-        }
+          if (baileysManager.isUserActive(90_000)) {
+            console.log(`[Publisher:${wid}] 👤 User active — pausing 2 min`);
+            if (s.progress) s.progress.status = "cooldown";
+            const outcome = await interruptibleSleep(wid, 2 * 60_000);
+            if (outcome === "stopped") { s.progress.status = "stopped"; break; }
+            if (s.progress) s.progress.status = "running";
+          }
 
-        _progress.currentGroup = group.url;
-        onProgress?.(_progress);
+          if (tel.isCoolingDown()) {
+            const coolMs = tel.cooldownRemaining();
+            console.log(`[Publisher:${wid}] Telemetry cooldown — ${Math.round(coolMs / 60_000)} min`);
+            syncTelemetry(wid);
+            if (s.progress) s.progress.status = "cooldown";
+            const outcome = await interruptibleSleep(wid, coolMs);
+            if (outcome === "stopped") { s.progress.status = "stopped"; break; }
+            if (s.progress) s.progress.status = "running";
+          }
 
-        const db  = await getDb();
-        const rec = await db.collection("Links_Repository").findOne({ url: group.url }) as any;
-        const jid = rec?.groupJid;
+          if (sendsSinceRest >= batchLimit) {
+            const restMs = randomInt(3 * 60_000, 7 * 60_000);
+            console.log(`[Publisher:${wid}] Batch rest after ${sendsSinceRest} sends — ${Math.round(restMs / 60_000)} min`);
+            const outcome = await interruptibleSleep(wid, restMs);
+            if (outcome === "stopped") { s.progress.status = "stopped"; break; }
+            sendsSinceRest = 0;
+          }
 
-        if (!jid) {
-          console.warn(`[Publisher] No groupJid for ${group.url} — skipping`);
-          _progress.processed++;
-          continue;
-        }
+          s.progress.currentGroup = group.url;
+          onProgress?.(s.progress);
 
-        // Dynamic announce check: skip groups where only admins can post
-        try {
-          const meta = await baileysManager.getGroupMetadata(jid);
-          if (meta?.announce === true) {
-            console.log(`[Publisher] ⏭ Admins-only (announce:true) — skipping: ${group.url}`);
-            _progress.processed++;
+          const db  = await getDb();
+          const rec = await db.collection("Links_Repository").findOne({ workspaceId: wid, url: group.url }) as any;
+          const jid = rec?.groupJid;
+
+          if (!jid) {
+            console.warn(`[Publisher:${wid}] No groupJid for ${group.url} — skipping`);
+            s.progress.processed++;
             continue;
           }
-        } catch { /* ignore metadata errors — attempt send anyway */ }
 
-        const ad  = ads[adIdx % ads.length];
-        adIdx     = (adIdx + 1) % ads.length;
+          try {
+            const meta = await baileysManager.getGroupMetadataForWorkspace(jid, wid);
+            if (meta?.announce === true) {
+              console.log(`[Publisher:${wid}] ⏭ Admins-only — skipping: ${group.url}`);
+              s.progress.processed++;
+              continue;
+            }
+          } catch { /* ignore */ }
 
-        const t0 = Date.now();
-        try {
-          await DELAYS.typingBeforeSend();
-          await baileysManager.sendTextMessage(jid, ad.text);
+          const ad  = ads[adIdx % ads.length];
+          adIdx     = (adIdx + 1) % ads.length;
 
-          const latency = Date.now() - t0;
-          telemetry.record(latency);
-          syncTelemetry();
+          const t0 = Date.now();
+          try {
+            await DELAYS.typingBeforeSend();
+            await baileysManager.sendTextMessageForWorkspace(jid, ad.text, wid);
 
-          const c = await col();
-          await c.updateOne(
-            { _id: (ad as any)._id },
-            { $inc: { sentCount: 1 }, $set: { lastSentAt: new Date() } }
-          );
-          await systemState.update({ last_published_ad_index: adIdx });
+            const latency = Date.now() - t0;
+            tel.record(latency);
+            syncTelemetry(wid);
 
-          _progress.sent++;
-          consecutiveFailures = 0;
-          sendsSinceRest++;
-          console.log(`[Publisher] ✓ Sent (${latency}ms) to ${group.url}: "${ad.text.slice(0, 40)}..."`);
+            const c = await col(wid);
+            await c.updateOne(
+              { workspaceId: wid, _id: (ad as any)._id },
+              { $inc: { sentCount: 1 }, $set: { lastSentAt: new Date() } }
+            );
+            await systemState.update(wid, { last_published_ad_index: adIdx });
 
-        } catch (err: unknown) {
-          const classified = classifyWAError(err, consecutiveFailures);
-          consecutiveFailures++;
-          syncTelemetry();
+            s.progress.sent++;
+            consecutiveFailures = 0;
+            sendsSinceRest++;
+            console.log(`[Publisher:${wid}] ✓ Sent (${latency}ms) to ${group.url}`);
 
-          if (classified.action === "stop_all") {
-            _progress.status = "stopped";
-            telemetry.triggerEmergency(classified.reason, 30 * 60_000);
-            console.error(`[Publisher] 🚨 CRITICAL stop_all: ${classified.reason}`);
-            break;
+          } catch (err: unknown) {
+            const classified = classifyWAError(err, consecutiveFailures);
+            consecutiveFailures++;
+            syncTelemetry(wid);
+
+            if (classified.action === "stop_all") {
+              s.progress.status = "stopped";
+              tel.triggerEmergency(classified.reason, 30 * 60_000);
+              break;
+            }
+
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              s.progress.status = "stopped";
+              console.error(`[Publisher:${wid}] Too many consecutive failures — stopping`);
+              break;
+            }
+
+            s.progress.failed++;
+            console.warn(`[Publisher:${wid}] ✗ ${classified.reason} | ${group.url}`);
+
+            if (classified.action === "wait_and_retry") {
+              const waitMs = classified.waitMs ?? 60_000;
+              const outcome = await interruptibleSleep(wid, waitMs);
+              if (outcome === "stopped") { s.progress.status = "stopped"; break; }
+            }
           }
 
-          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            _progress.status = "stopped";
-            console.error(`[Publisher] Too many consecutive failures (${consecutiveFailures}) — stopping`);
-            break;
-          }
+          s.progress.processed++;
+          onProgress?.(s.progress);
 
-          _progress.failed++;
-          console.warn(`[Publisher] ✗ ${classified.reason} | ${group.url}`);
-
-          if (classified.action === "wait_and_retry") {
-            const waitMs = classified.waitMs ?? 60_000;
-            console.log(`[Publisher] Rate-limit wait ${Math.round(waitMs / 1000)}s`);
-            const outcome = await interruptibleSleep(waitMs);
-            if (outcome === "stopped") { _progress.status = "stopped"; break; }
+          if (s.progress.processed < s.progress.total && s.progress.status === "running") {
+            const outcome = await interruptibleSleep(wid, randomInt(10_000, 30_000));
+            if (outcome === "stopped") { s.progress.status = "stopped"; break; }
           }
         }
 
-        _progress.processed++;
-        onProgress?.(_progress);
-
-        // ── Normal between-group delay ───────────────────────────────────
-        if (_progress.processed < _progress.total && _progress.status === "running") {
-          const outcome = await interruptibleSleep(
-            randomInt(10_000, 30_000) // 10–30 s between groups
-          );
-          if (outcome === "stopped") { _progress.status = "stopped"; break; }
+        if (s.progress.status === "running") {
+          s.progress.status      = "done";
+          s.progress.completedAt = new Date().toISOString();
         }
-      }
 
-      if (_progress.status === "running") {
-        _progress.status      = "done";
-        _progress.completedAt = new Date().toISOString();
-      }
+        console.log(`[Publisher:${wid}] Done — sent: ${s.progress.sent}, failed: ${s.progress.failed}`);
 
-      console.log(`[Publisher] Done — sent: ${_progress.sent}, failed: ${_progress.failed}`);
-
-      // ── Persist session to history ──────────────────────────────────────
-      if (_progress.completedAt) {
-        void publishHistory.save({
-          startedAt:   _progress.startedAt,
-          completedAt: _progress.completedAt,
-          status:      _progress.status as "done" | "stopped" | "error",
-          total:       _progress.total,
-          processed:   _progress.processed,
-          sent:        _progress.sent,
-          failed:      _progress.failed,
-          phone:       baileysManager.getConnectedPhone() ?? undefined,
-        });
+        if (s.progress.completedAt) {
+          void publishHistory.save({
+            startedAt:   s.progress.startedAt,
+            completedAt: s.progress.completedAt,
+            status:      s.progress.status as "done" | "stopped" | "error",
+            total:       s.progress.total,
+            processed:   s.progress.processed,
+            sent:        s.progress.sent,
+            failed:      s.progress.failed,
+            phone:       baileysManager.getConnectedPhoneForWorkspace(wid) ?? undefined,
+          });
+        }
+      } finally {
+        if (s.progress) s.progress.currentGroup = undefined;
+        coord.release();
+        await systemState.setActiveFunction(wid, null);
       }
-    } finally {
-      if (_progress) _progress.currentGroup = undefined;
-      coordinator.release();
-      await systemState.setActiveFunction(null);
-    }
-  },
-};
+    },
+  };
+}
+
+const _managerCache = new Map<string, ReturnType<typeof _createManager>>();
+
+export function getPublisherFor(workspaceId: string): ReturnType<typeof _createManager> {
+  if (!_managerCache.has(workspaceId)) {
+    _managerCache.set(workspaceId, _createManager(workspaceId));
+  }
+  return _managerCache.get(workspaceId)!;
+}

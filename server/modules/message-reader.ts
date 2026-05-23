@@ -1,31 +1,18 @@
 /**
- * message-reader.ts — Real-time message reader (anti-ban hardened)
+ * message-reader.ts — Real-time message reader (per-workspace, anti-ban hardened)
  *
- * Continuous mode:
- *   - Auto-starts when WhatsApp connects (if _shouldBeRunning = true)
- *   - Auto-resumes after coordinator releases (join window ends, etc.)
- *   - Auto-pauses during pipeline execution (releases coordinator briefly)
- *   - Persists checkpoint (last_read_message_id) in MongoDB
- *   - Marks pipeline-invalid links as "Ignored" so they don't clog the queue
- *
- * Safety improvements:
- *   1. Pipeline buffer capped at 30 links — prevents flooding join queue
- *   2. Pipeline skips if join session is already running (coordinator busy)
- *   3. Minimum cooldown between consecutive pipeline runs (10 min)
- *   4. Telemetry integrated: pipeline waits if cooldown is active
- *   5. Hard stop on consecutive handler errors (self-healing)
- *   6. Coordinator "released" listener auto-resumes reader
- *   7. Invalid links marked "Ignored" after WhatsApp validation
+ * All state is isolated per-workspace via Maps.
+ * Export: getMessageReaderFor(workspaceId) → MessageReaderAPI
  */
 
-import { baileysManager }   from "../baileys-manager.js";
-import { coordinator }      from "./function-coordinator.js";
-import { systemState }      from "./system-state.js";
-import { linksRepository }  from "./links-repository.js";
-import { classifyMessage }  from "./nlp-classifier.js";
+import { baileysManager }    from "../baileys-manager.js";
+import { getCoordinatorFor } from "./function-coordinator.js";
+import { getTelemetryFor }   from "./telemetry.js";
+import { systemState }       from "./system-state.js";
+import { linksRepository }   from "./links-repository.js";
+import { classifyMessage }   from "./nlp-classifier.js";
 import { extractGroupLinks } from "./link-filter.js";
 import { isAdOnlyMedicalGroup } from "../link-store.js";
-import { telemetry }        from "./telemetry.js";
 
 export interface ReaderStats {
   status: "running" | "stopped" | "error";
@@ -43,104 +30,121 @@ export interface ReaderStats {
   pausedAt?:           string;
 }
 
-let _stats:   ReaderStats | null = null;
-let _running  = false;
-let _shouldBeRunning = false; // user intent — survives pipeline pauses
+// ── Per-workspace state ────────────────────────────────────────────────────────
 
-// ── Pipeline config ───────────────────────────────────────────────────────────
-const PIPELINE_DEBOUNCE_MS   = 45_000;  // wait 45s of inactivity before running
-const PIPELINE_BUFFER_CAP    = 30;      // max queued links before forced flush
-const PIPELINE_MIN_INTERVAL  = 10 * 60_000; // min 10 min between pipeline runs
-const MAX_HANDLER_ERRORS     = 10;      // stop reader after this many consecutive errors
+const PIPELINE_DEBOUNCE_MS  = 45_000;
+const PIPELINE_BUFFER_CAP   = 30;
+const PIPELINE_MIN_INTERVAL = 10 * 60_000;
+const MAX_HANDLER_ERRORS    = 10;
 
-let _pipelineBuffer:   string[] = [];
-let _pipelineLock      = false;
-let _pipelineDebounce: ReturnType<typeof setTimeout> | null = null;
-let _lastPipelineRun   = 0;
-let _handlerErrors     = 0;
+interface WState {
+  stats:              ReaderStats | null;
+  running:            boolean;
+  shouldBeRunning:    boolean;
+  pipelineBuffer:     string[];
+  pipelineLock:       boolean;
+  pipelineDebounce:   ReturnType<typeof setTimeout> | null;
+  lastPipelineRun:    number;
+  handlerErrors:      number;
+}
+
+const _stateByWid = new Map<string, WState>();
+
+function _st(wid: string): WState {
+  if (!_stateByWid.has(wid)) {
+    _stateByWid.set(wid, {
+      stats:              null,
+      running:            false,
+      shouldBeRunning:    false,
+      pipelineBuffer:     [],
+      pipelineLock:       false,
+      pipelineDebounce:   null,
+      lastPipelineRun:    0,
+      handlerErrors:      0,
+    });
+  }
+  return _stateByWid.get(wid)!;
+}
 
 function _cleanLink(link: string): string {
   try { const u = new URL(link.trim()); return `${u.origin}${u.pathname}`; }
   catch { return link.trim(); }
 }
 
-function _schedulePipeline() {
-  if (_pipelineDebounce) clearTimeout(_pipelineDebounce);
-  _pipelineDebounce = setTimeout(() => _runPipeline(), PIPELINE_DEBOUNCE_MS);
+// ── Pipeline (per-workspace) ───────────────────────────────────────────────────
+
+function _schedulePipeline(wid: string): void {
+  const s = _st(wid);
+  if (s.pipelineDebounce) clearTimeout(s.pipelineDebounce);
+  s.pipelineDebounce = setTimeout(() => _runPipeline(wid), PIPELINE_DEBOUNCE_MS);
 }
 
-/** Run the sequential pipeline: pause reader → check → filter → save → join → resume */
-async function _runPipeline(): Promise<void> {
-  _pipelineDebounce = null;
-  if (_pipelineLock || _pipelineBuffer.length === 0 || !_running) return;
+async function _runPipeline(wid: string): Promise<void> {
+  const s    = _st(wid);
+  const coord = getCoordinatorFor(wid);
+  const tel  = getTelemetryFor(wid);
 
-  // ── Guard: skip if coordinator is busy (join session running) ─────────────
-  if (coordinator.isRunning()) {
-    console.log(`[Pipeline] Coordinator busy (${coordinator.getActive()}) — pipeline deferred`);
-    if (_stats) _stats.pipelineSkipped = (_stats.pipelineSkipped ?? 0) + 1;
-    // Reschedule — try again in 5 minutes
-    _pipelineDebounce = setTimeout(() => _runPipeline(), 5 * 60_000);
+  s.pipelineDebounce = null;
+  if (s.pipelineLock || s.pipelineBuffer.length === 0 || !s.running) return;
+
+  if (coord.isRunning()) {
+    console.log(`[Pipeline:${wid}] Coordinator busy (${coord.getActive()}) — deferred`);
+    if (s.stats) s.stats.pipelineSkipped = (s.stats.pipelineSkipped ?? 0) + 1;
+    s.pipelineDebounce = setTimeout(() => _runPipeline(wid), 5 * 60_000);
     return;
   }
 
-  // ── Guard: minimum interval between pipeline runs ─────────────────────────
-  const elapsed = Date.now() - _lastPipelineRun;
-  if (_lastPipelineRun > 0 && elapsed < PIPELINE_MIN_INTERVAL) {
+  const elapsed = Date.now() - s.lastPipelineRun;
+  if (s.lastPipelineRun > 0 && elapsed < PIPELINE_MIN_INTERVAL) {
     const wait = PIPELINE_MIN_INTERVAL - elapsed;
-    console.log(`[Pipeline] Too soon since last run (${Math.round(elapsed / 60_000)} min ago) — waiting ${Math.round(wait / 60_000)} min`);
-    if (_stats) _stats.pipelineSkipped = (_stats.pipelineSkipped ?? 0) + 1;
-    _pipelineDebounce = setTimeout(() => _runPipeline(), wait);
+    console.log(`[Pipeline:${wid}] Too soon (${Math.round(elapsed / 60_000)} min ago) — waiting ${Math.round(wait / 60_000)} min`);
+    if (s.stats) s.stats.pipelineSkipped = (s.stats.pipelineSkipped ?? 0) + 1;
+    s.pipelineDebounce = setTimeout(() => _runPipeline(wid), wait);
     return;
   }
 
-  // ── Guard: telemetry cooldown ─────────────────────────────────────────────
-  if (telemetry.isCoolingDown()) {
-    const wait = telemetry.cooldownRemaining();
-    console.log(`[Pipeline] Telemetry cooldown — deferring ${Math.round(wait / 60_000)} min`);
-    _pipelineDebounce = setTimeout(() => _runPipeline(), wait + 5000);
+  if (tel.isCoolingDown()) {
+    const wait = tel.cooldownRemaining();
+    console.log(`[Pipeline:${wid}] Telemetry cooldown — deferring ${Math.round(wait / 60_000)} min`);
+    s.pipelineDebounce = setTimeout(() => _runPipeline(wid), wait + 5000);
     return;
   }
 
-  _pipelineLock = true;
+  s.pipelineLock = true;
 
-  const linksToCheck = [..._pipelineBuffer];
-  _pipelineBuffer    = [];
-  if (_stats) _stats.bufferSize = 0;
+  const linksToCheck = [...s.pipelineBuffer];
+  s.pipelineBuffer   = [];
+  if (s.stats) s.stats.bufferSize = 0;
 
-  console.log(`[Pipeline] Starting — ${linksToCheck.length} buffered links`);
+  console.log(`[Pipeline:${wid}] Starting — ${linksToCheck.length} buffered links`);
 
   try {
-    // 1. Pause reader — release coordinator
-    _running = false;
-    baileysManager.clearMessageHandler();
-    coordinator.release();
-    await systemState.setActiveFunction(null);
-    if (_stats) {
-      _stats.status    = "stopped";
-      _stats.stoppedAt = new Date().toISOString();
-      _stats.pausedAt  = new Date().toISOString();
-    }
-    console.log("[Pipeline] Reader paused");
+    // 1. Pause reader
+    s.running = false;
+    baileysManager.clearMessageHandlerForWorkspace(wid);
+    coord.release();
+    await systemState.setActiveFunction(wid, null);
+    if (s.stats) { s.stats.status = "stopped"; s.stats.stoppedAt = new Date().toISOString(); s.stats.pausedAt = new Date().toISOString(); }
+    console.log(`[Pipeline:${wid}] Reader paused`);
 
-    _lastPipelineRun = Date.now();
+    s.lastPipelineRun = Date.now();
 
     // 2. Check links
-    const checkResults = await baileysManager.checkLinksForPipeline(linksToCheck);
+    const checkResults = await baileysManager.checkLinksForPipelineForWorkspace(linksToCheck, wid);
 
-    // 3a. Identify valid groups
+    // 3a. Valid groups
     const validGroups = checkResults.filter(
       (r) => r.status === "valid" && r.url.includes("chat.whatsapp.com")
     );
 
-    // 3b. Mark explicitly-invalid links as Ignored so they don't clog Pending queue
-    const validUrls = new Set(validGroups.map((r) => _cleanLink(r.url)));
+    // 3b. Mark invalid as Ignored
     for (const r of checkResults) {
       if (r.status !== "valid") {
-        await linksRepository.setStatus(_cleanLink(r.url), "Ignored").catch(() => {});
+        await linksRepository.setStatus(wid, _cleanLink(r.url), "Ignored").catch(() => {});
       }
     }
 
-    // 3c. Filter into groups / ads categories
+    // 3c. Filter
     const groups = validGroups
       .filter((r) => {
         if (isAdOnlyMedicalGroup(r.name, r.description)) return false;
@@ -158,225 +162,230 @@ async function _runPipeline(): Promise<void> {
       })
       .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
 
-    // 4. Save & trigger join
+    // 4. Save + trigger join
     if (groups.length + ads.length > 0) {
-      await linksRepository.saveFilteredLinks(groups, ads);
-      console.log(`[Pipeline] Saved ${groups.length} groups + ${ads.length} ads`);
+      await linksRepository.saveFilteredLinks(wid, groups, ads);
+      console.log(`[Pipeline:${wid}] Saved ${groups.length} groups + ${ads.length} ads`);
 
-      // Only trigger join if coordinator is now free
-      if (!coordinator.isRunning()) {
+      if (!coord.isRunning()) {
         try {
-          const { joinManager } = await import("./join-manager.js");
-          joinManager.start().catch((err: Error) =>
-            console.warn("[Pipeline] Join manager deferred:", err.message)
+          const { getJoinManagerFor } = await import("./join-manager.js");
+          getJoinManagerFor(wid).start().catch((err: Error) =>
+            console.warn(`[Pipeline:${wid}] Join deferred:`, err.message)
           );
-          console.log("[Pipeline] Join manager triggered (will run with safe scheduler)");
         } catch (err) {
-          console.warn("[Pipeline] Join manager skip:", (err as Error).message);
+          console.warn(`[Pipeline:${wid}] Join skip:`, (err as Error).message);
         }
-      } else {
-        console.log("[Pipeline] Coordinator busy — join will start when free");
       }
     } else {
-      console.log("[Pipeline] No valid groups — skipping join");
+      console.log(`[Pipeline:${wid}] No valid groups — skipping join`);
     }
 
-    if (_stats) _stats.pipelineRuns = (_stats.pipelineRuns ?? 0) + 1;
+    if (s.stats) s.stats.pipelineRuns = (s.stats.pipelineRuns ?? 0) + 1;
 
   } catch (err) {
-    console.error("[Pipeline] Error:", (err as Error).message);
+    console.error(`[Pipeline:${wid}] Error:`, (err as Error).message);
   } finally {
-    // 5. Always try to resume reader (if continuous mode or if we want to keep running)
-    if (_shouldBeRunning && baileysManager.isConnected() && !coordinator.isRunning()) {
+    // 5. Resume reader if still wanted
+    if (s.shouldBeRunning && baileysManager.isConnectedForWorkspace(wid) && !coord.isRunning()) {
       try {
-        const acquired = await coordinator.acquire("reading");
+        const acquired = await coord.acquire("reading");
         if (acquired) {
-          await systemState.setActiveFunction("reading");
-          _running = true;
-          if (_stats) {
-            _stats.status    = "running";
-            _stats.stoppedAt = undefined;
-            _stats.pausedAt  = undefined;
-          }
-          _handlerErrors = 0;
-          baileysManager.setMessageHandler(async (msgs: any[]) => {
+          await systemState.setActiveFunction(wid, "reading");
+          s.running = true;
+          if (s.stats) { s.stats.status = "running"; s.stats.stoppedAt = undefined; s.stats.pausedAt = undefined; }
+          s.handlerErrors = 0;
+
+          const self = getMessageReaderFor(wid);
+          baileysManager.setMessageHandlerForWorkspace(wid, async (msgs: any[]) => {
             for (const msg of msgs) {
-              if (!_running) break;
-              await messageReader._handleMessage(msg);
+              if (!s.running) break;
+              await self._handleMessage(msg);
             }
           });
-          console.log("[Pipeline] Reader resumed");
+          console.log(`[Pipeline:${wid}] Reader resumed`);
         } else {
-          console.warn("[Pipeline] Cannot re-acquire coordinator — reader stays paused");
+          console.warn(`[Pipeline:${wid}] Cannot re-acquire coordinator — reader stays paused`);
         }
       } catch (err) {
-        console.error("[Pipeline] Resume failed:", (err as Error).message);
+        console.error(`[Pipeline:${wid}] Resume failed:`, (err as Error).message);
       }
     } else {
-      console.log("[Pipeline] Reader NOT resumed — WA disconnected, coordinator busy, or not continuous");
+      console.log(`[Pipeline:${wid}] Reader NOT resumed — WA disconnected, coordinator busy, or not continuous`);
     }
-    _pipelineLock = false;
+    s.pipelineLock = false;
   }
 }
 
-// ── Auto-resume on coordinator release ────────────────────────────────────────
-// When the join manager (or any other function) finishes, this fires and
-// auto-starts the reader if it's in continuous mode.
-coordinator.on("released", () => {
-  if (!_shouldBeRunning || _running || _pipelineLock) return;
-  // Small delay to let the releasing function fully clean up
-  setTimeout(async () => {
-    if (!_shouldBeRunning || _running || _pipelineLock) return;
-    if (!baileysManager.isConnected()) return;
-    try {
-      await messageReader.start();
-      console.log("[MessageReader] Auto-resumed after coordinator released");
-    } catch {
-      // silently ignore — coordinator may have been re-acquired already
-    }
-  }, 3_000);
-});
+// ── Manager factory ────────────────────────────────────────────────────────────
 
-export const messageReader = {
-  getStats(): ReaderStats | null { return _stats; },
-  isRunning(): boolean { return _running; },
-  isContinuous(): boolean { return _shouldBeRunning; },
+const _listenerRegistered = new Set<string>();
 
-  async start(): Promise<void> {
-    // Guard: already running — no-op
-    if (_running) return;
-
-    if (!baileysManager.isConnected()) {
-      throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
-    }
-
-    const acquired = await coordinator.acquire("reading");
-    if (!acquired) {
-      const active = coordinator.getActive();
-      throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
-    }
-
-    _shouldBeRunning = true;
-    _running         = true;
-    _pipelineBuffer  = [];
-    _handlerErrors   = 0;
-
-    // Load lastMessageId checkpoint from DB
-    const state = await systemState.get();
-    const lastId = state.last_read_message_id;
-
-    _stats = {
-      status:              "running",
-      continuous:          true,
-      messagesReceived:    0,
-      messagesSkippedAds:  0,
-      linksFound:          0,
-      linksNew:            0,
-      startedAt:           new Date().toISOString(),
-      pipelineRuns:        0,
-      pipelineSkipped:     0,
-      bufferSize:          0,
-      lastMessageId:       lastId ?? undefined,
-    };
-
-    await systemState.setActiveFunction("reading");
-    await systemState.setReaderContinuous(true);
-    console.log(`[MessageReader] Started — continuous mode — checkpoint: ${lastId ?? "none"}`);
-
-    baileysManager.setMessageHandler(async (msgs: any[]) => {
-      for (const msg of msgs) {
-        if (!_running) break;
-        await messageReader._handleMessage(msg);
-      }
+function _createManager(wid: string) {
+  // Register coordinator "released" listener once per workspace
+  if (!_listenerRegistered.has(wid)) {
+    _listenerRegistered.add(wid);
+    getCoordinatorFor(wid).on("released", () => {
+      const s = _st(wid);
+      if (!s.shouldBeRunning || s.running || s.pipelineLock) return;
+      setTimeout(async () => {
+        const s2 = _st(wid);
+        if (!s2.shouldBeRunning || s2.running || s2.pipelineLock) return;
+        if (!baileysManager.isConnectedForWorkspace(wid)) return;
+        try {
+          await getMessageReaderFor(wid).start();
+          console.log(`[MessageReader:${wid}] Auto-resumed after coordinator released`);
+        } catch { /* coordinator may have been re-acquired already */ }
+      }, 3_000);
     });
-  },
+  }
 
-  async stop(): Promise<void> {
-    _shouldBeRunning = false; // user-intent: stop continuous mode
-    if (_pipelineDebounce) { clearTimeout(_pipelineDebounce); _pipelineDebounce = null; }
-    _running = false;
-    baileysManager.clearMessageHandler();
-    if (_stats) {
-      _stats.status    = "stopped";
-      _stats.continuous = false;
-      _stats.stoppedAt = new Date().toISOString();
-    }
-    coordinator.release();
-    await systemState.setActiveFunction(null);
-    await systemState.setReaderContinuous(false);
-    console.log(`[MessageReader] Stopped — messages: ${_stats?.messagesReceived ?? 0}, new links: ${_stats?.linksNew ?? 0}`);
-  },
+  return {
+    getStats(): ReaderStats | null { return _st(wid).stats; },
+    isRunning(): boolean { return _st(wid).running; },
+    isContinuous(): boolean { return _st(wid).shouldBeRunning; },
 
-  /** Called on WhatsApp connect — auto-starts reader if continuous mode was saved. */
-  async autoStartIfEnabled(): Promise<void> {
-    try {
-      const enabled = await systemState.getReaderContinuous();
-      if (!enabled || _running || coordinator.isRunning()) return;
-      await messageReader.start();
-      console.log("[MessageReader] Auto-started on WhatsApp connect (continuous mode was enabled)");
-    } catch (err) {
-      console.warn("[MessageReader] Auto-start skipped:", (err as Error).message);
-    }
-  },
+    async start(): Promise<void> {
+      const s     = _st(wid);
+      if (s.running) return;
 
-  async _handleMessage(msg: any): Promise<void> {
-    try {
-      const jid: string = msg.key?.remoteJid ?? "";
-      if (!jid.endsWith("@g.us")) return;
-
-      const text: string =
-        msg.message?.conversation ??
-        msg.message?.extendedTextMessage?.text ??
-        msg.message?.imageMessage?.caption ??
-        msg.message?.videoMessage?.caption ?? "";
-
-      if (!text.trim()) return;
-
-      if (_stats) _stats.messagesReceived++;
-
-      const embeddedLinks = extractGroupLinks(text);
-      const cls = classifyMessage(text, embeddedLinks.whatsapp);
-      if (cls.isAd) {
-        if (_stats) _stats.messagesSkippedAds++;
-        return;
+      if (!baileysManager.isConnectedForWorkspace(wid)) {
+        throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
       }
 
-      const allLinks = [...embeddedLinks.whatsapp];
-      if (_stats) _stats.linksFound += allLinks.length;
+      const coord = getCoordinatorFor(wid);
+      const acquired = await coord.acquire("reading");
+      if (!acquired) {
+        const active = coord.getActive();
+        throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
+      }
 
-      for (const url of allLinks) {
-        // ── Buffer cap: flush early if too many links queued ─────────────
-        if (_pipelineBuffer.length >= PIPELINE_BUFFER_CAP) {
-          console.log(`[MessageReader] Buffer cap reached (${PIPELINE_BUFFER_CAP}) — flushing early`);
-          if (_pipelineDebounce) clearTimeout(_pipelineDebounce);
-          _pipelineDebounce = setTimeout(() => _runPipeline(), 5_000);
-          break; // stop processing more links from this message
+      s.shouldBeRunning = true;
+      s.running         = true;
+      s.pipelineBuffer  = [];
+      s.handlerErrors   = 0;
+
+      const state  = await systemState.get(wid);
+      const lastId = state.last_read_message_id;
+
+      s.stats = {
+        status:              "running",
+        continuous:          true,
+        messagesReceived:    0,
+        messagesSkippedAds:  0,
+        linksFound:          0,
+        linksNew:            0,
+        startedAt:           new Date().toISOString(),
+        pipelineRuns:        0,
+        pipelineSkipped:     0,
+        bufferSize:          0,
+        lastMessageId:       lastId ?? undefined,
+      };
+
+      await systemState.setActiveFunction(wid, "reading");
+      await systemState.setReaderContinuous(wid, true);
+      console.log(`[MessageReader:${wid}] Started — continuous mode — checkpoint: ${lastId ?? "none"}`);
+
+      const self = getMessageReaderFor(wid);
+      baileysManager.setMessageHandlerForWorkspace(wid, async (msgs: any[]) => {
+        for (const msg of msgs) {
+          if (!s.running) break;
+          await self._handleMessage(msg);
+        }
+      });
+    },
+
+    async stop(): Promise<void> {
+      const s = _st(wid);
+      s.shouldBeRunning = false;
+      if (s.pipelineDebounce) { clearTimeout(s.pipelineDebounce); s.pipelineDebounce = null; }
+      s.running = false;
+      baileysManager.clearMessageHandlerForWorkspace(wid);
+      if (s.stats) { s.stats.status = "stopped"; s.stats.continuous = false; s.stats.stoppedAt = new Date().toISOString(); }
+      getCoordinatorFor(wid).release();
+      await systemState.setActiveFunction(wid, null);
+      await systemState.setReaderContinuous(wid, false);
+      console.log(`[MessageReader:${wid}] Stopped — messages: ${s.stats?.messagesReceived ?? 0}, new links: ${s.stats?.linksNew ?? 0}`);
+    },
+
+    async autoStartIfEnabled(): Promise<void> {
+      try {
+        const enabled = await systemState.getReaderContinuous(wid);
+        const s = _st(wid);
+        const coord = getCoordinatorFor(wid);
+        if (!enabled || s.running || coord.isRunning()) return;
+        await getMessageReaderFor(wid).start();
+        console.log(`[MessageReader:${wid}] Auto-started on WhatsApp connect`);
+      } catch (err) {
+        console.warn(`[MessageReader:${wid}] Auto-start skipped:`, (err as Error).message);
+      }
+    },
+
+    async _handleMessage(msg: any): Promise<void> {
+      const s = _st(wid);
+      try {
+        const jid: string = msg.key?.remoteJid ?? "";
+        if (!jid.endsWith("@g.us")) return;
+
+        const text: string =
+          msg.message?.conversation ??
+          msg.message?.extendedTextMessage?.text ??
+          msg.message?.imageMessage?.caption ??
+          msg.message?.videoMessage?.caption ?? "";
+
+        if (!text.trim()) return;
+        if (s.stats) s.stats.messagesReceived++;
+
+        const embeddedLinks = extractGroupLinks(text);
+        const cls = classifyMessage(text, embeddedLinks.whatsapp);
+        if (cls.isAd) {
+          if (s.stats) s.stats.messagesSkippedAds++;
+          return;
         }
 
-        const added = await linksRepository.addIfNew(url, "Group", "message");
-        if (added) {
-          if (_stats) { _stats.linksNew++; _stats.bufferSize = (_stats.bufferSize ?? 0) + 1; }
-          _pipelineBuffer.push(url);
-          _schedulePipeline();
-          console.log(`[MessageReader] New link → buffer (${_pipelineBuffer.length}/${PIPELINE_BUFFER_CAP}): ${url}`);
+        const allLinks = [...embeddedLinks.whatsapp];
+        if (s.stats) s.stats.linksFound += allLinks.length;
+
+        for (const url of allLinks) {
+          if (s.pipelineBuffer.length >= PIPELINE_BUFFER_CAP) {
+            console.log(`[MessageReader:${wid}] Buffer cap (${PIPELINE_BUFFER_CAP}) — flushing early`);
+            if (s.pipelineDebounce) clearTimeout(s.pipelineDebounce);
+            s.pipelineDebounce = setTimeout(() => _runPipeline(wid), 5_000);
+            break;
+          }
+
+          const added = await linksRepository.addIfNew(wid, url, "Group", "message");
+          if (added) {
+            if (s.stats) { s.stats.linksNew++; s.stats.bufferSize = (s.stats.bufferSize ?? 0) + 1; }
+            s.pipelineBuffer.push(url);
+            _schedulePipeline(wid);
+          }
+        }
+
+        const msgId = msg.key?.id;
+        if (msgId) {
+          if (s.stats) s.stats.lastMessageId = msgId;
+          await systemState.setLastReadMessageId(wid, msgId);
+        }
+
+        s.handlerErrors = 0;
+      } catch (err) {
+        s.handlerErrors++;
+        console.warn(`[MessageReader:${wid}] Handler error #${s.handlerErrors}:`, (err as Error).message);
+        if (s.handlerErrors >= MAX_HANDLER_ERRORS) {
+          console.error(`[MessageReader:${wid}] Too many errors — stopping for safety`);
+          await getMessageReaderFor(wid).stop().catch(() => {});
         }
       }
+    },
+  };
+}
 
-      const msgId = msg.key?.id;
-      if (msgId) {
-        if (_stats) _stats.lastMessageId = msgId;
-        await systemState.setLastReadMessageId(msgId);
-      }
+const _managerCache = new Map<string, ReturnType<typeof _createManager>>();
 
-      _handlerErrors = 0; // reset on success
-    } catch (err) {
-      _handlerErrors++;
-      console.warn(`[MessageReader] Handler error #${_handlerErrors}:`, (err as Error).message);
-
-      if (_handlerErrors >= MAX_HANDLER_ERRORS) {
-        console.error(`[MessageReader] Too many errors (${MAX_HANDLER_ERRORS}) — stopping reader for safety`);
-        await messageReader.stop().catch(() => {});
-      }
-    }
-  },
-};
+export function getMessageReaderFor(workspaceId: string): ReturnType<typeof _createManager> {
+  if (!_managerCache.has(workspaceId)) {
+    _managerCache.set(workspaceId, _createManager(workspaceId));
+  }
+  return _managerCache.get(workspaceId)!;
+}

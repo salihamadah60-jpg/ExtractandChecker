@@ -61,6 +61,14 @@ class SessionsManager extends EventEmitter {
   private _checkStopped = false;
   private _messageHandler: ((msgs: any[]) => void) | null = null;
 
+  // ── Per-workspace session routing ──────────────────────────────────────────
+  /** sessionId → workspaceId — set when a workspace activates a session */
+  private _workspaceIdBySessionId = new Map<string, string>();
+  /** workspaceId → active sessionId */
+  private _activeSessionByWorkspace = new Map<string, string>();
+  /** workspaceId → message handler */
+  private _messageHandlersByWorkspace = new Map<string, (msgs: any[]) => void>();
+
   // ── User-activity detection ────────────────────────────────────────────────
   /** IDs of messages sent BY the bot — used to distinguish bot vs user activity. */
   private _botSentIds   = new Set<string>();
@@ -140,13 +148,23 @@ class SessionsManager extends EventEmitter {
 
   /** Process incoming messages: detect user activity + delegate to handler. */
   private _onMessages(messages: any[]): void {
+    this._onMessagesFromSession("", messages);
+  }
+
+  private _onMessagesFromSession(sessionId: string, messages: any[]): void {
     for (const msg of messages) {
       if (msg.key?.fromMe && msg.key?.id && !this._botSentIds.has(msg.key.id as string)) {
         this._lastUserActivity = Date.now();
         console.log(`[Sessions] 👤 User activity detected (msgId: ${msg.key.id})`);
       }
     }
-    this._messageHandler?.(messages);
+    // Route to workspace-specific handler if session has a workspace
+    const workspaceId = sessionId ? this._workspaceIdBySessionId.get(sessionId) : undefined;
+    if (workspaceId) {
+      this._messageHandlersByWorkspace.get(workspaceId)?.(messages);
+    } else {
+      this._messageHandler?.(messages);
+    }
   }
 
   isConnected(): boolean {
@@ -197,6 +215,16 @@ class SessionsManager extends EventEmitter {
       this._activeSessionId = this._appMeta.sessions[0].id;
       this._appMeta.activeSessionId = this._activeSessionId;
       await saveAppMeta(this._appMeta);
+    }
+
+    // Restore per-workspace session mappings
+    for (const meta of this._appMeta.sessions) {
+      if (meta.workspaceId) {
+        this._workspaceIdBySessionId.set(meta.id, meta.workspaceId);
+        if (!this._activeSessionByWorkspace.has(meta.workspaceId)) {
+          this._activeSessionByWorkspace.set(meta.workspaceId, meta.id);
+        }
+      }
     }
 
     this._ready = true;
@@ -528,8 +556,11 @@ class SessionsManager extends EventEmitter {
             // Auto-start message reader in continuous mode (if it was enabled)
             setTimeout(async () => {
               try {
-                const { messageReader } = await import("./modules/message-reader.js");
-                await messageReader.autoStartIfEnabled();
+                const { getMessageReaderFor } = await import("./modules/message-reader.js");
+                const wid = this._workspaceIdBySessionId.get(id);
+                if (wid) {
+                  await getMessageReaderFor(wid).autoStartIfEnabled();
+                }
               } catch (err) {
                 console.warn("[Sessions] Reader auto-start skipped:", (err as Error).message);
               }
@@ -542,7 +573,7 @@ class SessionsManager extends EventEmitter {
 
       // Always register messages.upsert — handles both activity detection and delegating to handler
       sock.ev.on("messages.upsert", (update: any) => {
-        if (update.type === "notify") this._onMessages(update.messages ?? []);
+        if (update.type === "notify") this._onMessagesFromSession(id, update.messages ?? []);
       });
 
       // Detect when bot is removed/kicked from a group
@@ -559,7 +590,8 @@ class SessionsManager extends EventEmitter {
         console.log(`[Sessions] Removed from group: ${groupJid} — updating repository`);
         try {
           const { linksRepository } = await import("./modules/links-repository.js");
-          await linksRepository.handleGroupRemoval(groupJid);
+          const _wid = this._workspaceIdBySessionId.get(id) ?? "main";
+          await linksRepository.handleGroupRemoval(_wid, groupJid);
         } catch (err) {
           console.warn("[Sessions] Failed to handle group removal:", (err as Error).message);
         }
@@ -577,6 +609,11 @@ class SessionsManager extends EventEmitter {
     if (s) { s.status = status; s.isStarting = false; }
     if (id === this._activeSessionId) this.emit("status", status);
     this.emit("session-status", { id, status });
+    // Emit workspace-scoped status event
+    const wid = this._workspaceIdBySessionId.get(id);
+    if (wid && id === this._activeSessionByWorkspace.get(wid)) {
+      this.emit("workspace-status", { workspaceId: wid, status });
+    }
   }
 
   // ── Link checking ───────────────────────────────────────────────────────────
@@ -920,6 +957,162 @@ class SessionsManager extends EventEmitter {
   /** Remove the message handler (socket listener stays active for activity detection). */
   clearMessageHandler(): void {
     this._messageHandler = null;
+  }
+
+  // ── Per-workspace methods ──────────────────────────────────────────────────────
+
+  getActiveStateForWorkspace(workspaceId: string): SessionState | null {
+    const sessionId = this._activeSessionByWorkspace.get(workspaceId);
+    if (!sessionId) return null;
+    return this.sessions.get(sessionId) ?? null;
+  }
+
+  isConnectedForWorkspace(workspaceId: string): boolean {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    return s?.status === "connected" && !!s.sock;
+  }
+
+  getConnectedPhoneForWorkspace(workspaceId: string): string | null {
+    return this.getActiveStateForWorkspace(workspaceId)?.phoneNumber ?? null;
+  }
+
+  getSessionsForWorkspace(workspaceId: string): WASessionInfo[] {
+    return this._appMeta.sessions
+      .filter((m) => m.workspaceId === workspaceId)
+      .map((m) => {
+        const s = this.sessions.get(m.id);
+        return {
+          id: m.id,
+          displayName: s?.phoneNumber ? `+${s.phoneNumber}` : m.displayName,
+          phoneNumber: s?.phoneNumber ?? m.phoneNumber,
+          status: s?.status ?? "disconnected" as WAStatus,
+          isActive: m.id === (this._activeSessionByWorkspace.get(workspaceId) ?? null),
+        };
+      });
+  }
+
+  async createSessionForWorkspace(displayName: string, workspaceId: string): Promise<string> {
+    const id = await this.createSession(displayName);
+    const meta = this._appMeta.sessions.find((m) => m.id === id);
+    if (meta) {
+      meta.workspaceId = workspaceId;
+      await saveAppMeta(this._appMeta);
+    }
+    this._workspaceIdBySessionId.set(id, workspaceId);
+    this._activeSessionByWorkspace.set(workspaceId, id);
+    return id;
+  }
+
+  activateSessionForWorkspace(sessionId: string, workspaceId: string): void {
+    if (!this.sessions.has(sessionId)) throw new Error("Session not found");
+    this._activeSessionByWorkspace.set(workspaceId, sessionId);
+    this._workspaceIdBySessionId.set(sessionId, workspaceId);
+    const meta = this._appMeta.sessions.find((m) => m.id === sessionId);
+    if (meta && !meta.workspaceId) {
+      meta.workspaceId = workspaceId;
+      saveAppMeta(this._appMeta).catch(console.error);
+    }
+  }
+
+  setMessageHandlerForWorkspace(workspaceId: string, handler: (msgs: any[]) => void): void {
+    this._messageHandlersByWorkspace.set(workspaceId, handler);
+  }
+
+  clearMessageHandlerForWorkspace(workspaceId: string): void {
+    this._messageHandlersByWorkspace.delete(workspaceId);
+  }
+
+  async checkLinksForPipelineForWorkspace(urls: string[], workspaceId: string): Promise<Array<{
+    url: string; status: "valid" | "invalid" | "error";
+    name?: string; members?: number; description?: string;
+  }>> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+    const results: Array<{ url: string; status: "valid" | "invalid" | "error"; name?: string; members?: number; description?: string }> = [];
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      const match = url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
+      if (!match) { results.push({ url, status: "invalid" }); continue; }
+      try {
+        const info = await this._checkGroupLinkWithSession(s, match[1]);
+        results.push({ url, ...info });
+        console.log(`[PipelineCheck:${workspaceId}] ${info.status.toUpperCase()} | ${url}`);
+      } catch (err: any) {
+        results.push({ url, status: "error" });
+        console.warn(`[PipelineCheck:${workspaceId}] ERROR | ${url} | ${err.message}`);
+      }
+      if (i < urls.length - 1) await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2000));
+    }
+    return results;
+  }
+
+  private async _checkGroupLinkWithSession(s: SessionState, inviteCode: string): Promise<{
+    status: "valid" | "invalid"; name?: string; members?: number; description?: string;
+  }> {
+    if (!s?.sock) throw new Error("Not connected");
+    const LINK_TIMEOUT_MS = 8000;
+    const checkPromise = s.sock.groupGetInviteInfo(inviteCode);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("link-timeout")), LINK_TIMEOUT_MS)
+    );
+    try {
+      const info = await Promise.race([checkPromise, timeoutPromise]);
+      if (info && (info.subject || info.id)) {
+        const name: string = ((info.subject ?? "").trim().split(/\s+/).slice(0, 3).join(" ")) || undefined!;
+        const members = typeof info.size === "number" ? info.size : Array.isArray(info.participants) ? info.participants.length : undefined;
+        const description = (info.desc ?? "").trim() || undefined;
+        return { status: "valid", name: name || undefined, members, description };
+      }
+      return { status: "invalid" };
+    } catch (e: any) {
+      const msg = (e?.message ?? "").toLowerCase();
+      if (
+        msg === "link-timeout" || msg.includes("invalid") || msg.includes("not-authorized") ||
+        msg.includes("not found") || msg.includes("404") || msg.includes("gone") ||
+        msg.includes("bad request") || msg.includes("forbidden") || msg.includes("item-not-found") ||
+        msg.includes("expired")
+      ) return { status: "invalid" };
+      throw e;
+    }
+  }
+
+  async joinGroupForWorkspace(inviteCode: string, workspaceId: string): Promise<string> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+    const jid = await s.sock.groupAcceptInvite(inviteCode);
+    return jid ?? "";
+  }
+
+  async joinCommunityForWorkspace(inviteCode: string, workspaceId: string): Promise<string> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+    try {
+      if (typeof s.sock.communityRequestToJoinViaLink === "function") {
+        const res = await s.sock.communityRequestToJoinViaLink(inviteCode);
+        return res ?? "";
+      }
+    } catch { /* fall through */ }
+    const jid = await s.sock.groupAcceptInvite(inviteCode);
+    return jid ?? "";
+  }
+
+  async leaveGroupForWorkspace(groupJid: string, workspaceId: string): Promise<void> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+    await s.sock.groupLeave(groupJid);
+  }
+
+  async sendTextMessageForWorkspace(jid: string, text: string, workspaceId: string): Promise<void> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+    const result = await s.sock.sendMessage(jid, { text });
+    this._trackBotSend(result?.key?.id);
+  }
+
+  async getGroupMetadataForWorkspace(jid: string, workspaceId: string): Promise<any | null> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) return null;
+    try { return await s.sock.groupMetadata(jid); } catch { return null; }
   }
 
   /**

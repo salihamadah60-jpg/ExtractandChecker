@@ -1,29 +1,19 @@
 /**
- * join-manager.ts — Smart join scheduler with human pacing
+ * join-manager.ts — Smart join scheduler with human pacing (per-workspace)
  *
- * Rate model: 2 links per 10-minute window, spread across two random slots:
- *   Slot 0 → random offset  0:30 – 4:30  (first half)
- *   Slot 1 → random offset  5:00 – 9:30  (second half)
- *
- * Safety layers:
- *   1. Daily sleep mode  01:30 – 07:30  (6-hour nightly rest)
- *   2. Telemetry sensing — latency spikes trigger proactive cooldowns
- *   3. Coordinator lock held for ENTIRE session (no parallel WA calls)
- *   4. Strict window lock — blocks publish / read / leave during any window
- *   5. Pause / Resume — checked BEFORE every sleep AND before every join
- *   6. Interruptible sleep — stop/pause signals checked every 300 ms
- *   7. User-activity guard — pauses if user is actively using WhatsApp
- *   8. Continues running in background even when browser is closed
+ * Rate model: 4 links per 10-minute window spread across random slots.
+ * All state is isolated per-workspace via Maps.
+ * Export: getJoinManagerFor(workspaceId) → JoinManagerAPI
  */
 
 import { baileysManager }            from "../baileys-manager.js";
-import { coordinator }               from "./function-coordinator.js";
+import { getCoordinatorFor }         from "./function-coordinator.js";
+import { getTelemetryFor }           from "./telemetry.js";
 import { systemState }               from "./system-state.js";
 import { linksRepository }           from "./links-repository.js";
 import { classifyWAError }           from "./wa-error-handler.js";
 import { WINDOW_DURATION_MS, SLOTS_PER_WINDOW, computeSlotOffsets, shuffle } from "./human-mimicry.js";
 import { isSleepTime, msUntilWakeUp } from "./sleep-scheduler.js";
-import { telemetry }                 from "./telemetry.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,8 +29,6 @@ export interface JoinProgress {
   stopReason?:  string;
   startedAt:    string;
   completedAt?: string;
-
-  // Smart scheduling
   windowNumber:    number;
   nextJoinAt?:     string;
   sleepUntil?:     string;
@@ -53,56 +41,62 @@ export interface JoinProgress {
   };
 }
 
-// ── Module state ──────────────────────────────────────────────────────────────
+// ── Per-workspace state ────────────────────────────────────────────────────────
 
-let _progress:       JoinProgress | null = null;
-let _stopRequested  = false;
-let _pauseRequested = false;
+interface WState {
+  progress:       JoinProgress | null;
+  stopRequested:  boolean;
+  pauseRequested: boolean;
+  autoPaused:     boolean;
+  joiningCache:   Set<string>;
+}
 
-/**
- * Set to true when the scheduler is paused automatically due to a WhatsApp
- * disconnect. Cleared on auto-resume so that a manual pause is never
- * accidentally overridden by a reconnect event.
- */
-let _autoPaused = false;
+const _stateByWid = new Map<string, WState>();
 
-/** In-memory set of invite codes currently being processed — prevents duplicate join attempts on rapid restart */
-const _joiningCache = new Set<string>();
+function _st(wid: string): WState {
+  if (!_stateByWid.has(wid)) {
+    _stateByWid.set(wid, {
+      progress:       null,
+      stopRequested:  false,
+      pauseRequested: false,
+      autoPaused:     false,
+      joiningCache:   new Set(),
+    });
+  }
+  return _stateByWid.get(wid)!;
+}
 
-// ── Core sleep helper ─────────────────────────────────────────────────────────
+// ── Core sleep helper ──────────────────────────────────────────────────────────
 
-/**
- * Interruptible sleep — checks stop/pause every 300 ms.
- * - PAUSE: timer freezes; loop spins until resumed or stopped.
- * - STOP : returns "stopped" immediately on next tick.
- */
 async function interruptibleSleep(
+  wid: string,
   totalMs: number,
   label: string,
   status: JoinProgress["status"] = "waiting",
   nextAt?: () => string
 ): Promise<"done" | "stopped"> {
+  const s = _st(wid);
   let remaining = totalMs;
   const TICK = 300;
 
-  console.log(`[JoinManager] ⏱ ${label} — ${Math.round(totalMs / 1000)}s`);
+  console.log(`[JoinManager:${wid}] ⏱ ${label} — ${Math.round(totalMs / 1000)}s`);
 
   while (remaining > 0) {
-    if (_stopRequested) return "stopped";
+    if (s.stopRequested) return "stopped";
 
-    if (_pauseRequested) {
-      if (_progress && _progress.status !== "paused") {
-        _progress.status    = "paused";
-        _progress.nextJoinAt = nextAt?.();
-        await systemState.setExtra({ joinProgress: _progress }).catch(() => {});
+    if (s.pauseRequested) {
+      if (s.progress && s.progress.status !== "paused") {
+        s.progress.status    = "paused";
+        s.progress.nextJoinAt = nextAt?.();
+        await systemState.setExtra(wid, { joinProgress: s.progress }).catch(() => {});
       }
       await new Promise(r => setTimeout(r, TICK));
-      continue; // freeze — don't count down
+      continue;
     }
 
-    if (_progress && _progress.status !== status) {
-      _progress.status = status;
-      if (nextAt) _progress.nextJoinAt = nextAt();
+    if (s.progress && s.progress.status !== status) {
+      s.progress.status = status;
+      if (nextAt) s.progress.nextJoinAt = nextAt();
     }
 
     const step = Math.min(TICK, remaining);
@@ -113,500 +107,488 @@ async function interruptibleSleep(
   return "done";
 }
 
-/**
- * Explicit pause gate — spins (without counting any timer) until unpaused or stopped.
- * Call this at the TOP of the main loop and BEFORE each actual join call.
- */
-async function pauseGate(): Promise<"ok" | "stopped"> {
-  while (_pauseRequested && !_stopRequested) {
-    if (_progress && _progress.status !== "paused") {
-      _progress.status = "paused";
-      await systemState.setExtra({ joinProgress: _progress }).catch(() => {});
+async function pauseGate(wid: string): Promise<"ok" | "stopped"> {
+  const s = _st(wid);
+  while (s.pauseRequested && !s.stopRequested) {
+    if (s.progress && s.progress.status !== "paused") {
+      s.progress.status = "paused";
+      await systemState.setExtra(wid, { joinProgress: s.progress }).catch(() => {});
     }
     await new Promise(r => setTimeout(r, 300));
   }
-  if (_stopRequested) return "stopped";
+  if (s.stopRequested) return "stopped";
   return "ok";
 }
 
-// ── Join one link ─────────────────────────────────────────────────────────────
+// ── Join one link ──────────────────────────────────────────────────────────────
 
 async function joinOne(
+  wid: string,
   record: { url: string },
   consecutiveFailures: number,
   currentPhone?: string,
   retryCount = 0
 ): Promise<{ result: "joined" | "ignored" | "failed" | "stop_all" | "stop_join"; waitMs?: number }> {
+  const s   = _st(wid);
+  const tel = getTelemetryFor(wid);
+
   const codeMatch    = record.url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
   const channelMatch = record.url.match(/whatsapp\.com\/channel\/([A-Za-z0-9_-]+)/);
 
   if (channelMatch) {
-    await linksRepository.setStatus(record.url, "Ignored");
+    await linksRepository.setStatus(wid, record.url, "Ignored");
     return { result: "ignored" };
   }
   if (!codeMatch) {
-    await linksRepository.setStatus(record.url, "Ignored");
+    await linksRepository.setStatus(wid, record.url, "Ignored");
     return { result: "ignored" };
   }
 
   const inviteCode = codeMatch[1];
 
-  // In-memory duplicate guard: don't send two join requests for the same code simultaneously
-  if (_joiningCache.has(inviteCode)) {
-    console.log(`[JoinManager] ℹ Cache hit — already joining: ${inviteCode}`);
+  if (s.joiningCache.has(inviteCode)) {
+    console.log(`[JoinManager:${wid}] ℹ Cache hit — already joining: ${inviteCode}`);
     return { result: "ignored" };
   }
-  _joiningCache.add(inviteCode);
+  s.joiningCache.add(inviteCode);
 
-  // Pre-flight MongoDB check: skip if already joined by THIS phone to avoid re-join spam
+  // Pre-flight MongoDB check
   try {
     const db  = (await import("../mongo-auth-state.js")).getDb;
     const c   = (await db()).collection("Links_Repository");
-    const doc = await c.findOne({ url: record.url }, { projection: { status: 1, joinedByPhone: 1 } });
+    const doc = await c.findOne({ workspaceId: wid, url: record.url }, { projection: { status: 1, joinedByPhone: 1 } });
     if (doc?.status === "Joined" && doc?.joinedByPhone === currentPhone) {
-      console.log(`[JoinManager] ℹ Pre-flight: already joined by ${currentPhone} — skipping ${record.url}`);
-      _joiningCache.delete(inviteCode);
+      console.log(`[JoinManager:${wid}] ℹ Pre-flight: already joined by ${currentPhone} — skipping`);
+      s.joiningCache.delete(inviteCode);
       return { result: "joined" };
     }
-  } catch { /* non-fatal — continue with join attempt */ }
+  } catch { /* non-fatal */ }
 
   const t0 = Date.now();
 
   try {
-    const groupJid = await baileysManager.joinGroup(inviteCode);
+    const groupJid = await baileysManager.joinGroupForWorkspace(inviteCode, wid);
     const latency  = Date.now() - t0;
-    telemetry.record(latency);
+    tel.record(latency);
 
-    await linksRepository.setStatus(record.url, "Joined", currentPhone);
-    await linksRepository.recordCheck(record.url, undefined, undefined, undefined);
+    await linksRepository.setStatus(wid, record.url, "Joined", currentPhone);
+    await linksRepository.recordCheck(wid, record.url, undefined, undefined, undefined);
     if (groupJid) {
       const db = (await import("../mongo-auth-state.js")).getDb();
       const c  = (await db).collection("Links_Repository");
-      await c.updateOne({ url: record.url }, { $set: { groupJid, updatedAt: new Date() } });
+      await c.updateOne({ workspaceId: wid, url: record.url }, { $set: { groupJid, updatedAt: new Date() } });
     }
-    console.log(`[JoinManager] ✓ Joined (${latency}ms) [${currentPhone ?? "?"}]: ${record.url}`);
+    console.log(`[JoinManager:${wid}] ✓ Joined (${latency}ms) [${currentPhone ?? "?"}]: ${record.url}`);
     return { result: "joined" };
 
   } catch (err: unknown) {
-    const latency = Date.now() - t0;
+    const latency    = Date.now() - t0;
     const classified = classifyWAError(err, consecutiveFailures);
 
     switch (classified.action) {
       case "stop_all":
-        telemetry.triggerEmergency(classified.reason, 30 * 60_000);
+        tel.triggerEmergency(classified.reason, 30 * 60_000);
         return { result: "stop_all" };
 
       case "stop_join":
-        telemetry.triggerEmergency(classified.reason, classified.waitMs ?? 15 * 60_000);
+        tel.triggerEmergency(classified.reason, classified.waitMs ?? 15 * 60_000);
         return { result: "stop_join", waitMs: classified.waitMs };
 
       case "already_member":
-        await linksRepository.setStatus(record.url, "Joined", currentPhone);
-        console.log(`[JoinManager] ℹ Already member [${currentPhone ?? "?"}]: ${record.url}`);
+        await linksRepository.setStatus(wid, record.url, "Joined", currentPhone);
+        console.log(`[JoinManager:${wid}] ℹ Already member: ${record.url}`);
         return { result: "joined" };
 
       case "community":
         try {
-          const communityJid = await baileysManager.joinCommunity(inviteCode);
-          await linksRepository.setStatus(record.url, "Joined", currentPhone);
+          const communityJid = await baileysManager.joinCommunityForWorkspace(inviteCode, wid);
+          await linksRepository.setStatus(wid, record.url, "Joined", currentPhone);
           if (communityJid) {
             const db = (await import("../mongo-auth-state.js")).getDb();
             const c  = (await db).collection("Links_Repository");
-            await c.updateOne({ url: record.url }, { $set: { groupJid: communityJid, type: "Group", updatedAt: new Date() } });
+            await c.updateOne({ workspaceId: wid, url: record.url }, { $set: { groupJid: communityJid, type: "Group", updatedAt: new Date() } });
           }
           return { result: "joined" };
         } catch {
-          await linksRepository.setStatus(record.url, "Ignored");
+          await linksRepository.setStatus(wid, record.url, "Ignored");
           return { result: "ignored" };
         }
 
       case "wait_and_retry":
-        telemetry.record(latency);
-        await linksRepository.setStatus(record.url, "Ignored");
-        console.warn(`[JoinManager] Rate-limit skip: ${record.url}`);
+        tel.record(latency);
+        await linksRepository.setStatus(wid, record.url, "Ignored");
+        console.warn(`[JoinManager:${wid}] Rate-limit skip: ${record.url}`);
         return { result: "failed" };
 
       case "retry": {
-        // Transient network error — do NOT mark as Ignored; retry with backoff.
-        // After max retries the link stays Pending for the next session.
         const MAX_NET_RETRIES = 3;
         if (retryCount < MAX_NET_RETRIES) {
-          const delayMs = Math.min(15_000 * (retryCount + 1), 60_000); // 15s → 30s → 45s
-          console.warn(
-            `[JoinManager] ⚠ Network hiccup (attempt ${retryCount + 1}/${MAX_NET_RETRIES}) ` +
-            `— waiting ${delayMs / 1000}s before retry: ${record.url}`
-          );
-          _joiningCache.delete(inviteCode); // release cache lock during wait
+          const delayMs = Math.min(15_000 * (retryCount + 1), 60_000);
+          console.warn(`[JoinManager:${wid}] ⚠ Network hiccup (attempt ${retryCount + 1}/${MAX_NET_RETRIES}) — waiting ${delayMs / 1000}s: ${record.url}`);
+          s.joiningCache.delete(inviteCode);
           await new Promise((r) => setTimeout(r, delayMs));
-          if (_stopRequested) return { result: "failed" };
-          return joinOne(record, consecutiveFailures, currentPhone, retryCount + 1);
+          if (s.stopRequested) return { result: "failed" };
+          return joinOne(wid, record, consecutiveFailures, currentPhone, retryCount + 1);
         }
-        // All retries exhausted — leave Pending so future session can try again
-        console.warn(`[JoinManager] ⚠ Network error — ${MAX_NET_RETRIES} retries exhausted, leaving Pending: ${record.url}`);
+        console.warn(`[JoinManager:${wid}] ⚠ Network error — ${MAX_NET_RETRIES} retries exhausted, leaving Pending: ${record.url}`);
         return { result: "failed" };
       }
 
       default:
-        await linksRepository.setStatus(record.url, "Ignored");
-        console.warn(`[JoinManager] ✗ ${classified.reason} | ${record.url}`);
+        await linksRepository.setStatus(wid, record.url, "Ignored");
+        console.warn(`[JoinManager:${wid}] ✗ ${classified.reason} | ${record.url}`);
         return { result: "failed" };
     }
   } finally {
-    _joiningCache.delete(inviteCode);
+    s.joiningCache.delete(inviteCode);
   }
 }
 
-// ── Telemetry sync ────────────────────────────────────────────────────────────
+// ── Telemetry sync ─────────────────────────────────────────────────────────────
 
-function syncTelemetry() {
-  if (!_progress) return;
-  const r = telemetry.getReport();
-  _progress.telemetry = {
+function syncTelemetry(wid: string): void {
+  const s   = _st(wid);
+  const tel = getTelemetryFor(wid);
+  if (!s.progress) return;
+  const r = tel.getReport();
+  s.progress.telemetry = {
     avgLatencyMs:   r.avgLatencyMs,
     lastLatencyMs:  r.lastLatencyMs,
     cooldownActive: r.cooldownActive,
     warning:        r.warning,
   };
   if (r.cooldownActive && r.cooldownUntil) {
-    _progress.cooldownUntil = r.cooldownUntil.toISOString();
+    s.progress.cooldownUntil = r.cooldownUntil.toISOString();
   } else {
-    _progress.cooldownUntil = undefined;
+    s.progress.cooldownUntil = undefined;
   }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Manager factory ────────────────────────────────────────────────────────────
 
-export const joinManager = {
-  getProgress(): JoinProgress | null { return _progress; },
+function _createManager(wid: string) {
+  return {
+    getProgress(): JoinProgress | null { return _st(wid).progress; },
 
-  requestStop(): void {
-    _stopRequested  = true;
-    _pauseRequested = false;
-    if (_progress && _progress.status !== "done") _progress.status = "stopped";
-    console.log("[JoinManager] 🛑 Stop requested");
-  },
+    requestStop(): void {
+      const s = _st(wid);
+      s.stopRequested  = true;
+      s.pauseRequested = false;
+      if (s.progress && s.progress.status !== "done") s.progress.status = "stopped";
+      console.log(`[JoinManager:${wid}] 🛑 Stop requested`);
+    },
 
-  requestPause(): void {
-    if (!_progress || _progress.status === "done" || _progress.status === "stopped") return;
-    _pauseRequested = true;
-    console.log("[JoinManager] ⏸ Pause requested");
-  },
+    requestPause(): void {
+      const s = _st(wid);
+      if (!s.progress || s.progress.status === "done" || s.progress.status === "stopped") return;
+      s.pauseRequested = true;
+      console.log(`[JoinManager:${wid}] ⏸ Pause requested`);
+    },
 
-  requestResume(): void {
-    if (!_progress) return;
-    _pauseRequested = false;
-    if (_progress.status === "paused") _progress.status = "waiting";
-    console.log("[JoinManager] ▶ Resume requested");
-  },
+    requestResume(): void {
+      const s = _st(wid);
+      if (!s.progress) return;
+      s.pauseRequested = false;
+      if (s.progress.status === "paused") s.progress.status = "waiting";
+      console.log(`[JoinManager:${wid}] ▶ Resume requested`);
+    },
 
-  isPaused(): boolean { return _pauseRequested; },
+    isPaused(): boolean { return _st(wid).pauseRequested; },
 
-  /**
-   * Called automatically when the active WhatsApp session drops.
-   * Pauses the scheduler only if it is actively running and not already
-   * manually paused — so a manual pause is never silently overridden.
-   */
-  autoPause(): void {
-    if (!_progress) return;
-    const s = _progress.status;
-    if (s === "done" || s === "stopped") return;
-    if (_pauseRequested) return; // already paused (manually) — don't touch it
-    _autoPaused     = true;
-    _pauseRequested = true;
-    if (_progress) _progress.stopReason = "انقطع الاتصال بـ WhatsApp — سيُستأنف تلقائياً عند إعادة الاتصال";
-    console.log("[JoinManager] ⏸ Auto-paused (WhatsApp disconnected)");
-  },
+    autoPause(): void {
+      const s = _st(wid);
+      if (!s.progress) return;
+      const st = s.progress.status;
+      if (st === "done" || st === "stopped") return;
+      if (s.pauseRequested) return;
+      s.autoPaused     = true;
+      s.pauseRequested = true;
+      if (s.progress) s.progress.stopReason = "انقطع الاتصال بـ WhatsApp — سيُستأنف تلقائياً عند إعادة الاتصال";
+      console.log(`[JoinManager:${wid}] ⏸ Auto-paused (WhatsApp disconnected)`);
+    },
 
-  /**
-   * Called automatically when the active WhatsApp session reconnects.
-   * Only resumes if the scheduler was paused by autoPause() — a manual
-   * pause from the user is left untouched.
-   */
-  autoResume(): void {
-    if (!_autoPaused) return; // we didn't pause it — don't resume it
-    _autoPaused     = false;
-    _pauseRequested = false;
-    if (_progress && _progress.status === "paused") {
-      _progress.status    = "waiting";
-      _progress.stopReason = undefined;
-    }
-    console.log("[JoinManager] ▶ Auto-resumed (WhatsApp reconnected)");
-  },
+    autoResume(): void {
+      const s = _st(wid);
+      if (!s.autoPaused) return;
+      s.autoPaused     = false;
+      s.pauseRequested = false;
+      if (s.progress && s.progress.status === "paused") {
+        s.progress.status    = "waiting";
+        s.progress.stopReason = undefined;
+      }
+      console.log(`[JoinManager:${wid}] ▶ Auto-resumed (WhatsApp reconnected)`);
+    },
 
-  async start(maxLinks?: number): Promise<void> {
-    if (!baileysManager.isConnected()) {
-      throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
-    }
+    async start(maxLinks?: number): Promise<void> {
+      const coord = getCoordinatorFor(wid);
+      const tel   = getTelemetryFor(wid);
 
-    const acquired = await coordinator.acquire("joining");
-    if (!acquired) {
-      const active = coordinator.getActive();
-      throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً. يُرجى الانتظار.`);
-    }
-
-    _stopRequested  = false;
-    _pauseRequested = false;
-    telemetry.reset();
-
-    try {
-      await systemState.setActiveFunction("joining");
-
-      const currentPhone = baileysManager.getConnectedPhone() ?? undefined;
-      console.log(`[JoinManager] 🚀 Starting — phone: ${currentPhone ?? "unknown"}, maxLinks: ${maxLinks ?? "all"}`);
-
-      const pendingLinks = await linksRepository.findPendingForJoin(currentPhone);
-      if (!pendingLinks.length) {
-        throw new Error("لا توجد روابط معلقة في المستودع للانضمام إليها (جميعها تم الانضمام إليها بهذا الحساب).");
+      if (!baileysManager.isConnectedForWorkspace(wid)) {
+        throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
       }
 
-      const allLinks = shuffle(pendingLinks);
-      const queue    = (maxLinks && maxLinks > 0) ? allLinks.slice(0, maxLinks) : allLinks;
+      const acquired = await coord.acquire("joining");
+      if (!acquired) {
+        const active = coord.getActive();
+        throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً. يُرجى الانتظار.`);
+      }
 
-      console.log(`[JoinManager] Queue: ${queue.length} links (${pendingLinks.length} available)`);
+      const s = _st(wid);
+      s.stopRequested  = false;
+      s.pauseRequested = false;
+      tel.reset();
 
-      _progress = {
-        status:       "waiting",
-        total:        queue.length,
-        processed:    0,
-        joined:       0,
-        ignored:      0,
-        failed:       0,
-        skipped_ads:  0,
-        startedAt:    new Date().toISOString(),
-        windowNumber: 0,
-      };
+      try {
+        await systemState.setActiveFunction(wid, "joining");
 
-      await systemState.setExtra({ joinProgress: _progress });
+        const currentPhone = baileysManager.getConnectedPhoneForWorkspace(wid) ?? undefined;
+        console.log(`[JoinManager:${wid}] 🚀 Starting — phone: ${currentPhone ?? "unknown"}, maxLinks: ${maxLinks ?? "all"}`);
 
-      let queueIdx            = 0;
-      let consecutiveFailures = 0;
-
-      // ── Main window loop ─────────────────────────────────────────────────────
-      while (queueIdx < queue.length) {
-
-        // ── PAUSE GATE (top of every iteration) ─────────────────────────────
-        const gateResult = await pauseGate();
-        if (gateResult === "stopped") break;
-
-        if (_stopRequested) break;
-
-        // ── 1. Daily sleep check ─────────────────────────────────────────────
-        if (isSleepTime()) {
-          const wakeMs  = msUntilWakeUp();
-          const wakeISO = new Date(Date.now() + wakeMs).toISOString();
-          console.log(`[JoinManager] 🌙 Daily sleep — waking at ${new Date(wakeISO).toLocaleTimeString()}`);
-          if (_progress) {
-            _progress.status     = "sleeping";
-            _progress.sleepUntil = wakeISO;
-            _progress.nextJoinAt = wakeISO;
-          }
-          const outcome = await interruptibleSleep(wakeMs, "نوم ليلي", "sleeping");
-          if (_progress) _progress.sleepUntil = undefined;
-          if (outcome === "stopped") break;
-          continue;
+        const pendingLinks = await linksRepository.findPendingForJoin(wid, currentPhone);
+        if (!pendingLinks.length) {
+          throw new Error("لا توجد روابط معلقة في المستودع للانضمام إليها.");
         }
 
-        // ── 2. Connection check ──────────────────────────────────────────────
-        if (!baileysManager.isConnected()) {
-          console.warn("[JoinManager] ⚠ Connection lost — waiting 60s");
-          if (_progress) { _progress.status = "paused"; _progress.stopReason = "انقطع الاتصال بـ WhatsApp"; }
-          const outcome = await interruptibleSleep(60_000, "انتظار إعادة الاتصال", "paused");
-          if (outcome === "stopped") break;
-          continue;
-        }
+        const allLinks = shuffle(pendingLinks);
+        const queue    = (maxLinks && maxLinks > 0) ? allLinks.slice(0, maxLinks) : allLinks;
 
-        // ── 3. User-activity guard ───────────────────────────────────────────
-        if (baileysManager.isUserActive(90_000)) { // 90 s
-          console.log("[JoinManager] 👤 User is active — pausing 3 min to avoid conflict");
-          if (_progress) _progress.status = "waiting";
-          const outcome = await interruptibleSleep(3 * 60_000, "المستخدم نشط — انتظار", "waiting");
-          if (outcome === "stopped") break;
-          continue;
-        }
+        console.log(`[JoinManager:${wid}] Queue: ${queue.length} links`);
 
-        // ── 4. Telemetry cooldown check ──────────────────────────────────────
-        if (telemetry.isCoolingDown()) {
-          const coolMs  = telemetry.cooldownRemaining();
-          const coolISO = new Date(Date.now() + coolMs).toISOString();
-          console.log(`[JoinManager] 🧊 Telemetry cooldown — ${Math.round(coolMs / 60_000)} min`);
-          syncTelemetry();
-          if (_progress) { _progress.status = "cooldown"; _progress.nextJoinAt = coolISO; }
-          const outcome = await interruptibleSleep(
-            coolMs, "تبريد وقائي", "cooldown",
-            () => new Date(Date.now() + telemetry.cooldownRemaining()).toISOString()
-          );
-          if (outcome === "stopped") break;
-          continue;
-        }
+        s.progress = {
+          status:       "waiting",
+          total:        queue.length,
+          processed:    0,
+          joined:       0,
+          ignored:      0,
+          failed:       0,
+          skipped_ads:  0,
+          startedAt:    new Date().toISOString(),
+          windowNumber: 0,
+        };
 
-        // ── 5. Open a new 10-minute window (3 slots) ─────────────────────────
-        const windowStart = Date.now();
-        const windowEnd   = windowStart + WINDOW_DURATION_MS;
-        const windowNum   = (_progress?.windowNumber ?? 0) + 1;
+        await systemState.setExtra(wid, { joinProgress: s.progress });
 
-        if (_progress) { _progress.windowNumber = windowNum; _progress.status = "waiting"; }
+        let queueIdx            = 0;
+        let consecutiveFailures = 0;
 
-        // Compute 4 randomised join offsets with anti-clustering safeguard
-        const [off0, off1, off2, off3] = computeSlotOffsets();
-        const slotTimes = [
-          windowStart + off0,
-          windowStart + off1,
-          windowStart + off2,
-          windowStart + off3,
-        ];
-        const slotNames = ["الأولى", "الثانية", "الثالثة", "الرابعة"];
+        // ── Main window loop ───────────────────────────────────────────────────
+        while (queueIdx < queue.length) {
+          const gateResult = await pauseGate(wid);
+          if (gateResult === "stopped") break;
+          if (s.stopRequested) break;
 
-        console.log(
-          `[JoinManager] 🪟 Window ${windowNum}: ` +
-          `slot0 @+${Math.round(off0 / 1000)}s, ` +
-          `slot1 @+${Math.round(off1 / 1000)}s, ` +
-          `slot2 @+${Math.round(off2 / 1000)}s, ` +
-          `slot3 @+${Math.round(off3 / 1000)}s — ` +
-          `queue[${queueIdx}/${queue.length}]`
-        );
-
-        coordinator.setWindowActive(true);
-        let windowBroken = false;
-
-        // ── Execute up to SLOTS_PER_WINDOW slots per window ──────────────
-        for (let slotIdx = 0; slotIdx < SLOTS_PER_WINDOW; slotIdx++) {
-          if (queueIdx >= queue.length || _stopRequested) break;
-
-          const joinAt   = slotTimes[slotIdx];
-          const slotLink = queue[queueIdx];
-          const waitMs   = joinAt - Date.now();
-
-          // Wait until slot time
-          if (waitMs > 0) {
-            if (_progress) _progress.nextJoinAt = new Date(joinAt).toISOString();
-            const outcome = await interruptibleSleep(
-              waitMs,
-              `نافذة ${windowNum} — انتظار الفتحة ${slotNames[slotIdx]}`,
-              "waiting",
-              () => new Date(joinAt).toISOString()
-            );
-            if (outcome === "stopped") { windowBroken = true; break; }
-          }
-
-          // Pause / stop checks before actual join
-          if ((await pauseGate()) === "stopped") { windowBroken = true; break; }
-          if (_stopRequested) { windowBroken = true; break; }
-          if (!baileysManager.isConnected()) break; // skip to next window iteration
-
-          if (baileysManager.isUserActive(60_000)) {
-            console.log(`[JoinManager] 👤 User active before slot ${slotIdx} — skipping slot`);
+          // Daily sleep check
+          if (isSleepTime()) {
+            const wakeMs  = msUntilWakeUp();
+            const wakeISO = new Date(Date.now() + wakeMs).toISOString();
+            console.log(`[JoinManager:${wid}] 🌙 Daily sleep — waking at ${new Date(wakeISO).toLocaleTimeString()}`);
+            if (s.progress) {
+              s.progress.status     = "sleeping";
+              s.progress.sleepUntil = wakeISO;
+              s.progress.nextJoinAt = wakeISO;
+            }
+            const outcome = await interruptibleSleep(wid, wakeMs, "نوم ليلي", "sleeping");
+            if (s.progress) s.progress.sleepUntil = undefined;
+            if (outcome === "stopped") break;
             continue;
           }
 
-          // Execute join
-          if (_progress) { _progress.status = "running"; _progress.currentLink = slotLink.url; }
-          console.log(`[JoinManager] ▶ [W${windowNum}] Slot ${slotIdx}: ${slotLink.url}`);
-
-          const r = await joinOne(slotLink, consecutiveFailures, currentPhone);
-
-          if (r.result === "stop_all") {
-            if (_progress) { _progress.status = "stopped"; _progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }
-            windowBroken = true;
-            break;
-          }
-          if (r.result === "stop_join") {
-            const wMs = r.waitMs ?? 15 * 60_000;
-            console.warn(`[JoinManager] ⛔ stop_join — waiting ${Math.round(wMs / 60_000)} min`);
-            syncTelemetry();
-            const outcome = await interruptibleSleep(wMs, "توقف واتساب المؤقت", "cooldown");
-            if (outcome === "stopped") { windowBroken = true; }
-            break; // end this window, re-evaluate at top of outer loop
+          // Connection check
+          if (!baileysManager.isConnectedForWorkspace(wid)) {
+            console.warn(`[JoinManager:${wid}] ⚠ Connection lost — waiting 60s`);
+            if (s.progress) { s.progress.status = "paused"; s.progress.stopReason = "انقطع الاتصال بـ WhatsApp"; }
+            const outcome = await interruptibleSleep(wid, 60_000, "انتظار إعادة الاتصال", "paused");
+            if (outcome === "stopped") break;
+            continue;
           }
 
-          if (r.result === "joined")       { consecutiveFailures = 0; if (_progress) _progress.joined++; }
-          else if (r.result === "ignored") { if (_progress) _progress.ignored++; }
-          else                             { consecutiveFailures++; if (_progress) _progress.failed++; }
-
-          queueIdx++;
-          if (_progress) { _progress.processed++; _progress.currentLink = undefined; }
-          syncTelemetry();
-          await systemState.setExtra({ joinProgress: _progress }).catch(() => {});
-        }
-
-        coordinator.setWindowActive(false);
-
-        // ── Record window stats to telemetry history ──────────────────────
-        {
-          const progressSnap = _progress;
-          if (progressSnap) {
-            const report = telemetry.getReport();
-            telemetry.recordWindow({
-              windowNumber:  windowNum,
-              slotsExecuted: Math.min(SLOTS_PER_WINDOW, queueIdx),
-              joined:        progressSnap.joined,
-              failed:        progressSnap.failed,
-              ignored:       progressSnap.ignored,
-              startedAt:     new Date(windowStart).toISOString(),
-              completedAt:   new Date().toISOString(),
-              durationMs:    Date.now() - windowStart,
-              avgLatencyMs:  report.avgLatencyMs,
-              hadCooldown:   report.cooldownActive,
-            });
+          // User-activity guard
+          if (baileysManager.isUserActive(90_000)) {
+            console.log(`[JoinManager:${wid}] 👤 User is active — pausing 3 min`);
+            if (s.progress) s.progress.status = "waiting";
+            const outcome = await interruptibleSleep(wid, 3 * 60_000, "المستخدم نشط — انتظار", "waiting");
+            if (outcome === "stopped") break;
+            continue;
           }
-        }
 
-        if (windowBroken) break;
-
-        // ── Wait for remainder of the 10-minute window ────────────────────
-        if (queueIdx < queue.length && !_stopRequested) {
-          const remainingWindow = windowEnd - Date.now();
-          if (remainingWindow > 1000) {
-            if (_progress) _progress.nextJoinAt = new Date(windowEnd).toISOString();
+          // Telemetry cooldown check
+          if (tel.isCoolingDown()) {
+            const coolMs  = tel.cooldownRemaining();
+            const coolISO = new Date(Date.now() + coolMs).toISOString();
+            console.log(`[JoinManager:${wid}] 🧊 Telemetry cooldown — ${Math.round(coolMs / 60_000)} min`);
+            syncTelemetry(wid);
+            if (s.progress) { s.progress.status = "cooldown"; s.progress.nextJoinAt = coolISO; }
             const outcome = await interruptibleSleep(
-              remainingWindow,
-              `نافذة ${windowNum} — انتظار نهاية النافذة`,
-              "waiting",
-              () => new Date(windowEnd).toISOString()
+              wid, coolMs, "تبريد وقائي", "cooldown",
+              () => new Date(Date.now() + tel.cooldownRemaining()).toISOString()
             );
             if (outcome === "stopped") break;
+            continue;
+          }
+
+          // Open a new 10-minute window
+          const windowStart = Date.now();
+          const windowEnd   = windowStart + WINDOW_DURATION_MS;
+          const windowNum   = (s.progress?.windowNumber ?? 0) + 1;
+
+          if (s.progress) { s.progress.windowNumber = windowNum; s.progress.status = "waiting"; }
+
+          const [off0, off1, off2, off3] = computeSlotOffsets();
+          const slotTimes = [
+            windowStart + off0,
+            windowStart + off1,
+            windowStart + off2,
+            windowStart + off3,
+          ];
+          const slotNames = ["الأولى", "الثانية", "الثالثة", "الرابعة"];
+
+          console.log(
+            `[JoinManager:${wid}] 🪟 Window ${windowNum}: ` +
+            `slot0 @+${Math.round(off0 / 1000)}s, slot1 @+${Math.round(off1 / 1000)}s, ` +
+            `slot2 @+${Math.round(off2 / 1000)}s, slot3 @+${Math.round(off3 / 1000)}s — ` +
+            `queue[${queueIdx}/${queue.length}]`
+          );
+
+          coord.setWindowActive(true);
+          let windowBroken = false;
+
+          for (let slotIdx = 0; slotIdx < SLOTS_PER_WINDOW; slotIdx++) {
+            if (queueIdx >= queue.length || s.stopRequested) break;
+
+            const joinAt   = slotTimes[slotIdx];
+            const slotLink = queue[queueIdx];
+            const waitMs   = joinAt - Date.now();
+
+            if (waitMs > 0) {
+              if (s.progress) s.progress.nextJoinAt = new Date(joinAt).toISOString();
+              const outcome = await interruptibleSleep(
+                wid, waitMs,
+                `نافذة ${windowNum} — انتظار الفتحة ${slotNames[slotIdx]}`,
+                "waiting",
+                () => new Date(joinAt).toISOString()
+              );
+              if (outcome === "stopped") { windowBroken = true; break; }
+            }
+
+            if ((await pauseGate(wid)) === "stopped") { windowBroken = true; break; }
+            if (s.stopRequested) { windowBroken = true; break; }
+            if (!baileysManager.isConnectedForWorkspace(wid)) break;
+            if (baileysManager.isUserActive(60_000)) {
+              console.log(`[JoinManager:${wid}] 👤 User active before slot ${slotIdx} — skipping`);
+              continue;
+            }
+
+            if (s.progress) { s.progress.status = "running"; s.progress.currentLink = slotLink.url; }
+            console.log(`[JoinManager:${wid}] ▶ [W${windowNum}] Slot ${slotIdx}: ${slotLink.url}`);
+
+            const r = await joinOne(wid, slotLink, consecutiveFailures, currentPhone);
+
+            if (r.result === "stop_all") {
+              if (s.progress) { s.progress.status = "stopped"; s.progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }
+              windowBroken = true; break;
+            }
+            if (r.result === "stop_join") {
+              const wMs = r.waitMs ?? 15 * 60_000;
+              syncTelemetry(wid);
+              const outcome = await interruptibleSleep(wid, wMs, "توقف واتساب المؤقت", "cooldown");
+              if (outcome === "stopped") { windowBroken = true; }
+              break;
+            }
+
+            if (r.result === "joined")       { consecutiveFailures = 0; if (s.progress) s.progress.joined++; }
+            else if (r.result === "ignored") { if (s.progress) s.progress.ignored++; }
+            else                             { consecutiveFailures++; if (s.progress) s.progress.failed++; }
+
+            queueIdx++;
+            if (s.progress) { s.progress.processed++; s.progress.currentLink = undefined; }
+            syncTelemetry(wid);
+            await systemState.setExtra(wid, { joinProgress: s.progress }).catch(() => {});
+          }
+
+          coord.setWindowActive(false);
+
+          {
+            const snap = s.progress;
+            if (snap) {
+              const report = tel.getReport();
+              tel.recordWindow({
+                windowNumber:  windowNum,
+                slotsExecuted: Math.min(SLOTS_PER_WINDOW, queueIdx),
+                joined:        snap.joined,
+                failed:        snap.failed,
+                ignored:       snap.ignored,
+                startedAt:     new Date(windowStart).toISOString(),
+                completedAt:   new Date().toISOString(),
+                durationMs:    Date.now() - windowStart,
+                avgLatencyMs:  report.avgLatencyMs,
+                hadCooldown:   report.cooldownActive,
+              });
+            }
+          }
+
+          if (windowBroken) break;
+
+          if (queueIdx < queue.length && !s.stopRequested) {
+            const remainingWindow = windowEnd - Date.now();
+            if (remainingWindow > 1000) {
+              if (s.progress) s.progress.nextJoinAt = new Date(windowEnd).toISOString();
+              const outcome = await interruptibleSleep(
+                wid, remainingWindow,
+                `نافذة ${windowNum} — انتظار نهاية النافذة`,
+                "waiting",
+                () => new Date(windowEnd).toISOString()
+              );
+              if (outcome === "stopped") break;
+            }
           }
         }
-      }
 
-      // ── Session complete ─────────────────────────────────────────────────────
-      if (_progress) {
-        if (_progress.status === "running" || _progress.status === "waiting") {
-          _progress.status      = "done";
-          _progress.completedAt = new Date().toISOString();
+        // Session complete
+        if (s.progress) {
+          if (s.progress.status === "running" || s.progress.status === "waiting") {
+            s.progress.status      = "done";
+            s.progress.completedAt = new Date().toISOString();
+          }
+          s.progress.nextJoinAt  = undefined;
+          s.progress.currentLink = undefined;
         }
-        _progress.nextJoinAt  = undefined;
-        _progress.currentLink = undefined;
+
+        console.log(
+          `[JoinManager:${wid}] ✅ Session complete — joined: ${s.progress?.joined ?? 0}, ` +
+          `failed: ${s.progress?.failed ?? 0}, ignored: ${s.progress?.ignored ?? 0}`
+        );
+
+      } finally {
+        coord.setWindowActive(false);
+        coord.release();
+        await systemState.setActiveFunction(wid, null).catch(() => {});
+        if (s.progress && !s.progress.completedAt && s.progress.status !== "stopped") {
+          s.progress.completedAt = new Date().toISOString();
+        }
       }
+    },
+  };
+}
 
-      console.log(
-        `[JoinManager] ✅ Session complete — joined: ${_progress?.joined ?? 0}, ` +
-        `failed: ${_progress?.failed ?? 0}, ignored: ${_progress?.ignored ?? 0}`
-      );
+// ── Per-workspace manager cache ────────────────────────────────────────────────
 
-    } finally {
-      coordinator.setWindowActive(false);
-      coordinator.release();
-      await systemState.setActiveFunction(null).catch(() => {});
-      if (_progress && !_progress.completedAt && _progress.status !== "stopped") {
-        _progress.completedAt = new Date().toISOString();
-      }
-    }
-  },
-};
+const _managerCache = new Map<string, ReturnType<typeof _createManager>>();
 
-// ── Auto-pause / auto-resume on WhatsApp connection events ───────────────────
-//
-// baileysManager emits "status" (WAStatus string) whenever the ACTIVE session
-// changes state. We listen here (join-manager already depends on
-// baileysManager, so no circular import is introduced).
-//
-//   disconnect / connecting  →  autoPause()   pauses scheduler instantly
-//   connected                →  autoResume()  resumes only if WE paused it
-//
-baileysManager.on("status", (status: string) => {
+export function getJoinManagerFor(workspaceId: string): ReturnType<typeof _createManager> {
+  if (!_managerCache.has(workspaceId)) {
+    _managerCache.set(workspaceId, _createManager(workspaceId));
+  }
+  return _managerCache.get(workspaceId)!;
+}
+
+// ── Auto-pause / auto-resume on per-workspace WhatsApp status events ───────────
+
+baileysManager.on("workspace-status", ({ workspaceId: wid, status }: { workspaceId: string; status: string }) => {
+  if (!_stateByWid.has(wid)) return; // no active state for this workspace
+  const mgr = getJoinManagerFor(wid);
   if (status === "disconnected" || status === "connecting") {
-    joinManager.autoPause();
+    mgr.autoPause();
   } else if (status === "connected") {
-    joinManager.autoResume();
+    mgr.autoResume();
   }
 });

@@ -6,7 +6,9 @@ import { linkStore } from "./link-store";
 import { baileysManager } from "./baileys-manager";
 import { linksRepository } from "./modules/links-repository";
 import { systemState } from "./modules/system-state";
-import { leaveManager } from "./modules/leave-manager";
+import { getLeaveManagerFor } from "./modules/leave-manager";
+import { workspaceStore } from "./modules/workspace";
+import { workspaceAuth } from "./middleware/workspace-auth";
 
 const app = express();
 const httpServer = createServer(app);
@@ -99,15 +101,19 @@ const initServer = async () => {
   // Initialize MongoDB modules (skip if MONGODB_URI not set)
   if (process.env.MONGODB_URI) {
     try {
+      await workspaceStore.init();
       await linksRepository.init();
-      await systemState.init();
-      await leaveManager.init();
+      await systemState.init("main");
+      await getLeaveManagerFor("main").init();
       // Check if a function was interrupted on last restart — reset the lock
-      await systemState.checkRecovery();
+      await systemState.checkRecovery("main");
     } catch (err) {
       console.warn("[Startup] MongoDB modules init failed (continuing without):", (err as Error).message);
     }
   }
+
+  // Workspace auth middleware — all /api/* routes (except public ones) require X-Workspace-Key
+  app.use(workspaceAuth as any);
 
   // Auto-reconnect WhatsApp if credentials from a previous session exist
   baileysManager.autoConnect().catch(console.error);

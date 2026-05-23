@@ -1,5 +1,9 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+function getWorkspaceKey(): string {
+  return localStorage.getItem("workspace_key") ?? "";
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -12,9 +16,14 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (data) headers["Content-Type"] = "application/json";
+  const key = getWorkspaceKey();
+  if (key) headers["X-Workspace-Key"] = key;
+
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
@@ -29,8 +38,13 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
+    const key = getWorkspaceKey();
+    const headers: Record<string, string> = {};
+    if (key) headers["X-Workspace-Key"] = key;
+
     const res = await fetch(queryKey.join("/") as string, {
       credentials: "include",
+      headers,
     });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
@@ -46,11 +60,9 @@ export const getQueryFn: <T>(options: {
  * Retries on network errors and 5xx responses, not on 4xx (client errors).
  */
 function shouldRetry(failureCount: number, error: unknown): boolean {
-  if (failureCount >= 2) return false; // max 2 retries per poll cycle
+  if (failureCount >= 2) return false;
   const msg = error instanceof Error ? error.message : String(error);
-  // Don't retry on client-side auth/permission errors
   if (/^4[0-9][0-9]:/.test(msg)) return false;
-  // Retry on network errors or 5xx
   return true;
 }
 

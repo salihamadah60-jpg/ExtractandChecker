@@ -140,6 +140,7 @@ export interface SessionMeta {
   displayName: string;
   createdAt: string;
   phoneNumber?: string;
+  workspaceId?: string;
 }
 
 export interface AppMeta {

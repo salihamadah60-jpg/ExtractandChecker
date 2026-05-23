@@ -91,3 +91,14 @@ class FunctionCoordinator extends EventEmitter {
 }
 
 export const coordinator = new FunctionCoordinator();
+
+// ── Per-workspace factory ─────────────────────────────────────────────────────
+export { FunctionCoordinator };
+
+const _instances = new Map<string, FunctionCoordinator>();
+export function getCoordinatorFor(workspaceId: string): FunctionCoordinator {
+  if (!_instances.has(workspaceId)) {
+    _instances.set(workspaceId, new FunctionCoordinator());
+  }
+  return _instances.get(workspaceId)!;
+}

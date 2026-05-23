@@ -6,13 +6,14 @@ import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } fro
 import { linkStore, isMedicalGroup, hasExcludedDescription, isAdOnlyMedicalGroup, type FilteredGroup } from "./link-store.js";
 import { baileysManager } from "./baileys-manager.js";
 import { checkLinksHTTP } from "./http-checker.js";
-import { coordinator } from "./modules/function-coordinator.js";
+import { coordinator, getCoordinatorFor } from "./modules/function-coordinator.js";
 import { linksRepository } from "./modules/links-repository.js";
-import { joinManager } from "./modules/join-manager.js";
-import { telemetry } from "./modules/telemetry.js";
-import { leaveManager } from "./modules/leave-manager.js";
-import { publisher } from "./modules/publisher.js";
-import { messageReader } from "./modules/message-reader.js";
+import { getJoinManagerFor } from "./modules/join-manager.js";
+import { telemetry, getTelemetryFor } from "./modules/telemetry.js";
+import { getLeaveManagerFor } from "./modules/leave-manager.js";
+import { getPublisherFor } from "./modules/publisher.js";
+import { getMessageReaderFor } from "./modules/message-reader.js";
+import { workspaceStore } from "./modules/workspace.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -827,7 +828,8 @@ export async function registerRoutes(
   });
 
   // ── Filtered summary (groups + ads + description links) ────────────────────
-  app.get("/api/whatsapp/filtered-summary", (_req, res) => {
+  app.get("/api/whatsapp/filtered-summary", (req: any, res) => {
+    const wid: string = req.workspaceId ?? "main";
     const summary = linkStore.getFilteredSummary();
     if (linkStore.checkSession?.status === "done") {
       // Auto-save description links when summary is requested after completion
@@ -838,7 +840,7 @@ export async function registerRoutes(
       linkStore.saveFilteredResults(summary).catch(console.error);
       // Auto-save filtered results to MongoDB repository (as Pending for join manager)
       if (process.env.MONGODB_URI && (summary.groups.length + summary.ads.length > 0)) {
-        linksRepository.saveFilteredLinks(summary.groups, summary.ads)
+        linksRepository.saveFilteredLinks(wid, summary.groups, summary.ads)
           .catch((err) => console.warn("[Routes] Failed to save filtered to DB:", err.message));
       }
       // Description links: check+filter them via pipeline BEFORE saving to DB
@@ -854,7 +856,7 @@ export async function registerRoutes(
             .filter((r) => { const m = r.members ?? 0; if (m <= 10) return false; if (isAdOnlyMedicalGroup(r.name, r.description)) return true; return m <= 150 && !!r.description?.trim(); })
             .map((r) => ({ link: clean(r.url), name: r.name, members: r.members, description: r.description }));
           if (grps.length + ads2.length > 0)
-            return linksRepository.saveFilteredLinks(grps, ads2);
+            return linksRepository.saveFilteredLinks(wid, grps, ads2);
         }).catch((err) => console.warn("[Routes] Description links pipeline failed:", err.message));
       }
     }
@@ -910,36 +912,73 @@ export async function registerRoutes(
     res.send(buf);
   });
 
+  // ── Workspace API ──────────────────────────────────────────────────────────
+  app.post("/api/workspaces/create", async (req, res) => {
+    try {
+      const { name } = req.body ?? {};
+      if (!name?.trim()) return res.status(400).json({ error: "اسم مساحة العمل مطلوب" });
+      const ws = await workspaceStore.create(name.trim());
+      res.json({ id: ws.id, name: ws.name, accessKey: ws.accessKey });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/workspaces/login", async (req, res) => {
+    try {
+      const { accessKey } = req.body ?? {};
+      if (!accessKey?.trim()) return res.status(400).json({ error: "مفتاح الوصول مطلوب" });
+      const ws = await workspaceStore.findByKey(accessKey.trim());
+      if (!ws) return res.status(401).json({ error: "مفتاح الوصول غير صالح" });
+      res.json({ id: ws.id, name: ws.name, accessKey: ws.accessKey });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/workspaces/me", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId;
+      if (!wid) return res.status(401).json({ error: "غير مصرح" });
+      const ws = await workspaceStore.findById(wid);
+      if (!ws) return res.status(404).json({ error: "المساحة غير موجودة" });
+      res.json({ id: ws.id, name: ws.name });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Coordinator status ─────────────────────────────────────────────────────
-  app.get("/api/coordinator/status", (_req, res) => {
+  app.get("/api/coordinator/status", (req: any, res) => {
+    const coord = getCoordinatorFor(req.workspaceId ?? "main");
     res.json({
-      active: coordinator.getActive(),
-      isRunning: coordinator.isRunning(),
+      active: coord.getActive(),
+      isRunning: coord.isRunning(),
     });
   });
 
   // ── Links Repository ───────────────────────────────────────────────────────
-  app.get("/api/links-repository/counts", async (_req, res) => {
+  app.get("/api/links-repository/counts", async (req: any, res) => {
     try {
-      const counts = await linksRepository.countByStatus();
+      const counts = await linksRepository.countByStatus(req.workspaceId ?? "main");
       res.json(counts);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.get("/api/links-repository/joined", async (_req, res) => {
+  app.get("/api/links-repository/joined", async (req: any, res) => {
     try {
-      const links = await linksRepository.findJoined();
+      const links = await linksRepository.findJoined(req.workspaceId ?? "main");
       res.json(links);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.get("/api/links-repository/pending", async (_req, res) => {
+  app.get("/api/links-repository/pending", async (req: any, res) => {
     try {
-      const links = await linksRepository.findPendingForJoin();
+      const links = await linksRepository.findPendingForJoin(req.workspaceId ?? "main");
       res.json(links);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -951,6 +990,7 @@ export async function registerRoutes(
     try {
       if (!req.file) return res.status(400).json({ error: "لم يتم رفع ملف" });
 
+      const wid = req.workspaceId ?? "main";
       const result = await mammoth.extractRawText({ buffer: req.file.buffer });
       const htmlResult = await mammoth.convertToHtml({ buffer: req.file.buffer });
       const combined = result.value + " " + htmlResult.value;
@@ -964,12 +1004,12 @@ export async function registerRoutes(
       let added = 0;
       let duplicates = 0;
       for (const url of uniqueLinks) {
-        const wasNew = await linksRepository.addIfNew(url, "Group", "manual");
+        const wasNew = await linksRepository.addIfNew(wid, url, "Group", "manual");
         if (wasNew) added++;
         else duplicates++;
       }
 
-      console.log(`[ManualUpload] Processed ${uniqueLinks.length} links — added: ${added}, duplicates: ${duplicates}`);
+      console.log(`[ManualUpload:${wid}] Processed ${uniqueLinks.length} links — added: ${added}, duplicates: ${duplicates}`);
       res.json({ total: uniqueLinks.length, added, duplicates });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -977,15 +1017,14 @@ export async function registerRoutes(
   });
 
   // ── Join Manager ───────────────────────────────────────────────────────────
-  app.post("/api/join/start", async (req, res) => {
+  app.post("/api/join/start", async (req: any, res) => {
     try {
-      if (!baileysManager.isConnected()) {
-        return res.status(400).json({ error: "واتساب غير متصل. يُرجى الاتصال أولاً." });
-      }
+      const wid = req.workspaceId ?? "main";
+      const jm = getJoinManagerFor(wid);
       const maxLinks: number | undefined = req.body?.maxLinks ? Number(req.body.maxLinks) : undefined;
 
       let startError: string | null = null;
-      const p = joinManager.start(maxLinks).catch((err: Error) => {
+      const p = jm.start(maxLinks).catch((err: Error) => {
         startError = err.message;
         console.error("[JoinManager] Start failed:", err.message);
       });
@@ -1000,30 +1039,33 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/join/stop", (_req, res) => {
-    joinManager.requestStop();
+  app.post("/api/join/stop", (req: any, res) => {
+    getJoinManagerFor(req.workspaceId ?? "main").requestStop();
     res.json({ success: true });
   });
 
-  app.post("/api/join/pause", (_req, res) => {
-    joinManager.requestPause();
+  app.post("/api/join/pause", (req: any, res) => {
+    getJoinManagerFor(req.workspaceId ?? "main").requestPause();
     res.json({ success: true });
   });
 
-  app.post("/api/join/resume", (_req, res) => {
-    joinManager.requestResume();
+  app.post("/api/join/resume", (req: any, res) => {
+    getJoinManagerFor(req.workspaceId ?? "main").requestResume();
     res.json({ success: true });
   });
 
-  app.get("/api/join/progress", (_req, res) => {
-    res.json({ progress: joinManager.getProgress() });
+  app.get("/api/join/progress", (req: any, res) => {
+    res.json({ progress: getJoinManagerFor(req.workspaceId ?? "main").getProgress() });
   });
 
-  app.get("/api/telemetry", (_req, res) => {
+  app.get("/api/telemetry", (req: any, res) => {
+    const wid = req.workspaceId ?? "main";
+    const tel = getTelemetryFor(wid);
+    const jm  = getJoinManagerFor(wid);
     res.json({
-      report:        telemetry.getReport(),
-      windowHistory: telemetry.getWindowHistory(),
-      joinProgress:  joinManager.getProgress(),
+      report:        tel.getReport(),
+      windowHistory: tel.getWindowHistory(),
+      joinProgress:  jm.getProgress(),
     });
   });
 
@@ -1031,11 +1073,12 @@ export async function registerRoutes(
    * Reset links joined by a DIFFERENT phone back to Pending.
    * Call when switching to a new WhatsApp account.
    */
-  app.post("/api/join/reset-for-new-account", async (_req, res) => {
+  app.post("/api/join/reset-for-new-account", async (req: any, res) => {
     try {
-      const phone = baileysManager.getConnectedPhone();
+      const wid = req.workspaceId ?? "main";
+      const phone = baileysManager.getConnectedPhoneForWorkspace(wid) ?? baileysManager.getConnectedPhone();
       if (!phone) return res.status(400).json({ error: "لا يوجد حساب واتساب متصل حالياً." });
-      const count = await linksRepository.resetJoinedByOtherPhone(phone);
+      const count = await linksRepository.resetJoinedByOtherPhone(wid, phone);
       res.json({ success: true, resetCount: count, phone });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1043,79 +1086,79 @@ export async function registerRoutes(
   });
 
   // ── Leave Manager ──────────────────────────────────────────────────────────
-  app.get("/api/leave/queue", async (_req, res) => {
+  app.get("/api/leave/queue", async (req: any, res) => {
     try {
-      const queue = await leaveManager.listQueue();
+      const queue = await getLeaveManagerFor(req.workspaceId ?? "main").listQueue();
       res.json({ queue, count: queue.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/leave/enqueue", async (req, res) => {
+  app.post("/api/leave/enqueue", async (req: any, res) => {
     const { url, reason } = req.body ?? {};
     if (!url) return res.status(400).json({ error: "url مطلوب" });
     try {
-      const added = await leaveManager.enqueue(url, reason);
+      const added = await getLeaveManagerFor(req.workspaceId ?? "main").enqueue(url, reason);
       res.json({ success: true, added });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.delete("/api/leave/dequeue", async (req, res) => {
+  app.delete("/api/leave/dequeue", async (req: any, res) => {
     const { url } = req.body ?? {};
     if (!url) return res.status(400).json({ error: "url مطلوب" });
     try {
-      await leaveManager.dequeue(url);
+      await getLeaveManagerFor(req.workspaceId ?? "main").dequeue(url);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/leave/start", async (_req, res) => {
+  app.post("/api/leave/start", async (req: any, res) => {
     try {
-      leaveManager.processQueue().catch(console.error);
+      getLeaveManagerFor(req.workspaceId ?? "main").processQueue().catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
   });
 
-  app.post("/api/leave/stop", (_req, res) => {
-    leaveManager.requestStop();
+  app.post("/api/leave/stop", (req: any, res) => {
+    getLeaveManagerFor(req.workspaceId ?? "main").requestStop();
     res.json({ success: true });
   });
 
-  app.get("/api/leave/progress", (_req, res) => {
-    res.json({ progress: leaveManager.getProgress() });
+  app.get("/api/leave/progress", (req: any, res) => {
+    res.json({ progress: getLeaveManagerFor(req.workspaceId ?? "main").getProgress() });
   });
 
   // ── Publisher ──────────────────────────────────────────────────────────────
-  app.get("/api/publisher/ads", async (_req, res) => {
+  app.get("/api/publisher/ads", async (req: any, res) => {
     try {
-      const ads = await publisher.listAds();
+      const ads = await getPublisherFor(req.workspaceId ?? "main").listAds();
       res.json(ads);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/publisher/ads", async (req, res) => {
+  app.post("/api/publisher/ads", async (req: any, res) => {
     const { text } = req.body ?? {};
     if (!text?.trim()) return res.status(400).json({ error: "نص الإعلان مطلوب" });
     try {
-      const id = await publisher.addAd(text.trim());
+      const id = await getPublisherFor(req.workspaceId ?? "main").addAd(text.trim());
       res.json({ success: true, id });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.delete("/api/publisher/ads/:id", async (req, res) => {
+  app.delete("/api/publisher/ads/:id", async (req: any, res) => {
     try {
-      await publisher.removeAd(req.params.id);
+      await getPublisherFor(req.workspaceId ?? "main").removeAd(req.params.id);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1123,44 +1166,43 @@ export async function registerRoutes(
   });
 
   // ── Dashboard stats ────────────────────────────────────────────────────────
-  app.get("/api/dashboard/stats", async (_req, res) => {
+  app.get("/api/dashboard/stats", async (req: any, res) => {
     try {
+      const wid = req.workspaceId ?? "main";
       const [byStatus, bySource, trend, recent] = await Promise.all([
-        linksRepository.countByStatus(),
-        linksRepository.countBySource(),
-        linksRepository.getDailyTrend(14),
-        linksRepository.getRecent(15),
+        linksRepository.countByStatus(wid),
+        linksRepository.countBySource(wid),
+        linksRepository.getDailyTrend(wid, 14),
+        linksRepository.getRecent(wid, 15),
       ]);
       const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
-      // Today's count
       const todayStr = new Date().toISOString().slice(0, 10);
       const todayEntry = trend.find((d) => d.date === todayStr);
       const todayCount = todayEntry?.count ?? 0;
-      // Reader / join manager live stats
-      const readerStats = messageReader.getStats();
-      const joinProgress = joinManager.getProgress();
+      const readerStats = getMessageReaderFor(wid).getStats();
+      const joinProgress = getJoinManagerFor(wid).getProgress();
       res.json({ byStatus, bySource, trend, recent, total, todayCount, readerStats, joinProgress });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/publisher/start", async (_req, res) => {
+  app.post("/api/publisher/start", async (req: any, res) => {
     try {
-      publisher.start().catch(console.error);
+      getPublisherFor(req.workspaceId ?? "main").start().catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
   });
 
-  app.post("/api/publisher/stop", (_req, res) => {
-    publisher.requestStop();
+  app.post("/api/publisher/stop", (req: any, res) => {
+    getPublisherFor(req.workspaceId ?? "main").requestStop();
     res.json({ success: true });
   });
 
-  app.get("/api/publisher/progress", (_req, res) => {
-    res.json({ progress: publisher.getProgress() });
+  app.get("/api/publisher/progress", (req: any, res) => {
+    res.json({ progress: getPublisherFor(req.workspaceId ?? "main").getProgress() });
   });
 
   app.get("/api/publisher/history", async (_req, res) => {
@@ -1174,26 +1216,27 @@ export async function registerRoutes(
   });
 
   // ── Message Reader ─────────────────────────────────────────────────────────
-  app.post("/api/reader/start", async (_req, res) => {
+  app.post("/api/reader/start", async (req: any, res) => {
     try {
-      await messageReader.start();
+      await getMessageReaderFor(req.workspaceId ?? "main").start();
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
   });
 
-  app.post("/api/reader/stop", async (_req, res) => {
+  app.post("/api/reader/stop", async (req: any, res) => {
     try {
-      await messageReader.stop();
+      await getMessageReaderFor(req.workspaceId ?? "main").stop();
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.get("/api/reader/stats", (_req, res) => {
-    res.json({ stats: messageReader.getStats(), isRunning: messageReader.isRunning() });
+  app.get("/api/reader/stats", (req: any, res) => {
+    const mr = getMessageReaderFor((req as any).workspaceId ?? "main");
+    res.json({ stats: mr.getStats(), isRunning: mr.isRunning() });
   });
 
   return httpServer;

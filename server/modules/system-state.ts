@@ -1,15 +1,8 @@
 /**
- * system-state.ts — MongoDB System_State collection
+ * system-state.ts — MongoDB System_State collection (per-workspace)
  *
- * Stores the current bot state so that if Replit restarts,
- * the bot can resume from exactly where it left off.
- *
- * Fields:
- *  - is_running: whether any function is currently active
- *  - active_function: which function is running
- *  - last_read_message_id: last message processed by the reader
- *  - last_published_ad_index: rotation index for ad publishing
- *  - extra: arbitrary JSON for function-specific state (merged, never replaced)
+ * Each workspace has its own state document.
+ * All methods accept workspaceId as the first parameter.
  */
 
 import { getDb } from "../mongo-auth-state.js";
@@ -27,66 +20,59 @@ export interface SystemStateDoc {
 }
 
 const COL = "System_State";
-const DOC_ID = "main";
 
 async function col() {
   const db = await getDb();
   return db.collection<SystemStateDoc>(COL);
 }
 
+function _empty(workspaceId: string): SystemStateDoc {
+  return {
+    _id: workspaceId,
+    is_running: false,
+    active_function: null,
+    last_updated: new Date(),
+  };
+}
+
 export const systemState = {
-  /** Initialize the singleton document if it doesn't exist. */
-  async init(): Promise<void> {
+  /** Initialize workspace doc if it doesn't exist. */
+  async init(workspaceId = "main"): Promise<void> {
     const c = await col();
-    const exists = await c.findOne({ _id: DOC_ID as any });
+    const exists = await c.findOne({ _id: workspaceId as any });
     if (!exists) {
-      await c.insertOne({
-        _id: DOC_ID as any,
-        is_running: false,
-        active_function: null,
-        last_updated: new Date(),
-      } as SystemStateDoc);
+      await c.insertOne(_empty(workspaceId) as any);
     }
-    console.log("[SystemState] Ready");
+    console.log(`[SystemState] Ready (workspace: ${workspaceId})`);
   },
 
-  /** Get the current state. */
-  async get(): Promise<SystemStateDoc> {
+  async get(workspaceId = "main"): Promise<SystemStateDoc> {
     const c = await col();
-    const doc = await c.findOne({ _id: DOC_ID as any });
-    return doc ?? {
-      _id: DOC_ID,
-      is_running: false,
-      active_function: null,
-      last_updated: new Date(),
-    };
+    const doc = await c.findOne({ _id: workspaceId as any });
+    return (doc as unknown as SystemStateDoc) ?? _empty(workspaceId);
   },
 
-  /** Patch the state document. */
-  async update(patch: Partial<Omit<SystemStateDoc, "_id">>): Promise<void> {
+  async update(workspaceId = "main", patch: Partial<Omit<SystemStateDoc, "_id">>): Promise<void> {
     const c = await col();
     await c.updateOne(
-      { _id: DOC_ID as any },
+      { _id: workspaceId as any },
       { $set: { ...patch, last_updated: new Date() } },
       { upsert: true }
     );
   },
 
-  /** Set active function and is_running flag atomically. */
-  async setActiveFunction(fn: BotFunction | null): Promise<void> {
-    await systemState.update({ active_function: fn, is_running: fn !== null });
+  async setActiveFunction(workspaceId = "main", fn: BotFunction | null): Promise<void> {
+    await systemState.update(workspaceId, { active_function: fn, is_running: fn !== null });
   },
 
-  /** Save last processed message ID (for resumable reading). */
-  async setLastReadMessageId(id: string): Promise<void> {
-    await systemState.update({ last_read_message_id: id });
+  async setLastReadMessageId(workspaceId = "main", id: string): Promise<void> {
+    await systemState.update(workspaceId, { last_read_message_id: id });
   },
 
-  /** Advance the ad rotation index and return the new value. */
-  async advanceAdIndex(total: number): Promise<number> {
-    const current = await systemState.get();
+  async advanceAdIndex(workspaceId = "main", total: number): Promise<number> {
+    const current = await systemState.get(workspaceId);
     const next = ((current.last_published_ad_index ?? -1) + 1) % total;
-    await systemState.update({ last_published_ad_index: next });
+    await systemState.update(workspaceId, { last_published_ad_index: next });
     return next;
   },
 
@@ -94,7 +80,7 @@ export const systemState = {
    * Merge arbitrary function-specific state into the extra field.
    * Uses $set with dot-notation keys to avoid overwriting unrelated keys.
    */
-  async setExtra(data: Record<string, unknown>): Promise<void> {
+  async setExtra(workspaceId = "main", data: Record<string, unknown>): Promise<void> {
     const c = await col();
     const dotSet: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(data)) {
@@ -102,32 +88,26 @@ export const systemState = {
     }
     dotSet["last_updated"] = new Date();
     await c.updateOne(
-      { _id: DOC_ID as any },
+      { _id: workspaceId as any },
       { $set: dotSet },
       { upsert: true }
     );
   },
 
-  /** Save whether the reader should run continuously (persists across restarts). */
-  async setReaderContinuous(enabled: boolean): Promise<void> {
-    await systemState.update({ reader_continuous: enabled });
+  async setReaderContinuous(workspaceId = "main", enabled: boolean): Promise<void> {
+    await systemState.update(workspaceId, { reader_continuous: enabled });
   },
 
-  /** Get whether the reader was set to continuous mode. */
-  async getReaderContinuous(): Promise<boolean> {
-    const state = await systemState.get();
+  async getReaderContinuous(workspaceId = "main"): Promise<boolean> {
+    const state = await systemState.get(workspaceId);
     return state.reader_continuous ?? false;
   },
 
-  /**
-   * Check on startup whether a function was interrupted.
-   * Returns the interrupted function name if recovery is needed.
-   */
-  async checkRecovery(): Promise<BotFunction | null> {
-    const state = await systemState.get();
+  async checkRecovery(workspaceId = "main"): Promise<BotFunction | null> {
+    const state = await systemState.get(workspaceId);
     if (state.is_running && state.active_function) {
-      console.warn(`[SystemState] Recovery: "${state.active_function}" was interrupted — resetting`);
-      await systemState.setActiveFunction(null);
+      console.warn(`[SystemState] Recovery (${workspaceId}): "${state.active_function}" was interrupted — resetting`);
+      await systemState.setActiveFunction(workspaceId, null);
       return state.active_function;
     }
     return null;

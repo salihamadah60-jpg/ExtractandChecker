@@ -120,3 +120,14 @@ class TelemetrySensor {
 }
 
 export const telemetry = new TelemetrySensor();
+
+// ── Per-workspace factory ─────────────────────────────────────────────────────
+export { TelemetrySensor };
+
+const _instances = new Map<string, TelemetrySensor>();
+export function getTelemetryFor(workspaceId: string): TelemetrySensor {
+  if (!_instances.has(workspaceId)) {
+    _instances.set(workspaceId, new TelemetrySensor());
+  }
+  return _instances.get(workspaceId)!;
+}
