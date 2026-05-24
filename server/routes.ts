@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import multer from "multer";
 import mammoth from "mammoth";
 import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } from "docx";
-import { linkStore, isMedicalGroup, hasExcludedDescription, isAdOnlyMedicalGroup, type FilteredGroup } from "./link-store.js";
+import { getLinkStoreFor, isMedicalGroup, hasExcludedDescription, isAdOnlyMedicalGroup, type FilteredGroup } from "./link-store.js";
 import { baileysManager } from "./baileys-manager.js";
 import { checkLinksHTTP } from "./http-checker.js";
 import { coordinator, getCoordinatorFor } from "./modules/function-coordinator.js";
@@ -233,8 +233,9 @@ export async function registerRoutes(
         } catch { /* DB unavailable — proceed without dedup */ }
       }
 
-      linkStore.setExtracted(extracted);
-      linkStore.saveLinksToFile(req.file.originalname, extracted).catch(console.error);
+      const ls = getLinkStoreFor(req.workspaceId ?? "main");
+      ls.setExtracted(extracted);
+      ls.saveLinksToFile(req.file.originalname, extracted).catch(console.error);
       res.json({ success: true, whatsapp: extracted.whatsapp.length, telegram: extracted.telegram.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message ?? "خطأ في معالجة الملف" });
@@ -286,8 +287,9 @@ export async function registerRoutes(
       };
 
       const combinedName = `multi-${files.map((f) => f.originalname.replace(/\.docx?$/i, "")).join("-").slice(0, 50)}.docx`;
-      linkStore.setExtracted(mergedLinks);
-      linkStore.saveLinksToFile(combinedName, mergedLinks).catch(console.error);
+      const ls = getLinkStoreFor(req.workspaceId ?? "main");
+      ls.setExtracted(mergedLinks);
+      ls.saveLinksToFile(combinedName, mergedLinks).catch(console.error);
 
       res.json({
         success: true,
@@ -322,7 +324,8 @@ export async function registerRoutes(
       if (!waSet.size && !tgSet.size)
         return res.status(400).json({ error: "لم يتم العثور على روابط واتساب أو تيليغرام في الملفات" });
 
-      const { uniqueWhatsapp, uniqueTelegram, skipped } = linkStore.prepareNewRound(
+      const ls = getLinkStoreFor(req.workspaceId ?? "main");
+      const { uniqueWhatsapp, uniqueTelegram, skipped } = ls.prepareNewRound(
         [...waSet],
         [...tgSet],
         files.map((f) => f.originalname).join(", ")
@@ -341,8 +344,9 @@ export async function registerRoutes(
   });
 
   // ── Download links ─────────────────────────────────────────────────────────
-  app.get("/api/download/whatsapp", async (_req, res) => {
-    const links = linkStore.extractedLinks.whatsapp;
+  app.get("/api/download/whatsapp", async (req: any, res) => {
+    const ls = getLinkStoreFor(req.workspaceId ?? "main");
+    const links = ls.extractedLinks.whatsapp;
     if (!links.length) return res.status(404).json({ error: "لا توجد روابط واتساب" });
     const buf = await buildDocx("روابط واتساب", links);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
@@ -350,8 +354,9 @@ export async function registerRoutes(
     res.send(buf);
   });
 
-  app.get("/api/download/telegram", async (_req, res) => {
-    const links = linkStore.extractedLinks.telegram;
+  app.get("/api/download/telegram", async (req: any, res) => {
+    const ls = getLinkStoreFor(req.workspaceId ?? "main");
+    const links = ls.extractedLinks.telegram;
     if (!links.length) return res.status(404).json({ error: "لا توجد روابط تيليغرام" });
     const buf = await buildDocx("روابط تيليغرام", links);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
@@ -415,9 +420,10 @@ export async function registerRoutes(
   app.get("/api/whatsapp/status", async (req: any, res) => {
     const wid: string = req.workspaceId ?? "main";
     const hasSaved = await baileysManager.hasSavedCredentialsForWorkspace(wid);
-    const s = linkStore.checkSession;
-    // Only surface session data that belongs to this workspace
-    const sessionBelongsHere = !s?.workspaceId || s?.workspaceId === wid;
+    const ls = getLinkStoreFor(wid);
+    const s = ls.checkSession;
+    // Only surface session data that belongs to this workspace (already scoped by wid)
+    const sessionBelongsHere = true;
     const session = (s && sessionBelongsHere) ? {
       id: s.id,
       total: s.total,
@@ -555,7 +561,7 @@ export async function registerRoutes(
   app.post("/api/whatsapp/check/retry-errors", async (req: any, res) => {
     const wid: string = req.workspaceId ?? "main";
     if (!baileysManager.isConnectedForWorkspace(wid)) return res.status(400).json({ error: "واتساب غير متصل" });
-    const count = linkStore.retryErrors();
+    const count = getLinkStoreFor(wid).retryErrors();
     if (count === 0) return res.status(400).json({ error: "لا توجد أخطاء للإعادة" });
     try {
       await baileysManager.resumeChecking();

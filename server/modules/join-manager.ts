@@ -152,12 +152,16 @@ async function joinOne(
   }
   s.joiningCache.add(inviteCode);
 
-  // Pre-flight MongoDB check
+  // Pre-flight MongoDB check — skip if this phone already joined this link
   try {
     const db  = (await import("../mongo-auth-state.js")).getDb;
     const c   = (await db()).collection("Links_Repository");
-    const doc = await c.findOne({ workspaceId: wid, url: record.url }, { projection: { status: 1, joinedByPhone: 1 } });
-    if (doc?.status === "Joined" && doc?.joinedByPhone === currentPhone) {
+    const doc = await c.findOne({ workspaceId: wid, url: record.url }, { projection: { status: 1, joinedByPhone: 1, joinedByPhones: 1 } });
+    const alreadyJoined = currentPhone && (
+      (Array.isArray(doc?.joinedByPhones) && doc.joinedByPhones.includes(currentPhone)) ||
+      (!doc?.joinedByPhones && doc?.joinedByPhone === currentPhone)
+    );
+    if (alreadyJoined) {
       console.log(`[JoinManager:${wid}] ℹ Pre-flight: already joined by ${currentPhone} — skipping`);
       s.joiningCache.delete(inviteCode);
       return { result: "joined" };

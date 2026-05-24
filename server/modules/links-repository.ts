@@ -27,7 +27,8 @@ export interface LinkRecord {
   leftAt?: Date;
   checkCount: number;
   lastCheckedAt?: Date;
-  joinedByPhone?: string;
+  joinedByPhone?: string;      // legacy: last phone to join
+  joinedByPhones?: string[];   // per-phone tracking: all phones that joined this link
 }
 
 const COL = "Links_Repository";
@@ -93,13 +94,19 @@ export const linksRepository = {
 
   async setStatus(workspaceId: string, url: string, status: LinkStatus, joinedByPhone?: string): Promise<void> {
     const c = await col();
-    const extra: Partial<LinkRecord> = { status, updatedAt: new Date() };
+    const setFields: Partial<LinkRecord> = { status, updatedAt: new Date() };
     if (status === "Joined") {
-      extra.joinedAt = new Date();
-      if (joinedByPhone) extra.joinedByPhone = joinedByPhone;
+      setFields.joinedAt = new Date();
+      if (joinedByPhone) setFields.joinedByPhone = joinedByPhone;
     }
-    if (status === "Left") extra.leftAt = new Date();
-    await c.updateOne({ workspaceId, url }, { $set: extra });
+    if (status === "Left") setFields.leftAt = new Date();
+
+    const update: any = { $set: setFields };
+    if (status === "Joined" && joinedByPhone) {
+      // Track per-phone join history independently — addToSet never duplicates
+      update.$addToSet = { joinedByPhones: joinedByPhone };
+    }
+    await c.updateOne({ workspaceId, url }, update);
   },
 
   async recordCheck(workspaceId: string, url: string, name?: string, members?: number, description?: string): Promise<void> {
@@ -132,12 +139,23 @@ export const linksRepository = {
   async findPendingForJoin(workspaceId: string, currentPhone?: string): Promise<LinkRecord[]> {
     const c = await col();
     if (currentPhone) {
+      // Return links that this specific phone has NOT yet joined.
+      // Uses the joinedByPhones array for accurate per-phone tracking.
+      // Falls back to checking the legacy joinedByPhone field for old records.
       return c.find({
         workspaceId,
         $or: [
           { status: "Pending" },
-          { status: "Joined", joinedByPhone: { $exists: false } },
-          { status: "Joined", joinedByPhone: { $ne: currentPhone } },
+          {
+            status: "Joined",
+            joinedByPhones: { $nin: [currentPhone] },
+            joinedByPhone: { $ne: currentPhone },
+          },
+          {
+            status: "Joined",
+            joinedByPhones: { $exists: false },
+            joinedByPhone: { $ne: currentPhone },
+          },
         ],
       }).sort({ addedAt: 1 }).toArray();
     }
@@ -147,26 +165,60 @@ export const linksRepository = {
   async findJoined(workspaceId: string, currentPhone?: string): Promise<LinkRecord[]> {
     const c = await col();
     if (currentPhone) {
-      return c.find({ workspaceId, status: "Joined", joinedByPhone: currentPhone }).toArray();
+      // A link is "joined by this phone" if the phone is in joinedByPhones OR is the legacy joinedByPhone
+      return c.find({
+        workspaceId,
+        status: "Joined",
+        $or: [
+          { joinedByPhones: currentPhone },
+          { joinedByPhone: currentPhone, joinedByPhones: { $exists: false } },
+        ],
+      }).toArray();
     }
     return c.find({ workspaceId, status: "Joined" }).toArray();
   },
 
-  async resetJoinedByOtherPhone(workspaceId: string, currentPhone: string): Promise<number> {
+  /**
+   * Reset only the CURRENT phone's own join records back to Pending.
+   * This lets a phone restart its own join queue without disturbing other phones.
+   * Previously this wiped ALL other phones' join data — that bug is now fixed.
+   */
+  async resetMyJoinProgress(workspaceId: string, currentPhone: string): Promise<number> {
     const c = await col();
-    const result = await c.updateMany(
-      {
-        workspaceId,
-        status: "Joined",
-        $or: [
-          { joinedByPhone: { $exists: false } },
-          { joinedByPhone: { $ne: currentPhone } },
-        ],
-      },
-      { $set: { status: "Pending" as LinkStatus, updatedAt: new Date() }, $unset: { joinedAt: "" } }
-    );
-    console.log(`[LinksRepository] Reset ${result.modifiedCount} links joined by other accounts (wid: ${workspaceId})`);
-    return result.modifiedCount;
+    // Remove current phone from joinedByPhones array; if that empties the array, reset status to Pending
+    const joined = await c.find({
+      workspaceId,
+      $or: [
+        { joinedByPhones: currentPhone },
+        { joinedByPhone: currentPhone, joinedByPhones: { $exists: false } },
+      ],
+    }, { projection: { url: 1, joinedByPhones: 1 } }).toArray();
+
+    let resetCount = 0;
+    for (const doc of joined) {
+      const remaining = (doc.joinedByPhones ?? []).filter((p: string) => p !== currentPhone);
+      if (remaining.length === 0) {
+        // No other phone has joined this — safe to reset to Pending
+        await c.updateOne(
+          { workspaceId, url: doc.url },
+          { $set: { status: "Pending" as LinkStatus, updatedAt: new Date() }, $unset: { joinedAt: "", joinedByPhone: "", joinedByPhones: "" } }
+        );
+      } else {
+        // Other phones joined — just remove current phone from the array
+        await c.updateOne(
+          { workspaceId, url: doc.url },
+          { $set: { updatedAt: new Date() }, $pull: { joinedByPhones: currentPhone } as any }
+        );
+      }
+      resetCount++;
+    }
+    console.log(`[LinksRepository] Reset ${resetCount} of my join records (phone: ${currentPhone}, wid: ${workspaceId})`);
+    return resetCount;
+  },
+
+  /** @deprecated Use resetMyJoinProgress — kept for backward compat */
+  async resetJoinedByOtherPhone(workspaceId: string, currentPhone: string): Promise<number> {
+    return this.resetMyJoinProgress(workspaceId, currentPhone);
   },
 
   async countByStatusForPhone(workspaceId: string, currentPhone?: string): Promise<Record<LinkStatus, number>> {
@@ -179,14 +231,19 @@ export const linksRepository = {
     all.forEach((d: any) => { result[d._id] = d.count; });
 
     if (currentPhone) {
-      const joinedByMe = await c.countDocuments({ workspaceId, status: "Joined", joinedByPhone: currentPhone });
-      const joinedByOthers = await c.countDocuments({
+      // Count links this specific phone has joined (using joinedByPhones array)
+      const joinedByMe = await c.countDocuments({
         workspaceId,
         status: "Joined",
-        $or: [{ joinedByPhone: { $ne: currentPhone } }, { joinedByPhone: { $exists: false } }],
+        $or: [
+          { joinedByPhones: currentPhone },
+          { joinedByPhone: currentPhone, joinedByPhones: { $exists: false } },
+        ],
       });
+      // Links joined by the system but NOT by this phone are effectively Pending for this phone
+      const joinedByOthers = result.Joined - joinedByMe;
       result.Joined = joinedByMe;
-      result.Pending = result.Pending + joinedByOthers;
+      result.Pending = result.Pending + Math.max(0, joinedByOthers);
     }
 
     return result as Record<LinkStatus, number>;

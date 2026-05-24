@@ -453,16 +453,28 @@ function extractLinksFromText(text: string): string[] {
 }
 
 class LinkStore {
+  private _wid: string;
+  private _stateFile: string;
+  private _stateTmpFile: string;
+
   extractedLinks: ExtractedLinks = { whatsapp: [], telegram: [] };
   checkSession: CheckSession | null = null;
   joinSession: JoinSession | null = null;
   newRoundLinks: ExtractedLinks = { whatsapp: [], telegram: [] };
   uploadedFileName: string = "";
 
+  constructor(wid: string = "main") {
+    this._wid = wid;
+    this._stateFile = wid === "main"
+      ? STATE_FILE
+      : path.join(ROOT_DIR, `.session-state-${wid}.json`);
+    this._stateTmpFile = this._stateFile + ".tmp";
+  }
+
   async loadFromDisk(): Promise<void> {
     await ensureDirs();
     try {
-      const raw = await fs.readFile(STATE_FILE, "utf-8");
+      const raw = await fs.readFile(this._stateFile, "utf-8");
       const saved: PersistedState = JSON.parse(raw);
       this.extractedLinks = saved.extractedLinks ?? { whatsapp: [], telegram: [] };
       this.uploadedFileName = saved.uploadedFileName ?? "";
@@ -513,10 +525,10 @@ class LinkStore {
       };
       const json = JSON.stringify(state, null, 2);
       // Atomic write: write to .tmp first, then rename to prevent corruption on crash
-      await fs.writeFile(STATE_FILE_TMP, json, "utf-8");
-      await fs.rename(STATE_FILE_TMP, STATE_FILE);
+      await fs.writeFile(this._stateTmpFile, json, "utf-8");
+      await fs.rename(this._stateTmpFile, this._stateFile);
     } catch (err) {
-      console.error("[LinkStore] Failed to save state:", err);
+      console.error(`[LinkStore:${this._wid}] Failed to save state:`, err);
     }
   }
 
@@ -933,4 +945,18 @@ class LinkStore {
   }
 }
 
-export const linkStore = new LinkStore();
+// ── Per-workspace store cache ──────────────────────────────────────────────────
+const _storeCache = new Map<string, LinkStore>();
+
+export function getLinkStoreFor(wid: string): LinkStore {
+  const key = wid || "main";
+  if (!_storeCache.has(key)) {
+    const store = new LinkStore(key);
+    store.loadFromDisk().catch(() => {});
+    _storeCache.set(key, store);
+  }
+  return _storeCache.get(key)!;
+}
+
+// Backward-compat singleton for "main" workspace
+export const linkStore = getLinkStoreFor("main");
