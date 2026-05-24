@@ -29,7 +29,7 @@ export async function workspaceAuth(
     return next();
   }
 
-  const key = (req.headers["x-workspace-key"] as string) ?? "";
+  const key = (req.headers["x-workspace-key"] as string) || (req.query?.["wk"] as string) || "";
   if (!key) {
     res.status(401).json({ error: "مطلوب مفتاح الوصول (X-Workspace-Key)" });
     return;

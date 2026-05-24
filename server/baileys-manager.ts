@@ -973,9 +973,13 @@ class SessionsManager extends EventEmitter {
 
   isConnectedForWorkspace(workspaceId: string): boolean {
     const s = this.getActiveStateForWorkspace(workspaceId);
-    if (s) return s.status === "connected" && !!s.sock;
-    // Fallback: use global active session when no workspace-specific mapping exists
-    return this.isConnected();
+    return !!(s && s.status === "connected" && s.sock);
+  }
+
+  async hasSavedCredentialsForWorkspace(workspaceId: string): Promise<boolean> {
+    const sessionId = this._activeSessionByWorkspace.get(workspaceId);
+    if (!sessionId) return false;
+    return mongoSessionHasCreds(sessionId).catch(() => false);
   }
 
   getConnectedPhoneForWorkspace(workspaceId: string): string | null {

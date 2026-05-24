@@ -20,7 +20,7 @@ import {
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
 type WAStatus = "disconnected" | "connecting" | "qr_ready" | "pairing" | "connected" | "auth_failed";
-type Step = "upload" | "links" | "connect" | "checking" | "results";
+type Step = "upload" | "links" | "checking" | "results";
 type ConnectMode = "qr" | "pair" | "saved";
 
 interface WASessionInfo {
@@ -162,10 +162,19 @@ interface PublishSession {
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "رفع الملف" },
   { key: "links", label: "الروابط والاتصال" },
-  { key: "connect", label: "ربط واتساب" },
   { key: "checking", label: "الفحص" },
   { key: "results", label: "النتائج" },
 ];
+
+function wkHeaders(): Record<string, string> {
+  const k = localStorage.getItem("workspace_key") ?? "";
+  return k ? { "X-Workspace-Key": k } : {};
+}
+
+function openWithKey(path: string): void {
+  const k = localStorage.getItem("workspace_key") ?? "";
+  window.open(k ? `${path}?wk=${encodeURIComponent(k)}` : path, "_blank");
+}
 
 export default function Home() {
   const { toast } = useToast();
@@ -331,7 +340,7 @@ export default function Home() {
     mutationFn: async (file: File) => {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const res = await fetch("/api/upload", { method: "POST", body: fd, headers: wkHeaders() });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
       return data;
@@ -350,7 +359,7 @@ export default function Home() {
     mutationFn: async (files: File[]) => {
       const fd = new FormData();
       files.forEach((f) => fd.append("files", f));
-      const res = await fetch("/api/upload-multiple", { method: "POST", body: fd });
+      const res = await fetch("/api/upload-multiple", { method: "POST", body: fd, headers: wkHeaders() });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
       return data;
@@ -369,7 +378,7 @@ export default function Home() {
     mutationFn: async (files: File[]) => {
       const fd = new FormData();
       files.forEach((f) => fd.append("files", f));
-      const res = await fetch("/api/upload-new-round", { method: "POST", body: fd });
+      const res = await fetch("/api/upload-new-round", { method: "POST", body: fd, headers: wkHeaders() });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
       return data as NewRoundRes;
@@ -391,7 +400,7 @@ export default function Home() {
     mutationFn: async (files: File[]) => {
       const fd = new FormData();
       files.forEach((f) => fd.append("files", f));
-      const res = await fetch("/api/upload-fresh", { method: "POST", body: fd });
+      const res = await fetch("/api/upload-fresh", { method: "POST", body: fd, headers: wkHeaders() });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "خطأ في الرفع");
       return data as FreshUploadRes;
@@ -1296,7 +1305,7 @@ export default function Home() {
                       try {
                         const fd = new FormData();
                         fd.append("file", file);
-                        const resp = await fetch("/api/links-repository/manual-upload", { method: "POST", body: fd });
+                        const resp = await fetch("/api/links-repository/manual-upload", { method: "POST", body: fd, headers: wkHeaders() });
                         const data = await resp.json();
                         if (!resp.ok) throw new Error(data.error || "خطأ في الرفع");
                         setManualUploadResult(data);
@@ -1636,7 +1645,7 @@ export default function Home() {
                       </div>
                     </div>
                     <Button size="sm" className="flex-shrink-0 bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 px-3"
-                      onClick={() => setStep("connect")}
+                      onClick={() => setStep("links")}
                       data-testid="button-resume-session">
                       استئناف
                     </Button>
@@ -1689,14 +1698,14 @@ export default function Home() {
                   {/* Action buttons */}
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" className="flex-1 min-w-0"
-                      onClick={() => window.open("/api/whatsapp/download-groups", "_blank")}
+                      onClick={() => openWithKey("/api/whatsapp/download-groups")}
                       disabled={!previousResults.groups}
                       data-testid="button-prev-download-groups">
                       <Download className="w-3.5 h-3.5 ml-1.5" />
                       <span className="truncate">ملف المجموعات ({previousResults.groups ?? 0})</span>
                     </Button>
                     <Button size="sm" variant="outline" className="flex-1 min-w-0"
-                      onClick={() => window.open("/api/whatsapp/download-ads", "_blank")}
+                      onClick={() => openWithKey("/api/whatsapp/download-ads")}
                       disabled={!previousResults.ads}
                       data-testid="button-prev-download-ads">
                       <Download className="w-3.5 h-3.5 ml-1.5" />
@@ -1722,7 +1731,7 @@ export default function Home() {
                         </p>
                       </div>
                       <Button size="sm" variant="outline"
-                        onClick={() => window.open("/api/whatsapp/download-join-results", "_blank")}
+                        onClick={() => openWithKey("/api/whatsapp/download-join-results")}
                         data-testid="button-prev-download-join">
                         <Download className="w-3.5 h-3.5 ml-1.5" />
                         نتائج الانضمام
@@ -1818,7 +1827,7 @@ export default function Home() {
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center"><SiWhatsapp className="w-5 h-5 text-primary" /></div>
                     <div><p className="font-bold text-2xl leading-none">{linkCounts.whatsapp}</p><p className="text-sm text-muted-foreground">رابط واتساب</p></div>
                   </div>
-                  <Button className="w-full" variant="outline" onClick={() => window.open("/api/download/whatsapp", "_blank")} disabled={!linkCounts.whatsapp} data-testid="button-download-whatsapp">
+                  <Button className="w-full" variant="outline" onClick={() => openWithKey("/api/download/whatsapp")} disabled={!linkCounts.whatsapp} data-testid="button-download-whatsapp">
                     <Download className="w-4 h-4 ml-2" />تحميل روابط واتساب
                   </Button>
                 </CardContent>
@@ -1829,7 +1838,7 @@ export default function Home() {
                     <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center"><SiTelegram className="w-5 h-5 text-blue-500" /></div>
                     <div><p className="font-bold text-2xl leading-none">{linkCounts.telegram}</p><p className="text-sm text-muted-foreground">رابط تيليغرام</p></div>
                   </div>
-                  <Button className="w-full" variant="outline" onClick={() => window.open("/api/download/telegram", "_blank")} disabled={!linkCounts.telegram} data-testid="button-download-telegram">
+                  <Button className="w-full" variant="outline" onClick={() => openWithKey("/api/download/telegram")} disabled={!linkCounts.telegram} data-testid="button-download-telegram">
                     <Download className="w-4 h-4 ml-2" />تحميل روابط تيليغرام
                   </Button>
                 </CardContent>
@@ -2191,17 +2200,12 @@ export default function Home() {
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
                     {session.completedBatches.map((batchNum) => (
-                      <a
-                        key={batchNum}
-                        href={`/api/whatsapp/download-batch/${batchNum}`}
-                        download={`batch-${batchNum}.docx`}
-                        data-testid={`link-download-batch-${batchNum}`}
-                      >
-                        <Button variant="outline" size="sm" className="gap-1.5">
-                          <Download className="w-3.5 h-3.5" />
-                          الدفعة {batchNum}
-                        </Button>
-                      </a>
+                      <Button key={batchNum} variant="outline" size="sm" className="gap-1.5"
+                        onClick={() => openWithKey(`/api/whatsapp/download-batch/${batchNum}`)}
+                        data-testid={`link-download-batch-${batchNum}`}>
+                        <Download className="w-3.5 h-3.5" />
+                        الدفعة {batchNum}
+                      </Button>
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">كل دفعة تحتوي على 1000 رابط مفحوص</p>
@@ -2236,7 +2240,7 @@ export default function Home() {
                     {filteredSummary && <Badge variant="secondary">{filteredSummary.groups}</Badge>}
                   </div>
                   <Button className="w-full" variant="outline"
-                    onClick={() => window.open("/api/whatsapp/download-groups", "_blank")}
+                    onClick={() => openWithKey("/api/whatsapp/download-groups")}
                     disabled={!filteredSummary || filteredSummary.groups === 0}
                     data-testid="button-download-groups">
                     <Download className="w-4 h-4 ml-2" />تحميل ملف المجموعات
@@ -2257,7 +2261,7 @@ export default function Home() {
                     {filteredSummary && <Badge variant="secondary">{filteredSummary.ads}</Badge>}
                   </div>
                   <Button className="w-full" variant="outline"
-                    onClick={() => window.open("/api/whatsapp/download-ads", "_blank")}
+                    onClick={() => openWithKey("/api/whatsapp/download-ads")}
                     disabled={!filteredSummary || filteredSummary.ads === 0}
                     data-testid="button-download-ads">
                     <Download className="w-4 h-4 ml-2" />تحميل ملف الإعلانات
@@ -2279,7 +2283,7 @@ export default function Home() {
                   </div>
                   <Badge className="ml-1">{filteredSummary.descriptionLinks}</Badge>
                   <Button size="sm" variant="outline" className="flex-shrink-0"
-                    onClick={() => window.open("/api/whatsapp/download-description-links", "_blank")}
+                    onClick={() => openWithKey("/api/whatsapp/download-description-links")}
                     data-testid="button-download-description-links">
                     <Download className="w-3.5 h-3.5 ml-1.5" />
                     تحميل
@@ -2300,7 +2304,7 @@ export default function Home() {
                     <p className="text-xs text-muted-foreground">تم استخراج {linkCounts.telegram} رابط تيليغرام من الملف</p>
                   </div>
                   <Button size="sm" variant="outline"
-                    onClick={() => window.open("/api/download/telegram", "_blank")}
+                    onClick={() => openWithKey("/api/download/telegram")}
                     data-testid="button-download-telegram-results">
                     <Download className="w-3.5 h-3.5 ml-1.5" />
                     تحميل
@@ -2312,7 +2316,7 @@ export default function Home() {
             {/* ── 3 action buttons ── */}
             <div className="grid grid-cols-3 gap-3">
               <Button variant="outline"
-                onClick={() => window.open("/api/whatsapp/download-groups", "_blank")}
+                onClick={() => openWithKey("/api/whatsapp/download-groups")}
                 disabled={!filteredSummary || filteredSummary.groups === 0}
                 className="flex-col h-16 gap-1 text-xs"
                 data-testid="button-dl-groups-bottom">
@@ -2320,7 +2324,7 @@ export default function Home() {
                 <span>ملف المجموعات</span>
               </Button>
               <Button variant="outline"
-                onClick={() => window.open("/api/whatsapp/download-ads", "_blank")}
+                onClick={() => openWithKey("/api/whatsapp/download-ads")}
                 disabled={!filteredSummary || filteredSummary.ads === 0}
                 className="flex-col h-16 gap-1 text-xs"
                 data-testid="button-dl-ads-bottom">

@@ -388,7 +388,7 @@ export async function registerRoutes(
       // Bind session to this workspace AND set as global active session
       baileysManager.activateSessionForWorkspace(req.params.id, wid);
       await baileysManager.activateSession(req.params.id);
-      const hasSaved = await baileysManager.hasSavedCredentials();
+      const hasSaved = await baileysManager.hasSavedCredentialsForWorkspace(wid);
       res.json({ success: true, sessions: baileysManager.getSessionsForWorkspace(wid), hasSavedSession: hasSaved });
     } catch (err: any) { res.status(400).json({ error: err.message }); }
   });
@@ -414,7 +414,7 @@ export async function registerRoutes(
   // ── WhatsApp status ────────────────────────────────────────────────────────
   app.get("/api/whatsapp/status", async (req: any, res) => {
     const wid: string = req.workspaceId ?? "main";
-    const hasSaved = await baileysManager.hasSavedCredentials();
+    const hasSaved = await baileysManager.hasSavedCredentialsForWorkspace(wid);
     const s = linkStore.checkSession;
     // Only surface session data that belongs to this workspace
     const sessionBelongsHere = !s?.workspaceId || s?.workspaceId === wid;
@@ -433,9 +433,9 @@ export async function registerRoutes(
     // Return workspace-scoped session list and active session
     const wsState = baileysManager.getActiveStateForWorkspace(wid);
     res.json({
-      status: wsState?.status ?? baileysManager.getStatus(),
-      qrCode: wsState?.qrCode ?? baileysManager.getQrCode(),
-      pairingCode: wsState?.pairingCode ?? baileysManager.getPairingCode(),
+      status: wsState?.status ?? "disconnected",
+      qrCode: wsState?.qrCode ?? null,
+      pairingCode: wsState?.pairingCode ?? null,
       session,
       hasSavedSession: hasSaved,
       sessions: baileysManager.getSessionsForWorkspace(wid),
@@ -447,9 +447,9 @@ export async function registerRoutes(
   app.post("/api/whatsapp/connect", async (req: any, res) => {
     try {
       const wid: string = req.workspaceId ?? "main";
-      // Sync: ensure the workspace's active session is the global active session
-      const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
-      if (wActiveId) await baileysManager.activateSession(wActiveId);
+      let wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
+      if (!wActiveId) wActiveId = await baileysManager.createSessionForWorkspace("", wid);
+      await baileysManager.activateSession(wActiveId);
       baileysManager.connect(false).catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
@@ -463,8 +463,9 @@ export async function registerRoutes(
     if (!phone) return res.status(400).json({ error: "أدخل رقم الهاتف" });
     try {
       const wid: string = req.workspaceId ?? "main";
-      const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
-      if (wActiveId) await baileysManager.activateSession(wActiveId);
+      let wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
+      if (!wActiveId) wActiveId = await baileysManager.createSessionForWorkspace("", wid);
+      await baileysManager.activateSession(wActiveId);
       baileysManager.connect(true, phone.replace(/\D/g, "")).catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
