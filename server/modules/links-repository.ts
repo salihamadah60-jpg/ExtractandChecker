@@ -216,6 +216,7 @@ export const linksRepository = {
     descLinks?: string[]
   ): Promise<{ newGroups: number; newAds: number; newDescLinks: number }> {
     let newGroups = 0;
+    let newAds = 0;
     let newDescLinks = 0;
 
     for (const g of groups) {
@@ -223,6 +224,13 @@ export const linksRepository = {
         name: g.name, members: g.members, description: g.description,
       });
       if (added) newGroups++;
+    }
+
+    for (const a of ads) {
+      const added = await this.addIfNew(workspaceId, a.link, "Group", "upload", {
+        name: a.name, members: a.members, description: a.description,
+      });
+      if (added) newAds++;
     }
 
     if (descLinks) {
@@ -233,8 +241,8 @@ export const linksRepository = {
       }
     }
 
-    console.log(`[LinksRepository] Filtered saved (wid: ${workspaceId}) → ${newGroups} new groups, ${newDescLinks} new desc links`);
-    return { newGroups, newAds: 0, newDescLinks };
+    console.log(`[LinksRepository] Filtered saved (wid: ${workspaceId}) → ${newGroups} new groups, ${newAds} new ads, ${newDescLinks} new desc links`);
+    return { newGroups, newAds, newDescLinks };
   },
 
   async getDailyTrend(workspaceId: string, days = 14): Promise<{ date: string; count: number }[]> {

@@ -65,11 +65,19 @@ export const workspaceStore = {
 
   async setActiveSession(workspaceId: string, sessionId: string | null): Promise<void> {
     const c = await col();
-    await c.updateOne(
-      { _id: workspaceId as any },
-      { $set: { activeSessionId: sessionId ?? null } },
-      { upsert: false }
-    );
+    if (sessionId === null) {
+      await c.updateOne(
+        { _id: workspaceId as any },
+        { $unset: { activeSessionId: "" } },
+        { upsert: false }
+      );
+    } else {
+      await c.updateOne(
+        { _id: workspaceId as any },
+        { $set: { activeSessionId: sessionId } },
+        { upsert: false }
+      );
+    }
   },
 
   async delete(id: string): Promise<void> {

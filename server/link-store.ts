@@ -469,9 +469,9 @@ class LinkStore {
       // Migrate old joinSession without joinedLinks/failedLinks
       if (saved.joinSession) {
         this.joinSession = {
-          joinedLinks: [],
-          failedLinks: [],
           ...saved.joinSession,
+          joinedLinks: saved.joinSession.joinedLinks ?? [],
+          failedLinks: saved.joinSession.failedLinks ?? [],
         };
       } else {
         this.joinSession = null;
@@ -482,8 +482,8 @@ class LinkStore {
         }
         // Migrate old sessions without completedBatches
         this.checkSession = {
-          completedBatches: [],
           ...saved.checkSession,
+          completedBatches: saved.checkSession.completedBatches ?? [],
         };
         const done = saved.checkSession.results.filter((r) => r.status !== "pending").length;
         console.log(`[LinkStore] Loaded saved state — ${done}/${saved.checkSession.total} links already checked`);

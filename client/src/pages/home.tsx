@@ -20,7 +20,7 @@ import {
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
 type WAStatus = "disconnected" | "connecting" | "qr_ready" | "pairing" | "connected" | "auth_failed";
-type Step = "upload" | "links" | "checking" | "results";
+type Step = "upload" | "links" | "connect" | "checking" | "results";
 type ConnectMode = "qr" | "pair" | "saved";
 
 interface WASessionInfo {
@@ -162,6 +162,7 @@ interface PublishSession {
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "رفع الملف" },
   { key: "links", label: "الروابط والاتصال" },
+  { key: "connect", label: "ربط واتساب" },
   { key: "checking", label: "الفحص" },
   { key: "results", label: "النتائج" },
 ];
@@ -779,7 +780,7 @@ export default function Home() {
     prevCooldownRef.current = !!joinProgress2.telemetry?.cooldownActive;
 
     // New window completed (windowNumber increased means last window finished)
-    if (joinProgress2.windowNumber > prevWin && prevWin > 0) {
+    if ((joinProgress2.windowNumber ?? 0) > prevWin && prevWin > 0) {
       const joined = joinProgress2.joined;
       sendNotif(
         `✅ نافذة ${prevWin} اكتملت`,
@@ -790,7 +791,7 @@ export default function Home() {
         }`
       );
     }
-    prevWindowNumRef.current = joinProgress2.windowNumber;
+    prevWindowNumRef.current = joinProgress2.windowNumber ?? 0;
 
     // Session done
     if (prev && prev !== "done" && joinProgress2.status === "done") {

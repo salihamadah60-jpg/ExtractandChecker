@@ -24,7 +24,7 @@ export interface CheckSession {
 }
 
 class WhatsAppManager extends EventEmitter {
-  private client: Client | null = null;
+  private client: any | null = null;
   private qrCodeData: string | null = null;
   private sessionStatus: SessionStatus = "disconnected";
   private currentSession: CheckSession | null = null;
@@ -66,7 +66,7 @@ class WhatsAppManager extends EventEmitter {
         },
       });
 
-      this.client.on("qr", async (qr) => {
+      this.client.on("qr", async (qr: string) => {
         try {
           this.qrCodeData = await qrcode.toDataURL(qr, {
             width: 300,
@@ -94,13 +94,13 @@ class WhatsAppManager extends EventEmitter {
         console.log("[WhatsApp] Authenticated");
       });
 
-      this.client.on("auth_failure", (msg) => {
+      this.client.on("auth_failure", (msg: string) => {
         this.sessionStatus = "auth_failed";
         this.emit("status", this.sessionStatus);
         console.error("[WhatsApp] Auth failure:", msg);
       });
 
-      this.client.on("disconnected", (reason) => {
+      this.client.on("disconnected", (reason: string) => {
         this.sessionStatus = "disconnected";
         this.qrCodeData = null;
         this.client = null;

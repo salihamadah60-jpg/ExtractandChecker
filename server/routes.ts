@@ -222,7 +222,7 @@ export async function registerRoutes(
       // Dedup WhatsApp links against MongoDB repository if available
       if (process.env.MONGODB_URI) {
         try {
-          const knownUrls = await linksRepository.getAllUrls();
+          const knownUrls = await linksRepository.getAllUrls(req.workspaceId ?? "main");
           const before = extracted.whatsapp.length;
           extracted.whatsapp = extracted.whatsapp.filter((u) => !knownUrls.has(u));
           const skipped = before - extracted.whatsapp.length;
@@ -270,7 +270,7 @@ export async function registerRoutes(
       // Dedup against MongoDB repository if available
       if (process.env.MONGODB_URI) {
         try {
-          const knownUrls = await linksRepository.getAllUrls();
+          const knownUrls = await linksRepository.getAllUrls(req.workspaceId ?? "main");
           for (const url of [...allWhatsapp]) {
             if (knownUrls.has(url)) allWhatsapp.delete(url);
           }
@@ -918,7 +918,7 @@ export async function registerRoutes(
       const { name } = req.body ?? {};
       if (!name?.trim()) return res.status(400).json({ error: "اسم مساحة العمل مطلوب" });
       const ws = await workspaceStore.create(name.trim());
-      res.json({ id: ws.id, name: ws.name, accessKey: ws.accessKey });
+      res.json({ id: ws._id, name: ws.name, accessKey: ws.accessKey });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -930,7 +930,7 @@ export async function registerRoutes(
       if (!accessKey?.trim()) return res.status(400).json({ error: "مفتاح الوصول مطلوب" });
       const ws = await workspaceStore.findByKey(accessKey.trim());
       if (!ws) return res.status(401).json({ error: "مفتاح الوصول غير صالح" });
-      res.json({ id: ws.id, name: ws.name, accessKey: ws.accessKey });
+      res.json({ id: ws._id, name: ws.name, accessKey: ws.accessKey });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -942,7 +942,7 @@ export async function registerRoutes(
       if (!wid) return res.status(401).json({ error: "غير مصرح" });
       const ws = await workspaceStore.findById(wid);
       if (!ws) return res.status(404).json({ error: "المساحة غير موجودة" });
-      res.json({ id: ws.id, name: ws.name });
+      res.json({ id: ws._id, name: ws.name });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
