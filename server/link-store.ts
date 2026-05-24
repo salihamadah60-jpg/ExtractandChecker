@@ -399,6 +399,7 @@ export interface CheckSession {
   completedAt?: string;
   completedBatches: number[];   // batch numbers (1-based) whose files are saved
   rateLimitInfo?: RateLimitInfo | null;
+  workspaceId?: string;         // which workspace owns this session
 }
 
 export interface JoinSession {

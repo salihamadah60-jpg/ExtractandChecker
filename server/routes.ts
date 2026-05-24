@@ -357,14 +357,18 @@ export async function registerRoutes(
   });
 
   // ── Sessions management ────────────────────────────────────────────────────
-  app.get("/api/sessions", (_req, res) => {
-    res.json({ sessions: baileysManager.getSessions(), activeSessionId: baileysManager.activeSessionId });
+  app.get("/api/sessions", (req: any, res) => {
+    const wid: string = req.workspaceId ?? "main";
+    const sessions = baileysManager.getSessionsForWorkspace(wid);
+    const activeSessionId = baileysManager.getActiveSessionIdForWorkspace(wid);
+    res.json({ sessions, activeSessionId });
   });
 
-  app.post("/api/sessions", async (_req, res) => {
+  app.post("/api/sessions", async (req: any, res) => {
     try {
-      const id = await baileysManager.createSession();
-      res.json({ success: true, id, sessions: baileysManager.getSessions() });
+      const wid: string = req.workspaceId ?? "main";
+      const id = await baileysManager.createSessionForWorkspace("", wid);
+      res.json({ success: true, id, sessions: baileysManager.getSessionsForWorkspace(wid) });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -375,11 +379,14 @@ export async function registerRoutes(
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post("/api/sessions/:id/activate", async (req, res) => {
+  app.post("/api/sessions/:id/activate", async (req: any, res) => {
     try {
+      const wid: string = req.workspaceId ?? "main";
+      // Bind session to this workspace AND set as global active session
+      baileysManager.activateSessionForWorkspace(req.params.id, wid);
       await baileysManager.activateSession(req.params.id);
       const hasSaved = await baileysManager.hasSavedCredentials();
-      res.json({ success: true, sessions: baileysManager.getSessions(), hasSavedSession: hasSaved });
+      res.json({ success: true, sessions: baileysManager.getSessionsForWorkspace(wid), hasSavedSession: hasSaved });
     } catch (err: any) { res.status(400).json({ error: err.message }); }
   });
 
@@ -402,10 +409,13 @@ export async function registerRoutes(
   });
 
   // ── WhatsApp status ────────────────────────────────────────────────────────
-  app.get("/api/whatsapp/status", async (_req, res) => {
+  app.get("/api/whatsapp/status", async (req: any, res) => {
+    const wid: string = req.workspaceId ?? "main";
     const hasSaved = await baileysManager.hasSavedCredentials();
     const s = linkStore.checkSession;
-    const session = s ? {
+    // Only surface session data that belongs to this workspace
+    const sessionBelongsHere = !s?.workspaceId || s?.workspaceId === wid;
+    const session = (s && sessionBelongsHere) ? {
       id: s.id,
       total: s.total,
       progress: s.progress,
@@ -417,20 +427,26 @@ export async function registerRoutes(
       invalidCount: s.results.filter((r) => r.status === "invalid").length,
       errorCount: s.results.filter((r) => r.status === "error").length,
     } : null;
+    // Return workspace-scoped session list and active session
+    const wsState = baileysManager.getActiveStateForWorkspace(wid);
     res.json({
-      status: baileysManager.getStatus(),
-      qrCode: baileysManager.getQrCode(),
-      pairingCode: baileysManager.getPairingCode(),
+      status: wsState?.status ?? baileysManager.getStatus(),
+      qrCode: wsState?.qrCode ?? baileysManager.getQrCode(),
+      pairingCode: wsState?.pairingCode ?? baileysManager.getPairingCode(),
       session,
       hasSavedSession: hasSaved,
-      sessions: baileysManager.getSessions(),
-      activeSessionId: baileysManager.activeSessionId,
+      sessions: baileysManager.getSessionsForWorkspace(wid),
+      activeSessionId: baileysManager.getActiveSessionIdForWorkspace(wid),
     });
   });
 
   // ── Connect QR mode ────────────────────────────────────────────────────────
-  app.post("/api/whatsapp/connect", async (_req, res) => {
+  app.post("/api/whatsapp/connect", async (req: any, res) => {
     try {
+      const wid: string = req.workspaceId ?? "main";
+      // Sync: ensure the workspace's active session is the global active session
+      const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
+      if (wActiveId) await baileysManager.activateSession(wActiveId);
       baileysManager.connect(false).catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
@@ -439,10 +455,13 @@ export async function registerRoutes(
   });
 
   // ── Connect pairing code mode ──────────────────────────────────────────────
-  app.post("/api/whatsapp/pair", async (req, res) => {
+  app.post("/api/whatsapp/pair", async (req: any, res) => {
     const { phone } = req.body as { phone: string };
     if (!phone) return res.status(400).json({ error: "أدخل رقم الهاتف" });
     try {
+      const wid: string = req.workspaceId ?? "main";
+      const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
+      if (wActiveId) await baileysManager.activateSession(wActiveId);
       baileysManager.connect(true, phone.replace(/\D/g, "")).catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
@@ -483,9 +502,15 @@ export async function registerRoutes(
   });
 
   // ── Start Baileys link check ───────────────────────────────────────────────
-  app.post("/api/whatsapp/check", async (_req, res) => {
+  app.post("/api/whatsapp/check", async (req: any, res) => {
     try {
+      const wid: string = req.workspaceId ?? "main";
+      // Ensure the workspace's active session is the global active session for checking
+      const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
+      if (wActiveId) await baileysManager.activateSession(wActiveId);
       await baileysManager.startLinkChecking();
+      // Tag the check session with this workspace so other workspaces don't see it
+      if (linkStore.checkSession) linkStore.checkSession.workspaceId = wid;
       res.json({ success: true, sessionId: linkStore.checkSession?.id });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -493,9 +518,13 @@ export async function registerRoutes(
   });
 
   // ── Start new round check (extends existing session) ──────────────────────
-  app.post("/api/whatsapp/check-new-round", async (_req, res) => {
+  app.post("/api/whatsapp/check-new-round", async (req: any, res) => {
     try {
+      const wid: string = req.workspaceId ?? "main";
+      const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
+      if (wActiveId) await baileysManager.activateSession(wActiveId);
       await baileysManager.startNewRoundChecking();
+      if (linkStore.checkSession) linkStore.checkSession.workspaceId = wid;
       res.json({ success: true, sessionId: linkStore.checkSession?.id });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -519,8 +548,9 @@ export async function registerRoutes(
   });
 
   // ── Retry error links (reset to pending + resume checking) ─────────────────
-  app.post("/api/whatsapp/check/retry-errors", async (_req, res) => {
-    if (!baileysManager.isConnected()) return res.status(400).json({ error: "واتساب غير متصل" });
+  app.post("/api/whatsapp/check/retry-errors", async (req: any, res) => {
+    const wid: string = req.workspaceId ?? "main";
+    if (!baileysManager.isConnectedForWorkspace(wid)) return res.status(400).json({ error: "واتساب غير متصل" });
     const count = linkStore.retryErrors();
     if (count === 0) return res.status(400).json({ error: "لا توجد أخطاء للإعادة" });
     try {
@@ -773,19 +803,23 @@ export async function registerRoutes(
   });
 
   // ── Previous results summary (shown on upload screen) ─────────────────────
-  app.get("/api/previous-results", (_req, res) => {
+  app.get("/api/previous-results", (req: any, res) => {
+    const wid: string = req.workspaceId ?? "main";
     const session = linkStore.checkSession;
     // Always return extracted link counts so the frontend can restore state
     const extractedWA = linkStore.extractedLinks.whatsapp.length;
     const extractedTG = linkStore.extractedLinks.telegram.length;
     const uploadedFileName = linkStore.uploadedFileName || null;
 
-    if (!session) {
+    // Only surface a session if it belongs to this workspace (or has no tag — legacy)
+    const sessionBelongsHere = !session?.workspaceId || session?.workspaceId === wid;
+
+    if (!session || !sessionBelongsHere) {
       return res.json({
         hasPreviousSession: false,
-        extractedWA,
-        extractedTG,
-        uploadedFileName,
+        extractedWA: sessionBelongsHere ? extractedWA : 0,
+        extractedTG: sessionBelongsHere ? extractedTG : 0,
+        uploadedFileName: sessionBelongsHere ? uploadedFileName : null,
         sessionStatus: null,
       });
     }
@@ -845,7 +879,7 @@ export async function registerRoutes(
       }
       // Description links: check+filter them via pipeline BEFORE saving to DB
       const waDescLinks = summary.descriptionLinks.filter((l) => l.includes("chat.whatsapp.com"));
-      if (process.env.MONGODB_URI && waDescLinks.length > 0 && baileysManager.isConnected()) {
+      if (process.env.MONGODB_URI && waDescLinks.length > 0 && baileysManager.isConnectedForWorkspace(wid)) {
         baileysManager.checkLinksForPipeline(waDescLinks).then((results) => {
           const valid = results.filter((r) => r.status === "valid" && r.url.includes("chat.whatsapp.com"));
           function clean(u: string) { try { const p = new URL(u); return `${p.origin}${p.pathname}`; } catch { return u; } }

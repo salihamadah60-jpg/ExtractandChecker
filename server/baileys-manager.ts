@@ -967,9 +967,15 @@ class SessionsManager extends EventEmitter {
     return this.sessions.get(sessionId) ?? null;
   }
 
+  getActiveSessionIdForWorkspace(workspaceId: string): string | null {
+    return this._activeSessionByWorkspace.get(workspaceId) ?? null;
+  }
+
   isConnectedForWorkspace(workspaceId: string): boolean {
     const s = this.getActiveStateForWorkspace(workspaceId);
-    return s?.status === "connected" && !!s.sock;
+    if (s) return s.status === "connected" && !!s.sock;
+    // Fallback: use global active session when no workspace-specific mapping exists
+    return this.isConnected();
   }
 
   getConnectedPhoneForWorkspace(workspaceId: string): string | null {

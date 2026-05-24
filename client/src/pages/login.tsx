@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { apiRequest } from "@/lib/queryClient";
 
 export default function Login() {
   const [, navigate] = useLocation();
@@ -9,6 +8,8 @@ export default function Login() {
   const [key, setKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [createdKey, setCreatedKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -22,9 +23,10 @@ export default function Login() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "حدث خطأ");
+      // Show the key to the user BEFORE navigating — they must copy it
+      setCreatedKey(data.accessKey);
       localStorage.setItem("workspace_key", data.accessKey);
       localStorage.setItem("workspace_name", data.name);
-      navigate("/");
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -52,6 +54,61 @@ export default function Login() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleCopy() {
+    if (!createdKey) return;
+    navigator.clipboard.writeText(createdKey).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  // ── After creation: show key screen ──────────────────────────────────────
+  if (createdKey) {
+    return (
+      <div dir="rtl" className="min-h-screen flex items-center justify-center bg-[hsl(var(--background))]">
+        <div className="w-full max-w-sm mx-4 bg-card rounded-2xl shadow-lg border border-border p-8">
+          <div className="text-center mb-6">
+            <div className="text-4xl mb-2">🔑</div>
+            <h1 className="text-xl font-bold text-foreground">تم إنشاء مساحة العمل</h1>
+            <p className="text-muted-foreground text-sm mt-1">
+              احتفظ بمفتاح الوصول — ستحتاجه لتسجيل الدخول لاحقاً
+            </p>
+          </div>
+
+          <div className="bg-muted rounded-lg p-3 mb-4">
+            <p className="text-xs text-muted-foreground mb-1 font-medium">مفتاح الوصول الخاص بك</p>
+            <p
+              className="font-mono text-sm text-foreground break-all select-all leading-relaxed"
+              data-testid="text-created-key"
+            >
+              {createdKey}
+            </p>
+          </div>
+
+          <button
+            onClick={handleCopy}
+            className="w-full py-2 rounded-lg border border-border bg-muted text-foreground font-medium text-sm hover:bg-muted/70 transition-colors mb-3"
+            data-testid="button-copy-key"
+          >
+            {copied ? "✓ تم النسخ!" : "📋 نسخ المفتاح"}
+          </button>
+
+          <button
+            onClick={() => navigate("/")}
+            className="w-full py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity"
+            data-testid="button-continue"
+          >
+            متابعة إلى التطبيق
+          </button>
+
+          <p className="text-xs text-destructive/80 mt-4 text-center">
+            ⚠️ لا يمكن استعادة هذا المفتاح لاحقاً — انسخه الآن
+          </p>
+        </div>
+      </div>
+    );
   }
 
   return (
