@@ -24,7 +24,8 @@ export async function workspaceAuth(
   res: Response,
   next: NextFunction
 ): Promise<void> {
-  if (!req.path.startsWith("/api") || PUBLIC_PATHS.has(req.path)) {
+  // Admin routes have their own auth (X-Admin-Key) — bypass workspace auth
+  if (!req.path.startsWith("/api") || PUBLIC_PATHS.has(req.path) || req.path.startsWith("/api/admin")) {
     return next();
   }
 

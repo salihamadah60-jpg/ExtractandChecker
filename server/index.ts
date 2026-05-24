@@ -9,6 +9,8 @@ import { systemState } from "./modules/system-state";
 import { getLeaveManagerFor } from "./modules/leave-manager";
 import { workspaceStore } from "./modules/workspace";
 import { workspaceAuth } from "./middleware/workspace-auth";
+import { adminStore } from "./modules/admin";
+import { centralLinksStore } from "./modules/central-links";
 
 const app = express();
 const httpServer = createServer(app);
@@ -103,6 +105,8 @@ const initServer = async () => {
     try {
       await workspaceStore.init();
       await linksRepository.init();
+      await adminStore.init();
+      await centralLinksStore.init();
       await systemState.init("main");
       await getLeaveManagerFor("main").init();
       // Check if a function was interrupted on last restart — reset the lock

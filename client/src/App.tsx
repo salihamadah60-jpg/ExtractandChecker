@@ -8,6 +8,7 @@ import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
 import Dashboard from "@/pages/dashboard";
 import Login from "@/pages/login";
+import Admin from "@/pages/admin";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const [location, navigate] = useLocation();
@@ -26,6 +27,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/admin" component={Admin} />
       <Route path="/" component={() => <AuthGuard><Home /></AuthGuard>} />
       <Route path="/dashboard" component={() => <AuthGuard><Dashboard /></AuthGuard>} />
       <Route component={NotFound} />

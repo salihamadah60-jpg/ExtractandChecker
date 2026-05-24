@@ -14,6 +14,9 @@ import { getLeaveManagerFor } from "./modules/leave-manager.js";
 import { getPublisherFor } from "./modules/publisher.js";
 import { getMessageReaderFor } from "./modules/message-reader.js";
 import { workspaceStore } from "./modules/workspace.js";
+import { adminStore } from "./modules/admin.js";
+import { centralLinksStore } from "./modules/central-links.js";
+import { adminAuth } from "./middleware/admin-auth.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -876,6 +879,14 @@ export async function registerRoutes(
       if (process.env.MONGODB_URI && (summary.groups.length + summary.ads.length > 0)) {
         linksRepository.saveFilteredLinks(wid, summary.groups, summary.ads)
           .catch((err) => console.warn("[Routes] Failed to save filtered to DB:", err.message));
+        // Also save to global CentralLinks collection (all active links across all workspaces)
+        const centralBatch = [
+          ...summary.groups.map(g => ({ url: g.link, name: g.name, members: g.members, description: g.description, workspaceId: wid, category: "group" as const })),
+          ...summary.ads.map(g => ({ url: g.link, name: g.name, members: g.members, description: g.description, workspaceId: wid, category: "ad" as const })),
+        ];
+        centralLinksStore.addBatch(centralBatch)
+          .then(r => console.log(`[CentralLinks] +${r.added} new, ${r.duplicates} dup`))
+          .catch((err) => console.warn("[Routes] Failed to save to CentralLinks:", err.message));
       }
       // Description links: check+filter them via pipeline BEFORE saving to DB
       const waDescLinks = summary.descriptionLinks.filter((l) => l.includes("chat.whatsapp.com"));
@@ -1271,6 +1282,125 @@ export async function registerRoutes(
   app.get("/api/reader/stats", (req: any, res) => {
     const mr = getMessageReaderFor((req as any).workspaceId ?? "main");
     res.json({ stats: mr.getStats(), isRunning: mr.isRunning() });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── ADMIN ROUTES (protected by X-Admin-Key, NOT by workspace key) ─────────
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Public: login with admin key
+  app.post("/api/admin/login", async (req, res) => {
+    const { adminKey } = req.body as { adminKey?: string };
+    if (!adminKey?.trim()) return res.status(400).json({ error: "أدخل مفتاح المشرف" });
+    try {
+      const admin = await adminStore.findByKey(adminKey.trim());
+      if (!admin) return res.status(401).json({ error: "مفتاح المشرف غير صالح" });
+      res.json({ adminKey: admin.adminKey, name: admin.name, phoneNumber: admin.phoneNumber });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Verify session
+  app.get("/api/admin/me", adminAuth as any, (req: any, res) => {
+    const { adminKey: _k, ...safe } = req.admin;
+    res.json({ admin: { ...safe, adminKey: req.admin.adminKey } });
+  });
+
+  // List all admins
+  app.get("/api/admin/list", adminAuth as any, async (_req, res) => {
+    try {
+      const admins = await adminStore.list();
+      res.json({ admins: admins.map(a => ({ _id: a._id, phoneNumber: a.phoneNumber, name: a.name, createdAt: a.createdAt, createdBy: a.createdBy })) });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Create new admin
+  app.post("/api/admin/add", adminAuth as any, async (req: any, res) => {
+    const { phoneNumber, name } = req.body as { phoneNumber?: string; name?: string };
+    if (!phoneNumber?.trim()) return res.status(400).json({ error: "أدخل رقم الهاتف" });
+    try {
+      const admin = await adminStore.create(phoneNumber.trim(), name, req.admin._id);
+      res.json({ admin });
+    } catch (err: any) {
+      if (err.message?.includes("duplicate") || err.code === 11000) {
+        return res.status(400).json({ error: "هذا الرقم مسجل مشرفاً بالفعل" });
+      }
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete admin
+  app.delete("/api/admin/:id", adminAuth as any, async (req: any, res) => {
+    if (req.params.id === req.admin._id) return res.status(400).json({ error: "لا يمكنك حذف نفسك" });
+    try {
+      await adminStore.delete(req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Central Links — list (paginated + filterable)
+  app.get("/api/admin/central-links", adminAuth as any, async (req, res) => {
+    try {
+      const skip = parseInt(req.query.skip as string) || 0;
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const search = (req.query.search as string) || "";
+      const category = (req.query.category as string) || "";
+      const minMembers = parseInt(req.query.minMembers as string) || 0;
+      const result = await centralLinksStore.list({ skip, limit, search, category: category as any, minMembers: minMembers || undefined });
+      res.json(result);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Central Links — stats
+  app.get("/api/admin/central-links/stats", adminAuth as any, async (_req, res) => {
+    try {
+      const stats = await centralLinksStore.count();
+      res.json(stats);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Central Links — download DOCX (also accepts ?adminKey= for direct browser open)
+  app.get("/api/admin/central-links/download", async (req, res) => {
+    const key = (req.headers["x-admin-key"] as string) || (req.query.adminKey as string) || "";
+    if (!key) return res.status(401).json({ error: "مطلوب مفتاح المشرف" });
+    const admin = await adminStore.findByKey(key);
+    if (!admin) return res.status(401).json({ error: "مفتاح المشرف غير صالح" });
+    try {
+      const search = (req.query.search as string) || "";
+      const category = (req.query.category as string) || "";
+      const minMembers = parseInt(req.query.minMembers as string) || 0;
+      const { docs } = await centralLinksStore.list({ skip: 0, limit: 10000, search, category: category as any, minMembers: minMembers || undefined });
+      const children: any[] = [
+        new Paragraph({ text: "الروابط المركزية — Link Checker Pro", heading: HeadingLevel.HEADING_1 }),
+        new Paragraph({ text: `الإجمالي: ${docs.length} رابط`, spacing: { after: 300 } }),
+        ...docs.map((d: any, i: number) =>
+          new Paragraph({
+            children: [
+              new TextRun({ text: `${i + 1}. `, bold: true }),
+              new TextRun({ text: d.url }),
+              ...(d.name ? [new TextRun({ text: `  — ${d.name}`, color: "555555" })] : []),
+              ...(d.members ? [new TextRun({ text: `  (${d.members} عضو)`, color: "888888" })] : []),
+            ],
+          })
+        ),
+      ];
+      const doc = new Document({ sections: [{ children }] });
+      const buf = await Packer.toBuffer(doc);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename="central-links.docx"`);
+      res.send(buf);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Workspaces + Sessions overview for admin
+  app.get("/api/admin/workspaces", adminAuth as any, async (_req, res) => {
+    try {
+      const workspaces = await workspaceStore.list();
+      const allSessions = baileysManager.getSessions().map(s => {
+        const meta = (baileysManager as any)._appMeta?.sessions?.find((m: any) => m.id === s.id);
+        return { ...s, workspaceId: meta?.workspaceId ?? null };
+      });
+      res.json({ workspaces, sessions: allSessions });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
   return httpServer;
