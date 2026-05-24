@@ -1,11 +1,11 @@
 import { MongoClient, type Db } from "mongodb";
 
-const MONGO_URI = process.env.MONGODB_URI || "";
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 
 export async function getDb(): Promise<Db> {
   if (_db) return _db;
+  const MONGO_URI = process.env.MONGODB_URI || "";
   if (!MONGO_URI) throw new Error("MONGODB_URI environment variable not set");
   _client = new MongoClient(MONGO_URI, {
     serverSelectionTimeoutMS: 30_000,   // 30s to find/select a server
