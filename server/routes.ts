@@ -1050,6 +1050,44 @@ export async function registerRoutes(
     }
   });
 
+  // ── Pending admin-approval groups ──────────────────────────────────────────
+  app.get("/api/links-repository/pending-approval", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId ?? "main";
+      const links = await linksRepository.findPendingApproval(wid);
+      res.json(links);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/links-repository/retry-approval", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId ?? "main";
+      const { url } = req.body as { url: string };
+      if (!url) return res.status(400).json({ error: "url مطلوب" });
+      const ok = await linksRepository.retryPendingApproval(wid, url);
+      res.json({ success: ok });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/links-repository/retry-approval-all", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId ?? "main";
+      const pending = await linksRepository.findPendingApproval(wid);
+      let count = 0;
+      for (const p of pending) {
+        const ok = await linksRepository.retryPendingApproval(wid, p.url);
+        if (ok) count++;
+      }
+      res.json({ success: true, count });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Manual upload: DOCX → insert links into MongoDB directly ───────────────
   app.post("/api/links-repository/manual-upload", upload.single("file"), async (req: any, res) => {
     try {

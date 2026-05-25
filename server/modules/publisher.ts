@@ -164,15 +164,38 @@ function _createManager(wid: string) {
         const currentPhone = baileysManager.getConnectedPhoneForWorkspace(wid) ?? undefined;
         console.log(`[Publisher:${wid}] Starting — phone: ${currentPhone ?? "unknown"}`);
 
-        const joinedGroups = await linksRepository.findJoined(wid, currentPhone);
-        if (!joinedGroups.length) throw new Error("لا توجد مجموعات منضم إليها لهذه المساحة.");
+        // ── Fetch LIVE groups directly from WhatsApp (not from DB) ──────────────
+        const _sock = baileysManager.getActiveStateForWorkspace(wid)?.sock;
+        if (!_sock) throw new Error("واتساب غير متصل.");
+        console.log(`[Publisher:${wid}] Fetching live groups from WhatsApp...`);
+        const _allWA   = await _sock.groupFetchAllParticipating();
+        const allGroups: any[] = Object.values(_allWA);
+        if (!allGroups.length) throw new Error("لا توجد مجموعات على واتساب حالياً.");
+        console.log(`[Publisher:${wid}] Found ${allGroups.length} groups from WhatsApp`);
+
+        // Build excluded-JID set (cross-reference URLs → JIDs from Links_Repository)
+        const _db             = await getDb();
+        const _excludedList   = await excludedGroups.list(wid);
+        const excludedJidSet  = new Set<string>();
+        const _excludedUrls   = _excludedList.map(e => e.url);
+        if (_excludedUrls.length) {
+          const _excRecs = await _db.collection("Links_Repository")
+            .find({ workspaceId: wid, url: { $in: _excludedUrls }, groupJid: { $exists: true } },
+                  { projection: { groupJid: 1 } })
+            .toArray() as any[];
+          for (const r of _excRecs) { if (r.groupJid) excludedJidSet.add(r.groupJid); }
+        }
+        // Also handle synced-URL pattern: wa-sync/<jid>
+        for (const eg of _excludedList) {
+          const m = eg.url.match(/\/wa-sync\/(.+)$/);
+          if (m) excludedJidSet.add(m[1]);
+        }
 
         const state = await systemState.get(wid);
         let adIdx = ((state.last_published_ad_index ?? -1) + 1) % ads.length;
 
-        const shuffledGroups = shuffle(joinedGroups);
+        const shuffledGroups = shuffle(allGroups);
         const batchLimit     = randomInt(BATCH_SIZE_MIN, BATCH_SIZE_MAX);
-        const excludedSet    = await excludedGroups.getUrlSet(wid);
 
         s.progress = {
           status:    "running",
@@ -230,55 +253,25 @@ function _createManager(wid: string) {
             sendsSinceRest = 0;
           }
 
-          s.progress.currentGroup = group.url;
+          // JID and display name come directly from WhatsApp — no DB lookup needed
+          const jid: string  = group.id;
+          const label: string = group.subject ?? jid;
+          s.progress.currentGroup = label;
           onProgress?.(s.progress);
 
-          // Skip excluded groups
-          if (excludedSet.has(group.url)) {
-            console.log(`[Publisher:${wid}] ⛔ Excluded — skipping: ${group.url}`);
+          // Skip excluded groups (by JID)
+          if (excludedJidSet.has(jid)) {
+            console.log(`[Publisher:${wid}] ⛔ Excluded — skipping: ${label}`);
             s.progress.processed++;
             continue;
           }
 
-          const db  = await getDb();
-          const rec = await db.collection("Links_Repository").findOne({ workspaceId: wid, url: group.url }) as any;
-          let jid: string | undefined = rec?.groupJid;
-
-          // If no JID stored, try to resolve it live from WhatsApp group info
-          if (!jid) {
-            const inviteCode = group.url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/)?.[1];
-            if (inviteCode) {
-              try {
-                const sock = baileysManager.getActiveStateForWorkspace(wid)?.sock;
-                if (sock?.groupGetInviteInfo) {
-                  const info = await sock.groupGetInviteInfo(inviteCode);
-                  if (info?.id) {
-                    jid = info.id as string;
-                    await db.collection("Links_Repository").updateOne(
-                      { workspaceId: wid, url: group.url },
-                      { $set: { groupJid: jid, updatedAt: new Date() } }
-                    );
-                    console.log(`[Publisher:${wid}] Resolved groupJid for ${group.url} → ${jid}`);
-                  }
-                }
-              } catch { /* ignore — jid stays undefined */ }
-            }
-          }
-
-          if (!jid) {
-            console.warn(`[Publisher:${wid}] No groupJid for ${group.url} — skipping`);
+          // Skip admins-only groups (flag already in group metadata from WA)
+          if (group.announce === true) {
+            console.log(`[Publisher:${wid}] ⏭ Admins-only — skipping: ${label}`);
             s.progress.processed++;
             continue;
           }
-
-          try {
-            const meta = await baileysManager.getGroupMetadataForWorkspace(jid, wid);
-            if (meta?.announce === true) {
-              console.log(`[Publisher:${wid}] ⏭ Admins-only — skipping: ${group.url}`);
-              s.progress.processed++;
-              continue;
-            }
-          } catch { /* ignore */ }
 
           const ad  = ads[adIdx % ads.length];
           adIdx     = (adIdx + 1) % ads.length;
@@ -304,7 +297,7 @@ function _createManager(wid: string) {
             s.progress.sent++;
             consecutiveFailures = 0;
             sendsSinceRest++;
-            console.log(`[Publisher:${wid}] ✓ Sent (${latency}ms) to ${group.url}`);
+            console.log(`[Publisher:${wid}] ✓ Sent (${latency}ms) to ${label}`);
 
           } catch (err: unknown) {
             const classified = classifyWAError(err, consecutiveFailures);
@@ -324,7 +317,7 @@ function _createManager(wid: string) {
             }
 
             s.progress.failed++;
-            console.warn(`[Publisher:${wid}] ✗ ${classified.reason} | ${group.url}`);
+            console.warn(`[Publisher:${wid}] ✗ ${classified.reason} | ${label}`);
 
             if (classified.action === "wait_and_retry") {
               const waitMs = classified.waitMs ?? 60_000;

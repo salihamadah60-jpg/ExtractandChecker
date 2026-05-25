@@ -188,6 +188,12 @@ async function joinOne(
         if (isPending) {
           console.log(`[JoinManager:${wid}] ⏳ Admin-approval required — pending: ${record.url}`);
           await linksRepository.setStatus(wid, record.url, "Ignored");
+          // Mark as pending-admin-approval so it shows in the retry queue
+          const _db2 = await (await import("../mongo-auth-state.js")).getDb();
+          await _db2.collection("Links_Repository").updateOne(
+            { workspaceId: wid, url: record.url },
+            { $set: { pendingAdminApproval: true, groupJid: groupJid ?? undefined, updatedAt: new Date() } }
+          );
           s.joiningCache.delete(inviteCode);
           return { result: "ignored" };
         }

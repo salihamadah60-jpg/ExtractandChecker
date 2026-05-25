@@ -29,6 +29,7 @@ export interface LinkRecord {
   lastCheckedAt?: Date;
   joinedByPhone?: string;      // legacy: last phone to join
   joinedByPhones?: string[];   // per-phone tracking: all phones that joined this link
+  pendingAdminApproval?: boolean; // true if join was requested but awaiting admin acceptance
 }
 
 const COL = "Links_Repository";
@@ -176,6 +177,24 @@ export const linksRepository = {
       }).toArray();
     }
     return c.find({ workspaceId, status: "Joined" }).toArray();
+  },
+
+  /** Groups awaiting admin approval (Ignored + pendingAdminApproval flag). */
+  async findPendingApproval(workspaceId: string): Promise<LinkRecord[]> {
+    const c = await col();
+    return c.find({ workspaceId, status: "Ignored", pendingAdminApproval: true })
+      .sort({ addedAt: -1 })
+      .toArray();
+  },
+
+  /** Re-queue a pending-approval link back to Pending so join-manager retries it. */
+  async retryPendingApproval(workspaceId: string, url: string): Promise<boolean> {
+    const c = await col();
+    const r = await c.updateOne(
+      { workspaceId, url, status: "Ignored", pendingAdminApproval: true },
+      { $set: { status: "Pending" as LinkStatus, pendingAdminApproval: false, updatedAt: new Date() } }
+    );
+    return r.modifiedCount > 0;
   },
 
   /**

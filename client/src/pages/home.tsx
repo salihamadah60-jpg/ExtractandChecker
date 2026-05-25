@@ -221,6 +221,7 @@ export default function Home() {
   const [isManualUploading, setIsManualUploading] = useState(false);
   const manualUploadRef = useRef<HTMLInputElement>(null);
   const [showExcludedPanel, setShowExcludedPanel] = useState(false);
+  const [showPendingApprovalPanel, setShowPendingApprovalPanel] = useState(false);
   const [newExcludedUrl, setNewExcludedUrl] = useState("");
   const [sleepStartTime, setSleepStartTime] = useState("01:30");
   const [sleepConfigSaved, setSleepConfigSaved] = useState(false);
@@ -311,6 +312,11 @@ export default function Home() {
     queryKey: ["/api/excluded-groups"],
     refetchInterval: false,
     enabled: showExcludedPanel,
+  });
+  const { data: pendingApprovalData, refetch: refetchPendingApproval } = useQuery<any[]>({
+    queryKey: ["/api/links-repository/pending-approval"],
+    refetchInterval: false,
+    enabled: showPendingApprovalPanel,
   });
   const { data: sleepConfigData, refetch: refetchSleepConfig } = useQuery<SleepConfig & { durationHours: number }>({
     queryKey: ["/api/settings/sleep"],
@@ -822,6 +828,16 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
+  const retryApprovalMutation = useMutation({
+    mutationFn: (url: string) => apiRequest("POST", "/api/links-repository/retry-approval", { url }),
+    onSuccess: () => { void refetchPendingApproval(); toast({ title: "تمت إعادة الإضافة للقائمة" }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const retryApprovalAllMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/links-repository/retry-approval-all", {}),
+    onSuccess: (data: any) => { void refetchPendingApproval(); toast({ title: `تمت إعادة ${data?.count ?? 0} رابط للقائمة` }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
   const addExcludedMutation = useMutation({
     mutationFn: (url: string) => apiRequest("POST", "/api/excluded-groups", { url }),
     onSuccess: () => { setNewExcludedUrl(""); void refetchExcludedGroups(); toast({ title: "تمت إضافة الرابط للمستثنيات" }); },
@@ -1309,6 +1325,59 @@ export default function Home() {
                         : <RefreshCw className="w-3 h-3 ml-1" />}
                       مزامنة مع الحساب الحالي
                     </Button>
+                  </div>
+
+                  {/* ── Pending admin-approval groups ── */}
+                  <div className="border-t border-border pt-2 mt-1">
+                    <Button variant="ghost" size="sm" className="w-full text-xs h-7 text-muted-foreground hover:text-foreground justify-between px-1"
+                      onClick={() => { setShowPendingApprovalPanel(o => !o); if (!pendingApprovalData) void refetchPendingApproval(); }}
+                      data-testid="button-toggle-pending-approval">
+                      <div className="flex items-center gap-1">
+                        <Clock className="w-3 h-3 text-yellow-500" />
+                        <span>بانتظار قبول المشرف</span>
+                      </div>
+                      {showPendingApprovalPanel ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </Button>
+                    {showPendingApprovalPanel && (
+                      <div className="mt-1 space-y-1.5">
+                        {!pendingApprovalData ? (
+                          <div className="flex justify-center py-2"><Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /></div>
+                        ) : pendingApprovalData.length === 0 ? (
+                          <p className="text-[10px] text-muted-foreground text-center py-2">لا توجد مجموعات بانتظار القبول</p>
+                        ) : (
+                          <>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] text-muted-foreground">{pendingApprovalData.length} مجموعة</span>
+                              <Button size="sm" variant="outline"
+                                className="h-5 px-2 text-[10px] border-yellow-400/60 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-50 dark:hover:bg-yellow-900/20"
+                                onClick={() => retryApprovalAllMutation.mutate()}
+                                disabled={retryApprovalAllMutation.isPending}
+                                data-testid="button-retry-all-approval">
+                                {retryApprovalAllMutation.isPending ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <RefreshCw className="w-2.5 h-2.5 mr-0.5" />}
+                                إعادة الكل
+                              </Button>
+                            </div>
+                            <div className="max-h-40 overflow-y-auto space-y-1">
+                              {pendingApprovalData.map((item: any) => (
+                                <div key={item.url} className="flex items-center justify-between gap-1 bg-yellow-50/60 dark:bg-yellow-900/10 border border-yellow-200/60 dark:border-yellow-800/40 rounded p-1.5" data-testid={`pending-approval-${item._id}`}>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-[10px] font-medium truncate">{item.name ?? item.url}</p>
+                                    <p className="text-[9px] text-muted-foreground truncate">{item.url}</p>
+                                  </div>
+                                  <Button size="sm" variant="ghost"
+                                    className="h-5 w-5 p-0 flex-shrink-0 hover:bg-yellow-100 dark:hover:bg-yellow-800/30"
+                                    onClick={() => retryApprovalMutation.mutate(item.url)}
+                                    disabled={retryApprovalMutation.isPending}
+                                    data-testid={`button-retry-approval-${item._id}`}>
+                                    <RefreshCw className="w-2.5 h-2.5 text-yellow-600" />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* ── Per-phone join stats ── */}
