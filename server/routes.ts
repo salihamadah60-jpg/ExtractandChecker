@@ -520,8 +520,9 @@ export async function registerRoutes(
       if (wActiveId) await baileysManager.activateSession(wActiveId);
       await baileysManager.startLinkChecking();
       // Tag the check session with this workspace so other workspaces don't see it
-      if (linkStore.checkSession) linkStore.checkSession.workspaceId = wid;
-      res.json({ success: true, sessionId: linkStore.checkSession?.id });
+      const _ls1 = getLinkStoreFor(wid);
+      if (_ls1.checkSession) _ls1.checkSession.workspaceId = wid;
+      res.json({ success: true, sessionId: _ls1.checkSession?.id });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
@@ -534,8 +535,9 @@ export async function registerRoutes(
       const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
       if (wActiveId) await baileysManager.activateSession(wActiveId);
       await baileysManager.startNewRoundChecking();
-      if (linkStore.checkSession) linkStore.checkSession.workspaceId = wid;
-      res.json({ success: true, sessionId: linkStore.checkSession?.id });
+      const _ls2 = getLinkStoreFor(wid);
+      if (_ls2.checkSession) _ls2.checkSession.workspaceId = wid;
+      res.json({ success: true, sessionId: _ls2.checkSession?.id });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
@@ -582,13 +584,13 @@ export async function registerRoutes(
   });
 
   // ── Join progress ─────────────────────────────────────────────────────────
-  app.get("/api/whatsapp/join-progress", (_req, res) => {
-    res.json({ joinSession: linkStore.joinSession });
+  app.get("/api/whatsapp/join-progress", (req: any, res) => {
+    res.json({ joinSession: getLinkStoreFor(req.workspaceId ?? "main").joinSession });
   });
 
   // ── Download join results as DOCX ─────────────────────────────────────────
-  app.get("/api/whatsapp/download-join-results", async (_req, res) => {
-    const js = linkStore.joinSession;
+  app.get("/api/whatsapp/download-join-results", async (req: any, res) => {
+    const js = getLinkStoreFor(req.workspaceId ?? "main").joinSession;
     if (!js) return res.status(404).json({ error: "لا توجد جلسة انضمام" });
 
     const children: any[] = [
@@ -644,9 +646,9 @@ export async function registerRoutes(
   });
 
   // ── Download batch results as DOCX ────────────────────────────────────────
-  app.get("/api/whatsapp/download-batch/:batchNum", async (req, res) => {
+  app.get("/api/whatsapp/download-batch/:batchNum", async (req: any, res) => {
     const batchNum = parseInt(req.params.batchNum, 10);
-    const session = linkStore.checkSession;
+    const session = getLinkStoreFor(req.workspaceId ?? "main").checkSession;
     if (!session) return res.status(404).json({ error: "لا توجد جلسة فحص" });
 
     const BATCH_SIZE = 1000;
@@ -705,7 +707,8 @@ export async function registerRoutes(
       if (!files.length) return res.status(400).json({ error: "لم يتم إرسال ملف" });
 
       // Capture description links from current session BEFORE reset
-      const currentSummary = linkStore.getFilteredSummary();
+      const ls = getLinkStoreFor(req.workspaceId ?? "main");
+      const currentSummary = ls.getFilteredSummary();
       const descLinks = currentSummary.descriptionLinks.filter(
         (l) => l.includes("chat.whatsapp.com") || l.includes("wa.me")
       );
@@ -734,9 +737,9 @@ export async function registerRoutes(
       const finalLinks = { whatsapp: [...waSet], telegram: [...tgSet] };
 
       // Soft reset: clears previous link results only (WA session is preserved separately)
-      linkStore.softReset();
-      linkStore.setExtracted(finalLinks);
-      linkStore.saveLinksToFile(files.map((f) => f.originalname).join("+"), finalLinks).catch(console.error);
+      ls.softReset();
+      ls.setExtracted(finalLinks);
+      ls.saveLinksToFile(files.map((f) => f.originalname).join("+"), finalLinks).catch(console.error);
 
       res.json({
         success: true,
@@ -750,38 +753,39 @@ export async function registerRoutes(
   });
 
   // ── Start HTTP link check (no login required) ──────────────────────────────
-  app.post("/api/check-http", async (_req, res) => {
-    const links = linkStore.extractedLinks.whatsapp;
+  app.post("/api/check-http", async (req: any, res) => {
+    const ls = getLinkStoreFor(req.workspaceId ?? "main");
+    const links = ls.extractedLinks.whatsapp;
     if (!links.length)
       return res.status(400).json({ error: "لا توجد روابط واتساب للفحص" });
-    const session = linkStore.startSession(links);
+    const session = ls.startSession(links);
     res.json({ success: true, sessionId: session.id });
     checkLinksHTTP(session.results, (updatedResults, progress) => {
-      if (linkStore.checkSession?.id !== session.id) return;
-      linkStore.checkSession!.results = updatedResults;
-      linkStore.checkSession!.progress = progress;
-      linkStore.updateProgress();
+      if (ls.checkSession?.id !== session.id) return;
+      ls.checkSession!.results = updatedResults;
+      ls.checkSession!.progress = progress;
+      ls.updateProgress();
     })
       .then((results) => {
-        if (linkStore.checkSession?.id !== session.id) return;
-        linkStore.checkSession!.results = results;
-        linkStore.checkSession!.progress = results.filter((r) => r.status !== "pending").length;
-        linkStore.checkSession!.status = "done";
-        linkStore.checkSession!.completedAt = new Date().toISOString();
-        linkStore.updateProgress();
+        if (ls.checkSession?.id !== session.id) return;
+        ls.checkSession!.results = results;
+        ls.checkSession!.progress = results.filter((r) => r.status !== "pending").length;
+        ls.checkSession!.status = "done";
+        ls.checkSession!.completedAt = new Date().toISOString();
+        ls.updateProgress();
       })
       .catch((err) => {
         console.error("[HTTP Check] Error:", err);
-        if (linkStore.checkSession?.id === session.id) {
-          linkStore.checkSession!.status = "idle";
-          linkStore.updateProgress();
+        if (ls.checkSession?.id === session.id) {
+          ls.checkSession!.status = "idle";
+          ls.updateProgress();
         }
       });
   });
 
   // ── Progress (lightweight — summary + recent results only, no full array) ──
-  app.get("/api/whatsapp/progress", (_req, res) => {
-    const session = linkStore.checkSession;
+  app.get("/api/whatsapp/progress", (req: any, res) => {
+    const session = getLinkStoreFor(req.workspaceId ?? "main").checkSession;
     if (!session) return res.json({ session: null });
 
     const validCount = session.results.filter((r) => r.status === "valid").length;
@@ -815,21 +819,19 @@ export async function registerRoutes(
   // ── Previous results summary (shown on upload screen) ─────────────────────
   app.get("/api/previous-results", (req: any, res) => {
     const wid: string = req.workspaceId ?? "main";
-    const session = linkStore.checkSession;
+    const ls = getLinkStoreFor(wid);
+    const session = ls.checkSession;
     // Always return extracted link counts so the frontend can restore state
-    const extractedWA = linkStore.extractedLinks.whatsapp.length;
-    const extractedTG = linkStore.extractedLinks.telegram.length;
-    const uploadedFileName = linkStore.uploadedFileName || null;
+    const extractedWA = ls.extractedLinks.whatsapp.length;
+    const extractedTG = ls.extractedLinks.telegram.length;
+    const uploadedFileName = ls.uploadedFileName || null;
 
-    // Only surface a session if it belongs to this workspace (or has no tag — legacy)
-    const sessionBelongsHere = !session?.workspaceId || session?.workspaceId === wid;
-
-    if (!session || !sessionBelongsHere) {
+    if (!session) {
       return res.json({
         hasPreviousSession: false,
-        extractedWA: sessionBelongsHere ? extractedWA : 0,
-        extractedTG: sessionBelongsHere ? extractedTG : 0,
-        uploadedFileName: sessionBelongsHere ? uploadedFileName : null,
+        extractedWA,
+        extractedTG,
+        uploadedFileName,
         sessionStatus: null,
       });
     }
@@ -849,7 +851,7 @@ export async function registerRoutes(
       });
     }
 
-    const summary = linkStore.getFilteredSummary();
+    const summary = ls.getFilteredSummary();
     const valid = session.results.filter((r) => r.status === "valid").length;
     const invalid = session.results.filter((r) => r.status === "invalid").length;
     const errors = session.results.filter((r) => r.status === "error").length;
@@ -874,22 +876,22 @@ export async function registerRoutes(
   // ── Filtered summary (groups + ads + description links) ────────────────────
   app.get("/api/whatsapp/filtered-summary", (req: any, res) => {
     const wid: string = req.workspaceId ?? "main";
-    const summary = linkStore.getFilteredSummary();
-    if (linkStore.checkSession?.status === "done") {
+    const ls = getLinkStoreFor(wid);
+    const summary = ls.getFilteredSummary();
+    if (ls.checkSession?.status === "done") {
       // Auto-save description links when summary is requested after completion
       if (summary.descriptionLinks.length > 0) {
-        linkStore.saveDescriptionLinks(summary.descriptionLinks).catch(console.error);
+        ls.saveDescriptionLinks(summary.descriptionLinks).catch(console.error);
       }
       // Auto-save filtered results to LinksjsonEndRe
-      linkStore.saveFilteredResults(summary).catch(console.error);
+      ls.saveFilteredResults(summary).catch(console.error);
       // Auto-save filtered results to MongoDB repository (as Pending for join manager)
       if (process.env.MONGODB_URI && (summary.groups.length + summary.ads.length > 0)) {
         linksRepository.saveFilteredLinks(wid, summary.groups, summary.ads)
           .catch((err) => console.warn("[Routes] Failed to save filtered to DB:", err.message));
-        // Also save to global CentralLinks collection (all active links across all workspaces)
+        // Also save to global CentralLinks collection — GROUPS ONLY (not ads)
         const centralBatch = [
           ...summary.groups.map(g => ({ url: g.link, name: g.name, members: g.members, description: g.description, workspaceId: wid, category: "group" as const })),
-          ...summary.ads.map(g => ({ url: g.link, name: g.name, members: g.members, description: g.description, workspaceId: wid, category: "ad" as const })),
         ];
         centralLinksStore.addBatch(centralBatch)
           .then(r => console.log(`[CentralLinks] +${r.added} new, ${r.duplicates} dup`))
@@ -921,8 +923,8 @@ export async function registerRoutes(
   });
 
   // ── Download groups file (>150 members, sorted) ─────────────────────────────
-  app.get("/api/whatsapp/download-groups", async (_req, res) => {
-    const { groups } = linkStore.getFilteredSummary();
+  app.get("/api/whatsapp/download-groups", async (req: any, res) => {
+    const { groups } = getLinkStoreFor(req.workspaceId ?? "main").getFilteredSummary();
     if (!groups.length) return res.status(404).json({ error: "لا توجد مجموعات بأكثر من 150 عضواً" });
     const buf = await buildGroupsDocx(groups);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
@@ -931,8 +933,8 @@ export async function registerRoutes(
   });
 
   // ── Download ads file (10-150 members with description) ─────────────────────
-  app.get("/api/whatsapp/download-ads", async (_req, res) => {
-    const { ads } = linkStore.getFilteredSummary();
+  app.get("/api/whatsapp/download-ads", async (req: any, res) => {
+    const { ads } = getLinkStoreFor(req.workspaceId ?? "main").getFilteredSummary();
     if (!ads.length) return res.status(404).json({ error: "لا توجد مجموعات إعلانية" });
     const buf = await buildAdsDocx(ads);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
@@ -941,8 +943,8 @@ export async function registerRoutes(
   });
 
   // ── Download description links as DOCX ────────────────────────────────────
-  app.get("/api/whatsapp/download-description-links", async (_req, res) => {
-    const { descriptionLinks } = linkStore.getFilteredSummary();
+  app.get("/api/whatsapp/download-description-links", async (req: any, res) => {
+    const { descriptionLinks } = getLinkStoreFor(req.workspaceId ?? "main").getFilteredSummary();
     if (!descriptionLinks.length)
       return res.status(404).json({ error: "لا توجد روابط مستخرجة من الأوصاف" });
     const buf = await buildDocx("روابط من أوصاف المجموعات", descriptionLinks);
@@ -952,8 +954,8 @@ export async function registerRoutes(
   });
 
   // ── Download valid links (legacy - all valid) ──────────────────────────────
-  app.get("/api/whatsapp/download-valid", async (_req, res) => {
-    const session = linkStore.checkSession;
+  app.get("/api/whatsapp/download-valid", async (req: any, res) => {
+    const session = getLinkStoreFor(req.workspaceId ?? "main").checkSession;
     if (!session) return res.status(404).json({ error: "لا توجد جلسة فحص" });
     const validResults = session.results.filter((r) => r.status === "valid");
     if (!validResults.length)
@@ -1122,15 +1124,15 @@ export async function registerRoutes(
   });
 
   /**
-   * Reset links joined by a DIFFERENT phone back to Pending.
-   * Call when switching to a new WhatsApp account.
+   * Reset only the CURRENT phone's own join progress back to Pending.
+   * Allows re-joining groups with the same account. Does NOT affect other phones.
    */
   app.post("/api/join/reset-for-new-account", async (req: any, res) => {
     try {
       const wid = req.workspaceId ?? "main";
       const phone = baileysManager.getConnectedPhoneForWorkspace(wid) ?? baileysManager.getConnectedPhone();
       if (!phone) return res.status(400).json({ error: "لا يوجد حساب واتساب متصل حالياً." });
-      const count = await linksRepository.resetJoinedByOtherPhone(wid, phone);
+      const count = await linksRepository.resetMyJoinProgress(wid, phone);
       res.json({ success: true, resetCount: count, phone });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
