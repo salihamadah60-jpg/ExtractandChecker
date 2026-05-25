@@ -576,22 +576,57 @@ class SessionsManager extends EventEmitter {
         if (update.type === "notify") this._onMessagesFromSession(id, update.messages ?? []);
       });
 
-      // Detect when bot is removed/kicked from a group (or voluntarily leaves)
+      // Detect removal/kick and admin-approval acceptance
       sock.ev.on("group-participants.update", async (update: any) => {
-        if (update.action !== "remove") return;
         const botJid = sock.user?.id;
         if (!botJid) return;
         const botId = botJid.split(":")[0] + "@s.whatsapp.net";
         const participants: string[] = update.participants ?? [];
-        if (!participants.includes(botId)) return;
+        const botAffected = participants.some(p =>
+          (typeof p === "string" ? p : (p as any)?.id ?? "").split(":")[0] + "@s.whatsapp.net" === botId
+        );
+        if (!botAffected) return;
+
         const groupJid: string = update.id;
-        console.log(`[Sessions] Removed/left group: ${groupJid} — updating repository`);
-        try {
-          const { linksRepository } = await import("./modules/links-repository.js");
-          const _wid = this._workspaceIdBySessionId.get(id) ?? "main";
-          await linksRepository.markLeftByJid(_wid, groupJid);
-        } catch (err) {
-          console.warn("[Sessions] Failed to handle group removal:", (err as Error).message);
+        const _wid = this._workspaceIdBySessionId.get(id) ?? "main";
+
+        if (update.action === "remove") {
+          console.log(`[Sessions] Removed/left group: ${groupJid}`);
+          try {
+            const { linksRepository } = await import("./modules/links-repository.js");
+            await linksRepository.markLeftByJid(_wid, groupJid);
+          } catch (err) {
+            console.warn("[Sessions] Failed to handle group removal:", (err as Error).message);
+          }
+
+        } else if (update.action === "add") {
+          // Bot was accepted into a group that previously required admin approval
+          console.log(`[Sessions] ✅ Bot accepted into group (was pending): ${groupJid}`);
+          try {
+            const db = await (await import("./mongo-auth-state.js")).getDb();
+            const c = db.collection("Links_Repository");
+            const result = await c.updateOne(
+              { workspaceId: _wid, groupJid, status: { $in: ["Ignored", "Pending"] } },
+              { $set: { status: "Joined", joinedAt: new Date(), updatedAt: new Date() } }
+            );
+            if (result.modifiedCount > 0) {
+              console.log(`[Sessions] ✅ Status updated to Joined for ${groupJid} (admin approved)`);
+            } else {
+              // Group wasn't in DB yet — insert it now
+              const { linksRepository } = await import("./modules/links-repository.js");
+              await linksRepository.addIfNew(_wid,
+                `https://chat.whatsapp.com/wa-sync/${groupJid}`,
+                "Group", "manual",
+                { name: undefined }
+              );
+              await c.updateOne(
+                { workspaceId: _wid, url: `https://chat.whatsapp.com/wa-sync/${groupJid}` },
+                { $set: { status: "Joined", groupJid, joinedAt: new Date(), updatedAt: new Date() } }
+              );
+            }
+          } catch (err) {
+            console.warn("[Sessions] Failed to handle admin approval:", (err as Error).message);
+          }
         }
       });
 

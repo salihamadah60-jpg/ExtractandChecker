@@ -314,45 +314,64 @@ export const linksRepository = {
   async syncFromWhatsAppGroups(
     workspaceId: string,
     waGroups: Array<{ id: string; subject?: string; participants?: Array<{ id: string }>; desc?: string; size?: number }>
-  ): Promise<{ synced: number; markedLeft: number }> {
+  ): Promise<{ synced: number; markedLeft: number; inserted: number; updated: number }> {
     const c = await col();
     const now = new Date();
     const activeJids = new Set(waGroups.map(g => g.id));
 
+    // ── Step 1: upsert by groupJid (matches groups that have groupJid in DB) ──
     const ops = waGroups.map(g => {
       const members = typeof g.size === "number" ? g.size : (g.participants?.length ?? undefined);
+      // Build $set cleanly — never include undefined values (causes BSON issues)
+      const setFields: Record<string, unknown> = {
+        groupJid: g.id,
+        status: "Joined" as LinkStatus,
+        updatedAt: now,
+      };
+      if (g.subject)              setFields.name = g.subject;
+      if (members !== undefined)  setFields.members = members;
+      if (g.desc)                 setFields.description = g.desc;
+
       return {
         updateOne: {
           filter: { workspaceId, groupJid: g.id },
           update: {
             $setOnInsert: {
               workspaceId,
-              url: `https://chat.whatsapp.com/synced-${g.id}`,
+              url: `https://chat.whatsapp.com/wa-sync/${g.id}`,
               type: "Group" as LinkType,
               source: "manual" as LinkSource,
               addedAt: now,
               checkCount: 0,
             },
-            $set: {
-              status: "Joined" as LinkStatus,
-              name: g.subject ?? undefined,
-              ...(members !== undefined ? { members } : {}),
-              ...(g.desc ? { description: g.desc } : {}),
-              updatedAt: now,
-            },
+            $set: setFields,
           },
           upsert: true,
         },
       };
     });
 
-    let synced = 0;
+    let upserted = 0, matched = 0;
     if (ops.length) {
-      const r = await c.bulkWrite(ops, { ordered: false });
-      synced = r.upsertedCount + r.modifiedCount;
+      try {
+        const r = await c.bulkWrite(ops, { ordered: false });
+        upserted = r.upsertedCount;
+        matched  = r.matchedCount;
+        console.log(`[LinksRepository] bulkWrite — matched:${r.matchedCount} modified:${r.modifiedCount} upserted:${r.upsertedCount}`);
+      } catch (err: any) {
+        // BulkWriteError: partial success, extract counts from err.result
+        const res = err?.result;
+        if (res) {
+          upserted = res.upsertedCount ?? 0;
+          matched  = res.matchedCount  ?? 0;
+        }
+        const writeErrors: any[] = err?.writeErrors ?? [];
+        console.warn(`[LinksRepository] bulkWrite had ${writeErrors.length} write error(s):`,
+          writeErrors.slice(0, 3).map((e: any) => e?.errmsg ?? e?.message ?? String(e)));
+      }
     }
 
-    // Mark groups that WA no longer shows as Left
+    // ── Step 2: mark groups no longer seen in WA as Left ──
     const leftResult = await c.updateMany(
       {
         workspaceId,
@@ -362,8 +381,9 @@ export const linksRepository = {
       { $set: { status: "Left" as LinkStatus, leftAt: now, updatedAt: now } }
     );
 
-    console.log(`[LinksRepository] WA sync (wid: ${workspaceId}) — synced: ${synced}, markedLeft: ${leftResult.modifiedCount}`);
-    return { synced, markedLeft: leftResult.modifiedCount };
+    const synced = matched + upserted;
+    console.log(`[LinksRepository] WA sync (wid: ${workspaceId}) — total:${synced} (existing:${matched} new:${upserted}), markedLeft:${leftResult.modifiedCount}`);
+    return { synced, inserted: upserted, updated: matched, markedLeft: leftResult.modifiedCount };
   },
 
   /** Mark a single group Left by JID (e.g. when voluntary leave detected via events). */

@@ -758,7 +758,14 @@ export default function Home() {
   });
   const syncGroupsMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/whatsapp/sync-groups", {}),
-    onSuccess: (data: any) => toast({ title: "تمت المزامنة", description: `${data?.synced ?? 0} مجموعة تمت مزامنتها، ${data?.markedLeft ?? 0} علامة مغادرة` }),
+    onSuccess: (data: any) => toast({
+      title: "تمت مزامنة المجموعات",
+      description: [
+        data?.inserted  ? `${data.inserted} مجموعة جديدة أُضيفت` : "",
+        data?.updated   ? `${data.updated} مجموعة حُدِّثت` : "",
+        data?.markedLeft ? `${data.markedLeft} مجموعة علامة مغادرة` : "",
+      ].filter(Boolean).join(" — ") || "لا تغييرات",
+    }),
     onError: (err: any) => toast({ title: "خطأ في المزامنة", description: err.message, variant: "destructive" }),
   });
   const startPublishMutation = useMutation({
