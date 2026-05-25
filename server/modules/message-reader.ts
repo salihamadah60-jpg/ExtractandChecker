@@ -162,10 +162,34 @@ async function _runPipeline(wid: string): Promise<void> {
       })
       .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
 
-    // 4. Save + trigger join
+    // 4. Save + trigger join + auto-enqueue ads for leaving
     if (groups.length + ads.length > 0) {
       await linksRepository.saveFilteredLinks(wid, groups, ads);
       console.log(`[Pipeline:${wid}] Saved ${groups.length} groups + ${ads.length} ads`);
+
+      // Auto-enqueue ads into the leave queue
+      if (ads.length > 0) {
+        try {
+          const { getLeaveManagerFor } = await import("./leave-manager.js");
+          const lm = getLeaveManagerFor(wid);
+          let enqueued = 0;
+          for (const ad of ads) {
+            const added = await lm.enqueue(ad.link, "ad-auto-detected");
+            if (added) enqueued++;
+          }
+          if (enqueued > 0) {
+            console.log(`[Pipeline:${wid}] Auto-enqueued ${enqueued} ad groups for leaving`);
+            // Trigger leave processor if coordinator is free
+            if (!coord.isRunning()) {
+              lm.processQueue().catch((err: Error) =>
+                console.warn(`[Pipeline:${wid}] Leave deferred:`, err.message)
+              );
+            }
+          }
+        } catch (err) {
+          console.warn(`[Pipeline:${wid}] Leave enqueue skip:`, (err as Error).message);
+        }
+      }
 
       if (!coord.isRunning()) {
         try {

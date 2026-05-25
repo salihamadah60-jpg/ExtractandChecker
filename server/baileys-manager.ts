@@ -552,20 +552,20 @@ class SessionsManager extends EventEmitter {
               console.log(`[Sessions] Auto-resuming check — ${remaining} links remaining`);
               setTimeout(() => this.startLinkChecking().catch(console.error), 2000);
             }
-
-            // Auto-start message reader in continuous mode (if it was enabled)
-            setTimeout(async () => {
-              try {
-                const { getMessageReaderFor } = await import("./modules/message-reader.js");
-                const wid = this._workspaceIdBySessionId.get(id);
-                if (wid) {
-                  await getMessageReaderFor(wid).autoStartIfEnabled();
-                }
-              } catch (err) {
-                console.warn("[Sessions] Reader auto-start skipped:", (err as Error).message);
-              }
-            }, 5_000);
           }
+
+          // Auto-start message reader for ANY session when it connects (not just active session)
+          setTimeout(async () => {
+            try {
+              const { getMessageReaderFor } = await import("./modules/message-reader.js");
+              const wid = this._workspaceIdBySessionId.get(id);
+              if (wid) {
+                await getMessageReaderFor(wid).autoStartIfEnabled();
+              }
+            } catch (err) {
+              console.warn("[Sessions] Reader auto-start skipped:", (err as Error).message);
+            }
+          }, 5_000);
         }
       });
 
