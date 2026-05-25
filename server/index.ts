@@ -11,6 +11,8 @@ import { workspaceStore } from "./modules/workspace";
 import { workspaceAuth } from "./middleware/workspace-auth";
 import { adminStore } from "./modules/admin";
 import { centralLinksStore } from "./modules/central-links";
+import { excludedGroups } from "./modules/excluded-groups";
+import { getSleepConfig, updateSleepConfigSync } from "./modules/sleep-config";
 
 const app = express();
 const httpServer = createServer(app);
@@ -107,8 +109,12 @@ const initServer = async () => {
       await linksRepository.init();
       await adminStore.init();
       await centralLinksStore.init();
+      await excludedGroups.init();
       await systemState.init("main");
       await getLeaveManagerFor("main").init();
+      // Load sleep config from DB and update in-memory sync cache
+      const sleepCfg = await getSleepConfig();
+      updateSleepConfigSync(sleepCfg);
       // Check if a function was interrupted on last restart — reset the lock
       await systemState.checkRecovery("main");
     } catch (err) {

@@ -1314,9 +1314,96 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/reader/pause", (req: any, res) => {
+    getMessageReaderFor(req.workspaceId ?? "main").pause();
+    res.json({ success: true });
+  });
+
+  app.post("/api/reader/resume", (req: any, res) => {
+    getMessageReaderFor(req.workspaceId ?? "main").resume();
+    res.json({ success: true });
+  });
+
   app.get("/api/reader/stats", (req: any, res) => {
     const mr = getMessageReaderFor((req as any).workspaceId ?? "main");
-    res.json({ stats: mr.getStats(), isRunning: mr.isRunning() });
+    res.json({ stats: mr.getStats(), isRunning: mr.isRunning(), isPaused: mr.isPaused() });
+  });
+
+  // ── Leave manager pause/resume ──────────────────────────────────────────────
+  app.post("/api/leave/pause", (req: any, res) => {
+    getLeaveManagerFor(req.workspaceId ?? "main").requestPause();
+    res.json({ success: true });
+  });
+
+  app.post("/api/leave/resume", (req: any, res) => {
+    getLeaveManagerFor(req.workspaceId ?? "main").requestResume();
+    res.json({ success: true });
+  });
+
+  // ── Publisher pause/resume ──────────────────────────────────────────────────
+  app.post("/api/publisher/pause", (req: any, res) => {
+    getPublisherFor(req.workspaceId ?? "main").requestPause();
+    res.json({ success: true });
+  });
+
+  app.post("/api/publisher/resume", (req: any, res) => {
+    getPublisherFor(req.workspaceId ?? "main").requestResume();
+    res.json({ success: true });
+  });
+
+  // ── Sleep config ────────────────────────────────────────────────────────────
+  app.get("/api/settings/sleep", async (_req, res) => {
+    try {
+      const { getSleepConfig, SLEEP_DURATION_HOURS } = await import("./modules/sleep-config.js");
+      const cfg = await getSleepConfig();
+      const { getSleepStatus } = await import("./modules/sleep-scheduler.js");
+      res.json({ ...cfg, durationHours: SLEEP_DURATION_HOURS, status: getSleepStatus() });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/settings/sleep", async (req: any, res) => {
+    const { startHour, startMin } = req.body ?? {};
+    if (typeof startHour !== "number" || typeof startMin !== "number") {
+      return res.status(400).json({ error: "startHour و startMin مطلوبان (أرقام)" });
+    }
+    if (startHour < 0 || startHour > 23 || startMin < 0 || startMin > 59) {
+      return res.status(400).json({ error: "وقت غير صالح" });
+    }
+    try {
+      const { setSleepConfig, SLEEP_DURATION_HOURS } = await import("./modules/sleep-config.js");
+      const cfg = await setSleepConfig({ startHour, startMin, durationHours: SLEEP_DURATION_HOURS });
+      res.json({ success: true, ...cfg });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── Excluded Groups ─────────────────────────────────────────────────────────
+  app.get("/api/excluded-groups", async (req: any, res) => {
+    try {
+      const { excludedGroups } = await import("./modules/excluded-groups.js");
+      const list = await excludedGroups.list(req.workspaceId ?? "main");
+      res.json({ groups: list });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/excluded-groups", async (req: any, res) => {
+    const { url, name } = req.body ?? {};
+    if (!url?.trim()) return res.status(400).json({ error: "الرابط مطلوب" });
+    try {
+      const { excludedGroups } = await import("./modules/excluded-groups.js");
+      const added = await excludedGroups.add(req.workspaceId ?? "main", url.trim(), name?.trim());
+      if (!added) return res.status(400).json({ error: "الرابط موجود بالفعل" });
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/excluded-groups", async (req: any, res) => {
+    const { url } = req.body ?? {};
+    if (!url?.trim()) return res.status(400).json({ error: "الرابط مطلوب" });
+    try {
+      const { excludedGroups } = await import("./modules/excluded-groups.js");
+      await excludedGroups.remove(req.workspaceId ?? "main", url.trim());
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
   // ══════════════════════════════════════════════════════════════════════════

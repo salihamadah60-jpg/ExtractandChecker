@@ -13,9 +13,9 @@ export async function getDb(): Promise<Db> {
     socketTimeoutMS:          60_000,   // 60s per operation socket idle
     retryWrites:              true,     // auto-retry failed writes once
     retryReads:               true,     // auto-retry failed reads once
-    maxPoolSize:              10,
-    minPoolSize:              1,
-    waitQueueTimeoutMS:       10_000,
+    maxPoolSize:              25,
+    minPoolSize:              2,
+    waitQueueTimeoutMS:       30_000,
     heartbeatFrequencyMS:     10_000,   // check server health every 10s
   });
   await _client.connect();

@@ -11,6 +11,7 @@ import { classifyWAError }  from "./wa-error-handler.js";
 import { getTelemetryFor }  from "./telemetry.js";
 import { DELAYS, shuffle, randomInt } from "./human-mimicry.js";
 import { publishHistory }   from "./publish-history.js";
+import { excludedGroups }   from "./excluded-groups.js";
 
 export interface AdMessage {
   _id?: string;
@@ -170,7 +171,8 @@ function _createManager(wid: string) {
         let adIdx = ((state.last_published_ad_index ?? -1) + 1) % ads.length;
 
         const shuffledGroups = shuffle(joinedGroups);
-        const batchLimit = randomInt(BATCH_SIZE_MIN, BATCH_SIZE_MAX);
+        const batchLimit     = randomInt(BATCH_SIZE_MIN, BATCH_SIZE_MAX);
+        const excludedSet    = await excludedGroups.getUrlSet(wid);
 
         s.progress = {
           status:    "running",
@@ -230,6 +232,13 @@ function _createManager(wid: string) {
 
           s.progress.currentGroup = group.url;
           onProgress?.(s.progress);
+
+          // Skip excluded groups
+          if (excludedSet.has(group.url)) {
+            console.log(`[Publisher:${wid}] ⛔ Excluded — skipping: ${group.url}`);
+            s.progress.processed++;
+            continue;
+          }
 
           const db  = await getDb();
           const rec = await db.collection("Links_Repository").findOne({ workspaceId: wid, url: group.url }) as any;

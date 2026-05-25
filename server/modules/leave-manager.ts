@@ -2,29 +2,29 @@
  * leave-manager.ts — LeavingQueue processor (per-workspace)
  */
 
-import { getDb } from "../mongo-auth-state.js";
-import { baileysManager } from "../baileys-manager.js";
+import { getDb }             from "../mongo-auth-state.js";
+import { baileysManager }    from "../baileys-manager.js";
 import { getCoordinatorFor } from "./function-coordinator.js";
-import { systemState } from "./system-state.js";
-import { linksRepository } from "./links-repository.js";
-import { classifyWAError } from "./wa-error-handler.js";
+import { systemState }       from "./system-state.js";
+import { linksRepository }   from "./links-repository.js";
+import { classifyWAError }   from "./wa-error-handler.js";
 import { DELAYS, randomInt } from "./human-mimicry.js";
 
 export interface LeaveQueueEntry {
   workspaceId: string;
-  url: string;
-  groupJid?: string;
-  enqueuedAt: Date;
-  reason?: string;
+  url:         string;
+  groupJid?:   string;
+  enqueuedAt:  Date;
+  reason?:     string;
 }
 
 export interface LeaveProgress {
-  status: "running" | "done" | "stopped" | "error";
-  total: number;
-  processed: number;
-  left: number;
-  failed: number;
-  startedAt: string;
+  status:       "running" | "done" | "stopped" | "paused" | "error";
+  total:        number;
+  processed:    number;
+  left:         number;
+  failed:       number;
+  startedAt:    string;
   completedAt?: string;
   currentLink?: string;
 }
@@ -39,17 +39,31 @@ async function col() {
 // ── Per-workspace state ────────────────────────────────────────────────────────
 
 interface WState {
-  progress:      LeaveProgress | null;
-  stopRequested: boolean;
+  progress:       LeaveProgress | null;
+  stopRequested:  boolean;
+  pauseRequested: boolean;
 }
 
 const _stateByWid = new Map<string, WState>();
 
 function _st(wid: string): WState {
   if (!_stateByWid.has(wid)) {
-    _stateByWid.set(wid, { progress: null, stopRequested: false });
+    _stateByWid.set(wid, { progress: null, stopRequested: false, pauseRequested: false });
   }
   return _stateByWid.get(wid)!;
+}
+
+async function _interruptibleSleep(wid: string, ms: number): Promise<"done" | "stopped"> {
+  const TICK = 500;
+  const s    = _st(wid);
+  let remaining = ms;
+  while (remaining > 0) {
+    await new Promise(r => setTimeout(r, Math.min(TICK, remaining)));
+    if (s.stopRequested) return "stopped";
+    if (!s.pauseRequested) remaining -= Math.min(TICK, remaining);
+    else if (s.progress) s.progress.status = "paused";
+  }
+  return "done";
 }
 
 // ── Manager factory ────────────────────────────────────────────────────────────
@@ -94,10 +108,22 @@ function _createManager(wid: string) {
 
     requestStop(): void {
       const s = _st(wid);
-      s.stopRequested = true;
-      if (s.progress && s.progress.status === "running") {
-        s.progress.status = "stopped";
-      }
+      s.stopRequested  = true;
+      s.pauseRequested = false;
+      if (s.progress && s.progress.status !== "done") s.progress.status = "stopped";
+    },
+
+    requestPause(): void {
+      const s = _st(wid);
+      if (!s.progress || s.progress.status === "done" || s.progress.status === "stopped") return;
+      s.pauseRequested = true;
+      if (s.progress) s.progress.status = "paused";
+    },
+
+    requestResume(): void {
+      const s = _st(wid);
+      s.pauseRequested = false;
+      if (s.progress && s.progress.status === "paused") s.progress.status = "running";
     },
 
     async processQueue(): Promise<void> {
@@ -114,7 +140,8 @@ function _createManager(wid: string) {
       }
 
       const s = _st(wid);
-      s.stopRequested = false;
+      s.stopRequested  = false;
+      s.pauseRequested = false;
 
       try {
         await systemState.setActiveFunction(wid, "leaving");
@@ -138,6 +165,15 @@ function _createManager(wid: string) {
           if (s.stopRequested || s.progress.status === "stopped") {
             s.progress.status = "stopped"; break;
           }
+
+          // Pause gate
+          while (s.pauseRequested && !s.stopRequested) {
+            s.progress.status = "paused";
+            await new Promise(r => setTimeout(r, 500));
+          }
+          if (s.stopRequested) { s.progress.status = "stopped"; break; }
+          if (s.progress.status === "paused") s.progress.status = "running";
+
           if (!baileysManager.isConnectedForWorkspace(wid)) {
             s.progress.status = "stopped"; break;
           }
@@ -180,17 +216,19 @@ function _createManager(wid: string) {
           s.progress.processed++;
 
           if (s.progress.processed < s.progress.total) {
-            await DELAYS.betweenJoins();
+            const outcome = await _interruptibleSleep(wid, randomInt(5_000, 15_000));
+            if (outcome === "stopped") { s.progress.status = "stopped"; break; }
             const batchSize = randomInt(15, 25);
             if (s.progress.processed % batchSize === 0) {
               console.log(`[LeaveManager:${wid}] Mini-rest after ${s.progress.processed} leaves...`);
-              await DELAYS.batchRestAfterJoins();
+              const outcome2 = await _interruptibleSleep(wid, randomInt(60_000, 180_000));
+              if (outcome2 === "stopped") { s.progress.status = "stopped"; break; }
             }
           }
         }
 
         if (s.progress.status === "running") {
-          s.progress.status = "done";
+          s.progress.status  = "done";
           s.progress.completedAt = new Date().toISOString();
         }
 

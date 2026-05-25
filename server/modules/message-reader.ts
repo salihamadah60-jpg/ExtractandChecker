@@ -1,8 +1,9 @@
 /**
  * message-reader.ts — Real-time message reader (per-workspace, anti-ban hardened)
  *
- * All state is isolated per-workspace via Maps.
- * Export: getMessageReaderFor(workspaceId) → MessageReaderAPI
+ * Ad classification is based on NLP (message content), NOT member count.
+ * Links found in ad messages → auto-enqueued for leaving.
+ * Links found in non-ad messages → classified as groups to join.
  */
 
 import { baileysManager }    from "../baileys-manager.js";
@@ -15,19 +16,19 @@ import { extractGroupLinks } from "./link-filter.js";
 import { isAdOnlyMedicalGroup } from "../link-store.js";
 
 export interface ReaderStats {
-  status: "running" | "stopped" | "error";
-  continuous: boolean;
-  messagesReceived:    number;
-  messagesSkippedAds:  number;
-  linksFound:          number;
-  linksNew:            number;
-  startedAt:           string;
-  stoppedAt?:          string;
-  lastMessageId?:      string;
-  pipelineRuns?:       number;
-  pipelineSkipped?:    number;
-  bufferSize?:         number;
-  pausedAt?:           string;
+  status: "running" | "stopped" | "paused" | "error";
+  continuous:           boolean;
+  messagesReceived:     number;
+  messagesFromAds:      number;
+  linksFound:           number;
+  linksNew:             number;
+  startedAt:            string;
+  stoppedAt?:           string;
+  pausedAt?:            string;
+  lastMessageId?:       string;
+  pipelineRuns?:        number;
+  pipelineSkipped?:     number;
+  bufferSize?:          number;
 }
 
 // ── Per-workspace state ────────────────────────────────────────────────────────
@@ -37,11 +38,14 @@ const PIPELINE_BUFFER_CAP   = 30;
 const PIPELINE_MIN_INTERVAL = 10 * 60_000;
 const MAX_HANDLER_ERRORS    = 10;
 
+interface BufferEntry { url: string; isAdMessage: boolean; }
+
 interface WState {
   stats:              ReaderStats | null;
   running:            boolean;
+  paused:             boolean;
   shouldBeRunning:    boolean;
-  pipelineBuffer:     string[];
+  pipelineBuffer:     Map<string, BufferEntry>;  // url → entry (non-ad wins)
   pipelineLock:       boolean;
   pipelineDebounce:   ReturnType<typeof setTimeout> | null;
   lastPipelineRun:    number;
@@ -53,14 +57,15 @@ const _stateByWid = new Map<string, WState>();
 function _st(wid: string): WState {
   if (!_stateByWid.has(wid)) {
     _stateByWid.set(wid, {
-      stats:              null,
-      running:            false,
-      shouldBeRunning:    false,
-      pipelineBuffer:     [],
-      pipelineLock:       false,
-      pipelineDebounce:   null,
-      lastPipelineRun:    0,
-      handlerErrors:      0,
+      stats:           null,
+      running:         false,
+      paused:          false,
+      shouldBeRunning: false,
+      pipelineBuffer:  new Map(),
+      pipelineLock:    false,
+      pipelineDebounce: null,
+      lastPipelineRun: 0,
+      handlerErrors:   0,
     });
   }
   return _stateByWid.get(wid)!;
@@ -80,12 +85,12 @@ function _schedulePipeline(wid: string): void {
 }
 
 async function _runPipeline(wid: string): Promise<void> {
-  const s    = _st(wid);
+  const s     = _st(wid);
   const coord = getCoordinatorFor(wid);
-  const tel  = getTelemetryFor(wid);
+  const tel   = getTelemetryFor(wid);
 
   s.pipelineDebounce = null;
-  if (s.pipelineLock || s.pipelineBuffer.length === 0 || !s.running) return;
+  if (s.pipelineLock || s.pipelineBuffer.size === 0 || !s.running) return;
 
   if (coord.isRunning()) {
     console.log(`[Pipeline:${wid}] Coordinator busy (${coord.getActive()}) — deferred`);
@@ -112,10 +117,11 @@ async function _runPipeline(wid: string): Promise<void> {
 
   s.pipelineLock = true;
 
-  const linksToCheck = [...s.pipelineBuffer];
-  s.pipelineBuffer   = [];
+  const entries: BufferEntry[] = [...s.pipelineBuffer.values()];
+  s.pipelineBuffer = new Map();
   if (s.stats) s.stats.bufferSize = 0;
 
+  const linksToCheck = entries.map(e => e.url);
   console.log(`[Pipeline:${wid}] Starting — ${linksToCheck.length} buffered links`);
 
   try {
@@ -132,7 +138,7 @@ async function _runPipeline(wid: string): Promise<void> {
     // 2. Check links
     const checkResults = await baileysManager.checkLinksForPipelineForWorkspace(linksToCheck, wid);
 
-    // 3a. Valid groups
+    // 3a. Valid group links only
     const validGroups = checkResults.filter(
       (r) => r.status === "valid" && r.url.includes("chat.whatsapp.com")
     );
@@ -144,12 +150,18 @@ async function _runPipeline(wid: string): Promise<void> {
       }
     }
 
-    // 3c. Filter
+    // 3c. NLP-based classification
+    //     • isAdOnlyMedicalGroup (name/description keyword match) → ad
+    //     • came from an ad message (NLP flagged)                → ad
+    //     • everything else with members > 10                    → group
     const groups = validGroups
       .filter((r) => {
-        if (isAdOnlyMedicalGroup(r.name, r.description)) return false;
         const m = r.members ?? 0;
-        return m > 150 || (m > 10 && m <= 150 && !r.description?.trim());
+        if (m <= 10) return false;
+        if (isAdOnlyMedicalGroup(r.name, r.description)) return false;
+        const entry = entries.find(e => _cleanLink(e.url) === _cleanLink(r.url));
+        if (entry?.isAdMessage) return false;
+        return true;
       })
       .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
 
@@ -158,7 +170,8 @@ async function _runPipeline(wid: string): Promise<void> {
         const m = r.members ?? 0;
         if (m <= 10) return false;
         if (isAdOnlyMedicalGroup(r.name, r.description)) return true;
-        return m <= 150 && !!r.description?.trim();
+        const entry = entries.find(e => _cleanLink(e.url) === _cleanLink(r.url));
+        return entry?.isAdMessage === true;
       })
       .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
 
@@ -179,7 +192,6 @@ async function _runPipeline(wid: string): Promise<void> {
           }
           if (enqueued > 0) {
             console.log(`[Pipeline:${wid}] Auto-enqueued ${enqueued} ad groups for leaving`);
-            // Trigger leave processor if coordinator is free
             if (!coord.isRunning()) {
               lm.processQueue().catch((err: Error) =>
                 console.warn(`[Pipeline:${wid}] Leave deferred:`, err.message)
@@ -217,6 +229,7 @@ async function _runPipeline(wid: string): Promise<void> {
         if (acquired) {
           await systemState.setActiveFunction(wid, "reading");
           s.running = true;
+          s.paused  = false;
           if (s.stats) { s.stats.status = "running"; s.stats.stoppedAt = undefined; s.stats.pausedAt = undefined; }
           s.handlerErrors = 0;
 
@@ -232,16 +245,14 @@ async function _runPipeline(wid: string): Promise<void> {
           console.warn(`[Pipeline:${wid}] Cannot re-acquire coordinator — reader stays paused`);
         }
       } catch (err) {
-        console.error(`[Pipeline:${wid}] Resume failed:`, (err as Error).message);
+        console.warn(`[Pipeline:${wid}] Resume error:`, (err as Error).message);
       }
-    } else {
-      console.log(`[Pipeline:${wid}] Reader NOT resumed — WA disconnected, coordinator busy, or not continuous`);
     }
     s.pipelineLock = false;
   }
 }
 
-// ── Manager factory ────────────────────────────────────────────────────────────
+// ── Factory ────────────────────────────────────────────────────────────────────
 
 const _listenerRegistered = new Set<string>();
 
@@ -267,17 +278,18 @@ function _createManager(wid: string) {
   return {
     getStats(): ReaderStats | null { return _st(wid).stats; },
     isRunning(): boolean { return _st(wid).running; },
+    isPaused(): boolean { return _st(wid).paused; },
     isContinuous(): boolean { return _st(wid).shouldBeRunning; },
 
     async start(): Promise<void> {
-      const s     = _st(wid);
+      const s = _st(wid);
       if (s.running) return;
 
       if (!baileysManager.isConnectedForWorkspace(wid)) {
         throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
       }
 
-      const coord = getCoordinatorFor(wid);
+      const coord   = getCoordinatorFor(wid);
       const acquired = await coord.acquire("reading");
       if (!acquired) {
         const active = coord.getActive();
@@ -286,24 +298,25 @@ function _createManager(wid: string) {
 
       s.shouldBeRunning = true;
       s.running         = true;
-      s.pipelineBuffer  = [];
+      s.paused          = false;
+      s.pipelineBuffer  = new Map();
       s.handlerErrors   = 0;
 
       const state  = await systemState.get(wid);
       const lastId = state.last_read_message_id;
 
       s.stats = {
-        status:              "running",
-        continuous:          true,
-        messagesReceived:    0,
-        messagesSkippedAds:  0,
-        linksFound:          0,
-        linksNew:            0,
-        startedAt:           new Date().toISOString(),
-        pipelineRuns:        0,
-        pipelineSkipped:     0,
-        bufferSize:          0,
-        lastMessageId:       lastId ?? undefined,
+        status:           "running",
+        continuous:       true,
+        messagesReceived: 0,
+        messagesFromAds:  0,
+        linksFound:       0,
+        linksNew:         0,
+        startedAt:        new Date().toISOString(),
+        pipelineRuns:     0,
+        pipelineSkipped:  0,
+        bufferSize:       0,
+        lastMessageId:    lastId ?? undefined,
       };
 
       await systemState.setActiveFunction(wid, "reading");
@@ -319,9 +332,26 @@ function _createManager(wid: string) {
       });
     },
 
+    pause(): void {
+      const s = _st(wid);
+      if (!s.running) return;
+      s.paused = true;
+      if (s.stats) { s.stats.status = "paused"; s.stats.pausedAt = new Date().toISOString(); }
+      console.log(`[MessageReader:${wid}] Paused`);
+    },
+
+    resume(): void {
+      const s = _st(wid);
+      if (!s.shouldBeRunning) return;
+      s.paused = false;
+      if (s.stats && s.running) { s.stats.status = "running"; s.stats.pausedAt = undefined; }
+      console.log(`[MessageReader:${wid}] Resumed`);
+    },
+
     async stop(): Promise<void> {
       const s = _st(wid);
       s.shouldBeRunning = false;
+      s.paused          = false;
       if (s.pipelineDebounce) { clearTimeout(s.pipelineDebounce); s.pipelineDebounce = null; }
       s.running = false;
       baileysManager.clearMessageHandlerForWorkspace(wid);
@@ -335,8 +365,8 @@ function _createManager(wid: string) {
     async autoStartIfEnabled(): Promise<void> {
       try {
         const enabled = await systemState.getReaderContinuous(wid);
-        const s = _st(wid);
-        const coord = getCoordinatorFor(wid);
+        const s       = _st(wid);
+        const coord   = getCoordinatorFor(wid);
         if (!enabled || s.running || coord.isRunning()) return;
         await getMessageReaderFor(wid).start();
         console.log(`[MessageReader:${wid}] Auto-started on WhatsApp connect`);
@@ -348,6 +378,9 @@ function _createManager(wid: string) {
     async _handleMessage(msg: any): Promise<void> {
       const s = _st(wid);
       try {
+        // If paused, silently drop (we still receive but don't process)
+        if (s.paused) return;
+
         const jid: string = msg.key?.remoteJid ?? "";
         if (!jid.endsWith("@g.us")) return;
 
@@ -361,27 +394,36 @@ function _createManager(wid: string) {
         if (s.stats) s.stats.messagesReceived++;
 
         const embeddedLinks = extractGroupLinks(text);
-        const cls = classifyMessage(text, embeddedLinks.whatsapp);
+        const cls           = classifyMessage(text, embeddedLinks.whatsapp);
+
+        // Track ad messages (don't skip — extract links and flag them as ad-source)
         if (cls.isAd) {
-          if (s.stats) s.stats.messagesSkippedAds++;
-          return;
+          if (s.stats) s.stats.messagesFromAds++;
         }
 
         const allLinks = [...embeddedLinks.whatsapp];
         if (s.stats) s.stats.linksFound += allLinks.length;
 
         for (const url of allLinks) {
-          if (s.pipelineBuffer.length >= PIPELINE_BUFFER_CAP) {
+          if (s.pipelineBuffer.size >= PIPELINE_BUFFER_CAP) {
             console.log(`[MessageReader:${wid}] Buffer cap (${PIPELINE_BUFFER_CAP}) — flushing early`);
             if (s.pipelineDebounce) clearTimeout(s.pipelineDebounce);
             s.pipelineDebounce = setTimeout(() => _runPipeline(wid), 5_000);
             break;
           }
 
-          const added = await linksRepository.addIfNew(wid, url, "Group", "message");
+          const cleanUrl = _cleanLink(url);
+
+          // Add to DB if new
+          const added = await linksRepository.addIfNew(wid, cleanUrl, "Group", "message");
           if (added) {
-            if (s.stats) { s.stats.linksNew++; s.stats.bufferSize = (s.stats.bufferSize ?? 0) + 1; }
-            s.pipelineBuffer.push(url);
+            if (s.stats) { s.stats.linksNew++; s.stats.bufferSize = s.pipelineBuffer.size + 1; }
+
+            // Non-ad message wins over ad message for same URL
+            const existing = s.pipelineBuffer.get(cleanUrl);
+            if (!existing || (existing.isAdMessage && !cls.isAd)) {
+              s.pipelineBuffer.set(cleanUrl, { url: cleanUrl, isAdMessage: cls.isAd });
+            }
             _schedulePipeline(wid);
           }
         }

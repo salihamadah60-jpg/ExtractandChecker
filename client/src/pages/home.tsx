@@ -15,7 +15,7 @@ import {
   FolderOpen, PlusCircle, FileJson, History, ChevronDown,
   ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
   Pause, Play, Square, Menu, X, MessageCircle, Send, LayoutDashboard,
-  TrendingUp, Activity, Zap, BarChart2, AlertTriangle,
+  TrendingUp, Activity, Zap, BarChart2, AlertTriangle, Ban, Moon,
 } from "lucide-react";
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
@@ -145,14 +145,21 @@ interface TelemetryRes {
 interface LeaveQueueEntry { url: string; groupJid?: string; enqueuedAt: string; reason?: string; }
 interface AdMessage { _id: string; text: string; createdAt: string; sentCount: number; lastSentAt?: string; }
 interface PublishProgress {
-  status: "running" | "done" | "stopped" | "error";
+  status: "running" | "done" | "stopped" | "paused" | "error" | "cooldown";
   total: number; processed: number; sent: number; failed: number;
   currentGroup?: string; startedAt: string; completedAt?: string;
 }
 interface ReaderStats {
-  status: "running" | "stopped" | "error";
-  messagesReceived: number; messagesSkippedAds: number; linksFound: number; linksNew: number;
-  startedAt: string; stoppedAt?: string;
+  status: "running" | "stopped" | "paused" | "error";
+  messagesReceived: number; messagesFromAds: number; linksFound: number; linksNew: number;
+  startedAt: string; stoppedAt?: string; pausedAt?: string;
+}
+interface ExcludedGroup { _id?: string; url: string; name?: string; addedAt: string; }
+interface SleepConfig { startHour: number; startMin: number; durationHours: number; }
+interface LeaveProgress {
+  status: "running" | "done" | "stopped" | "paused" | "error";
+  total: number; processed: number; left: number; failed: number;
+  startedAt: string; completedAt?: string; currentLink?: string;
 }
 interface PublishSession {
   _id?: string; startedAt: string; completedAt: string;
@@ -213,6 +220,12 @@ export default function Home() {
   const [manualUploadResult, setManualUploadResult] = useState<{ total: number; added: number; duplicates: number } | null>(null);
   const [isManualUploading, setIsManualUploading] = useState(false);
   const manualUploadRef = useRef<HTMLInputElement>(null);
+  const [showExcludedPanel, setShowExcludedPanel] = useState(false);
+  const [newExcludedUrl, setNewExcludedUrl] = useState("");
+  const [sleepStartTime, setSleepStartTime] = useState("01:30");
+  const [sleepConfigSaved, setSleepConfigSaved] = useState(false);
+  const [leaveProgress, setLeaveProgress] = useState<LeaveProgress | null>(null);
+  const sleepConfigInitRef = useRef(false);
 
   // ── Network health ────────────────────────────────────────────────────────
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -290,9 +303,18 @@ export default function Home() {
     queryKey: ["/api/publisher/progress"],
     refetchInterval: coordinatorData?.active === "publishing" ? 2000 : false,
   });
-  const { data: readerStatsData } = useQuery<{ stats: ReaderStats | null; isRunning: boolean }>({
+  const { data: readerStatsData } = useQuery<{ stats: ReaderStats | null; isRunning: boolean; isPaused: boolean }>({
     queryKey: ["/api/reader/stats"],
     refetchInterval: 5000,
+  });
+  const { data: excludedGroupsData, refetch: refetchExcludedGroups } = useQuery<{ groups: ExcludedGroup[] }>({
+    queryKey: ["/api/excluded-groups"],
+    refetchInterval: false,
+    enabled: showExcludedPanel,
+  });
+  const { data: sleepConfigData, refetch: refetchSleepConfig } = useQuery<SleepConfig & { durationHours: number }>({
+    queryKey: ["/api/settings/sleep"],
+    refetchInterval: false,
   });
 
   const { data: telemetryData } = useQuery<TelemetryRes>({
@@ -334,6 +356,15 @@ export default function Home() {
       setExtraPanelMode("join");
     }
   }, [joinProgressData]);
+
+  // Sync sleep start time from server config once loaded
+  useEffect(() => {
+    if (sleepConfigInitRef.current || !sleepConfigData) return;
+    sleepConfigInitRef.current = true;
+    const h = String(sleepConfigData.startHour).padStart(2, "0");
+    const m = String(sleepConfigData.startMin).padStart(2, "0");
+    setSleepStartTime(`${h}:${m}`);
+  }, [sleepConfigData]);
 
   const waStatus = waData?.status ?? "disconnected";
   const qrCode = waData?.qrCode ?? null;
@@ -744,6 +775,63 @@ export default function Home() {
   const stopReaderMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/reader/stop", {}),
     onSuccess: () => toast({ title: "تم إيقاف القراءة" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const pauseReaderMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/reader/pause", {}),
+    onSuccess: () => { toast({ title: "تم تعليق القراءة مؤقتاً" }); qc.invalidateQueries({ queryKey: ["/api/reader/stats"] }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const resumeReaderMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/reader/resume", {}),
+    onSuccess: () => { toast({ title: "تم استئناف القراءة" }); qc.invalidateQueries({ queryKey: ["/api/reader/stats"] }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const pauseLeaveMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/leave/pause", {}),
+    onSuccess: () => toast({ title: "تم تعليق المغادرة مؤقتاً" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const resumeLeaveMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/leave/resume", {}),
+    onSuccess: () => toast({ title: "تم استئناف المغادرة" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const pausePublishMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/publisher/pause", {}),
+    onSuccess: () => toast({ title: "تم تعليق النشر مؤقتاً" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const resumePublishMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/publisher/resume", {}),
+    onSuccess: () => toast({ title: "تم استئناف النشر" }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const addExcludedMutation = useMutation({
+    mutationFn: (url: string) => apiRequest("POST", "/api/excluded-groups", { url }),
+    onSuccess: () => { setNewExcludedUrl(""); void refetchExcludedGroups(); toast({ title: "تمت إضافة الرابط للمستثنيات" }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const removeExcludedMutation = useMutation({
+    mutationFn: (url: string) => apiRequest("DELETE", "/api/excluded-groups", { url }),
+    onSuccess: () => { void refetchExcludedGroups(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const saveSleepConfigMutation = useMutation({
+    mutationFn: () => {
+      const [h, m] = sleepStartTime.split(":").map(Number);
+      return apiRequest("POST", "/api/settings/sleep", { startHour: h, startMin: m });
+    },
+    onSuccess: () => {
+      setSleepConfigSaved(true);
+      setTimeout(() => setSleepConfigSaved(false), 2000);
+      void refetchSleepConfig();
+      toast({ title: "تم حفظ وقت النوم" });
+    },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
@@ -1251,6 +1339,35 @@ export default function Home() {
                 </div>
               )}
 
+              {/* ── وقت النوم ── */}
+              <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2 bg-blue-50/50 dark:bg-blue-900/10">
+                <div className="flex items-center gap-1.5">
+                  <Moon className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                  <span className="text-xs font-medium text-blue-800 dark:text-blue-300">وقت النوم (6 ساعات)</span>
+                  {sleepConfigData && (
+                    <span className="mr-auto text-[10px] text-muted-foreground">
+                      ينتهي {String((sleepConfigData.startHour + 6) % 24).padStart(2, "0")}:{String(sleepConfigData.startMin).padStart(2, "0")}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="time"
+                    value={sleepStartTime}
+                    onChange={(e) => setSleepStartTime(e.target.value)}
+                    className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    data-testid="input-sleep-start"
+                  />
+                  <Button size="sm" className={`h-8 px-3 text-xs ${sleepConfigSaved ? "bg-green-500 hover:bg-green-600" : "bg-blue-600 hover:bg-blue-700"} text-white`}
+                    onClick={() => saveSleepConfigMutation.mutate()}
+                    disabled={saveSleepConfigMutation.isPending}
+                    data-testid="button-save-sleep">
+                    {saveSleepConfigMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : sleepConfigSaved ? <CheckCheck className="w-3.5 h-3.5" /> : "حفظ"}
+                  </Button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">يتوقف الانضمام يومياً من الوقت المحدد لمدة 6 ساعات</p>
+              </div>
+
               {/* ── لوحة التلميترى ── */}
               <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showTelemetryPanel ? "border-primary bg-primary/5" : ""}`}
                 onClick={() => setShowTelemetryPanel(o => !o)}
@@ -1400,15 +1517,34 @@ export default function Home() {
               {showReaderPanel && (
                 <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
                   {readerStats && (
-                    <div className="grid grid-cols-2 gap-1 text-center text-[10px]">
+                    <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
                       <div className="bg-background rounded p-1.5 border"><p className="font-bold text-sm">{readerStats.messagesReceived}</p><p className="text-muted-foreground">رسالة</p></div>
-                      <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p><p className="text-muted-foreground">روابط جديدة</p></div>
+                      <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-1.5"><p className="font-bold text-sm text-orange-600">{readerStats.messagesFromAds}</p><p className="text-muted-foreground">إعلانات</p></div>
+                      <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p><p className="text-muted-foreground">جديدة</p></div>
+                    </div>
+                  )}
+                  {readerStats && (
+                    <div className="flex items-center gap-1 text-[10px]">
+                      <span className={`px-1.5 py-0.5 rounded-full font-medium ${readerStats.status === "running" ? "bg-green-100 text-green-700" : readerStats.status === "paused" ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-600"}`}>
+                        {readerStats.status === "running" ? "● يعمل" : readerStats.status === "paused" ? "⏸ معلق" : "■ متوقف"}
+                      </span>
                     </div>
                   )}
                   {isReaderRunning ? (
-                    <Button size="sm" variant="outline" className="w-full text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopReaderMutation.mutate()} disabled={stopReaderMutation.isPending} data-testid="sidebar-stop-reader">
-                      {stopReaderMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <Square className="w-3 h-3 ml-1" />}إيقاف القراءة
-                    </Button>
+                    <div className="flex gap-1.5">
+                      {readerStatsData?.isPaused ? (
+                        <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-primary/50 text-primary" onClick={() => resumeReaderMutation.mutate()} disabled={resumeReaderMutation.isPending} data-testid="button-resume-reader">
+                          <Play className="w-3 h-3 ml-1" />استئناف
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-amber-500/50 text-amber-600 hover:bg-amber-50" onClick={() => pauseReaderMutation.mutate()} disabled={pauseReaderMutation.isPending} data-testid="button-pause-reader">
+                          <Pause className="w-3 h-3 ml-1" />تعليق
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopReaderMutation.mutate()} disabled={stopReaderMutation.isPending} data-testid="sidebar-stop-reader">
+                        <Square className="w-3 h-3 ml-1" />إيقاف
+                      </Button>
+                    </div>
                   ) : (
                     <Button size="sm" className="w-full text-xs h-8"
                       onClick={() => startReaderMutation.mutate()}
@@ -1434,17 +1570,65 @@ export default function Home() {
               {showPublisherPanel && (
                 <div className="border border-orange-200 dark:border-orange-800 rounded-lg p-3 space-y-2.5 bg-orange-50/50 dark:bg-orange-900/10">
                   {/* Progress */}
-                  {publishProgress?.status === "running" && (
+                  {publishProgress && ["running","paused"].includes(publishProgress.status) && (
                     <div className="space-y-1.5">
-                      <div className="flex items-center justify-between text-xs"><span className="flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin text-orange-500" />جاري النشر...</span><Badge variant="outline">{publishProgress.processed}/{publishProgress.total}</Badge></div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="flex items-center gap-1">
+                          {publishProgress.status === "paused"
+                            ? <><Pause className="w-3 h-3 text-amber-500" />معلق مؤقتاً</>
+                            : <><Loader2 className="w-3 h-3 animate-spin text-orange-500" />جاري النشر...</>}
+                        </span>
+                        <Badge variant="outline">{publishProgress.processed}/{publishProgress.total}</Badge>
+                      </div>
                       <Progress value={publishPct} className="h-1.5" />
                       <div className="grid grid-cols-2 gap-1 text-center text-[10px]">
                         <div className="bg-green-50 rounded p-1.5"><p className="font-bold text-green-600">{publishProgress.sent}</p><p className="text-muted-foreground">أُرسل</p></div>
                         <div className="bg-red-50 rounded p-1.5"><p className="font-bold text-red-600">{publishProgress.failed}</p><p className="text-muted-foreground">فشل</p></div>
                       </div>
-                      <Button size="sm" variant="outline" className="w-full text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopPublishMutation.mutate()} disabled={stopPublishMutation.isPending}>
-                        <Square className="w-3 h-3 ml-1" />إيقاف النشر
-                      </Button>
+                      <div className="flex gap-1.5">
+                        {publishProgress.status === "paused" ? (
+                          <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-primary/50 text-primary" onClick={() => resumePublishMutation.mutate()} disabled={resumePublishMutation.isPending} data-testid="button-resume-publish">
+                            <Play className="w-3 h-3 ml-1" />استئناف
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-amber-500/50 text-amber-600 hover:bg-amber-50" onClick={() => pausePublishMutation.mutate()} disabled={pausePublishMutation.isPending} data-testid="button-pause-publish">
+                            <Pause className="w-3 h-3 ml-1" />تعليق
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopPublishMutation.mutate()} disabled={stopPublishMutation.isPending} data-testid="button-stop-publish">
+                          <Square className="w-3 h-3 ml-1" />إيقاف
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Excluded groups toggle */}
+                  <Button variant="ghost" size="sm" className="w-full text-xs h-7 text-muted-foreground hover:text-foreground justify-start gap-1"
+                    onClick={() => { setShowExcludedPanel(o => !o); if (!excludedGroupsData) void refetchExcludedGroups(); }}
+                    data-testid="button-excluded-groups">
+                    <Ban className="w-3 h-3 ml-1 text-destructive" />
+                    {showExcludedPanel ? "إخفاء المستثنيين" : `مجموعات مستثناة (${excludedGroupsData?.groups.length ?? 0})`}
+                    {showExcludedPanel ? <ChevronUp className="w-3 h-3 mr-1" /> : <ChevronDown className="w-3 h-3 mr-1" />}
+                  </Button>
+                  {showExcludedPanel && (
+                    <div className="border border-destructive/20 rounded-lg p-2.5 space-y-2 bg-destructive/5">
+                      <p className="text-[10px] text-muted-foreground">المجموعات المضافة هنا لن تُرسَل لها إعلانات</p>
+                      {excludedGroupsData && excludedGroupsData.groups.length > 0 && (
+                        <div className="space-y-1 max-h-36 overflow-y-auto">
+                          {excludedGroupsData.groups.map((g) => (
+                            <div key={g.url} className="flex items-center gap-1.5 bg-background rounded p-1.5 border text-[10px]">
+                              <span className="flex-1 font-mono truncate text-muted-foreground">{g.url}</span>
+                              <Button size="sm" variant="ghost" className="h-5 w-5 p-0 flex-shrink-0" onClick={() => removeExcludedMutation.mutate(g.url)} disabled={removeExcludedMutation.isPending} data-testid={`button-remove-excluded-${g.url}`}><Trash2 className="w-3 h-3 text-destructive" /></Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-1.5">
+                        <Input placeholder="رابط المجموعة..." value={newExcludedUrl} onChange={(e) => setNewExcludedUrl(e.target.value)} className="flex-1 h-8 text-xs" onKeyDown={(e) => { if (e.key === "Enter" && newExcludedUrl.trim()) addExcludedMutation.mutate(newExcludedUrl.trim()); }} data-testid="input-excluded-url" />
+                        <Button size="sm" className="h-8 px-2 bg-destructive hover:bg-destructive/90" onClick={() => addExcludedMutation.mutate(newExcludedUrl.trim())} disabled={addExcludedMutation.isPending || !newExcludedUrl.trim()} data-testid="button-add-excluded">
+                          {addExcludedMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
+                        </Button>
+                      </div>
                     </div>
                   )}
                   {/* Ad list */}
@@ -1556,17 +1740,29 @@ export default function Home() {
                   ) : (
                     <p className="text-xs text-muted-foreground text-center py-2">قائمة المغادرة فارغة</p>
                   )}
-                  <div className="flex gap-1.5">
-                    <Button size="sm" className="flex-1 h-8 text-xs bg-red-500 hover:bg-red-600 text-white"
-                      onClick={() => startLeaveMutation.mutate()}
-                      disabled={startLeaveMutation.isPending || waStatus !== "connected" || isCoordinatorBusy || leaveQueue.length === 0}
-                      data-testid="button-start-leave">
-                      {startLeaveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <LogOut className="w-3.5 h-3.5 ml-1" />}
-                      مغادرة الكل ({leaveQueue.length})
-                    </Button>
-                    {activeFunction === "leaving" && (
-                      <Button size="sm" variant="outline" className="h-8 px-2 border-destructive/50 text-destructive" onClick={() => stopLeaveMutation.mutate()} disabled={stopLeaveMutation.isPending} data-testid="button-stop-leave">
-                        <Square className="w-3.5 h-3.5" />
+                  <div className="flex gap-1.5 flex-wrap">
+                    {activeFunction === "leaving" ? (
+                      <>
+                        {leaveProgress?.status === "paused" ? (
+                          <Button size="sm" variant="outline" className="flex-1 h-8 text-xs border-primary/50 text-primary" onClick={() => resumeLeaveMutation.mutate()} disabled={resumeLeaveMutation.isPending} data-testid="button-resume-leave">
+                            <Play className="w-3.5 h-3.5 ml-1" />استئناف
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" className="flex-1 h-8 text-xs border-amber-500/50 text-amber-600 hover:bg-amber-50" onClick={() => pauseLeaveMutation.mutate()} disabled={pauseLeaveMutation.isPending} data-testid="button-pause-leave">
+                            <Pause className="w-3.5 h-3.5 ml-1" />تعليق
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" className="flex-1 h-8 text-xs border-destructive/50 text-destructive" onClick={() => stopLeaveMutation.mutate()} disabled={stopLeaveMutation.isPending} data-testid="button-stop-leave">
+                          <Square className="w-3.5 h-3.5 ml-1" />إيقاف
+                        </Button>
+                      </>
+                    ) : (
+                      <Button size="sm" className="w-full h-8 text-xs bg-red-500 hover:bg-red-600 text-white"
+                        onClick={() => startLeaveMutation.mutate()}
+                        disabled={startLeaveMutation.isPending || waStatus !== "connected" || isCoordinatorBusy || leaveQueue.length === 0}
+                        data-testid="button-start-leave">
+                        {startLeaveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <LogOut className="w-3.5 h-3.5 ml-1" />}
+                        مغادرة الكل ({leaveQueue.length})
                       </Button>
                     )}
                   </div>
