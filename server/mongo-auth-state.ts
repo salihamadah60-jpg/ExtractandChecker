@@ -2,30 +2,42 @@ import { MongoClient, type Db } from "mongodb";
 
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
+// Mutex: prevents multiple concurrent reconnection attempts (race condition fix)
+let _connectingPromise: Promise<Db> | null = null;
+
+async function _doConnect(): Promise<Db> {
+  const MONGO_URI = process.env.MONGODB_URI || "";
+  if (!MONGO_URI) throw new Error("MONGODB_URI environment variable not set");
+  const client = new MongoClient(MONGO_URI, {
+    serverSelectionTimeoutMS: 30_000,
+    connectTimeoutMS:         30_000,
+    socketTimeoutMS:          60_000,
+    retryWrites:              true,
+    retryReads:               true,
+    maxPoolSize:              50,    // raised from 25 — prevents MongoWaitQueueTimeoutError
+    minPoolSize:              5,
+    waitQueueTimeoutMS:       30_000,
+    heartbeatFrequencyMS:     10_000,
+    maxConnecting:            10,
+  });
+  await client.connect();
+  client.on("topologyClosed", () => {
+    _db     = null;
+    _client = null;
+    console.warn("[MongoDB] Topology closed — connection will be re-established on next request");
+  });
+  _client = client;
+  _db = client.db();
+  return _db;
+}
 
 export async function getDb(): Promise<Db> {
   if (_db) return _db;
-  const MONGO_URI = process.env.MONGODB_URI || "";
-  if (!MONGO_URI) throw new Error("MONGODB_URI environment variable not set");
-  _client = new MongoClient(MONGO_URI, {
-    serverSelectionTimeoutMS: 30_000,   // 30s to find/select a server
-    connectTimeoutMS:         30_000,   // 30s initial TCP connect
-    socketTimeoutMS:          60_000,   // 60s per operation socket idle
-    retryWrites:              true,     // auto-retry failed writes once
-    retryReads:               true,     // auto-retry failed reads once
-    maxPoolSize:              25,
-    minPoolSize:              2,
-    waitQueueTimeoutMS:       30_000,
-    heartbeatFrequencyMS:     10_000,   // check server health every 10s
-  });
-  await _client.connect();
-  // Reset cached references if the topology closes unexpectedly
-  _client.on("topologyClosed", () => {
-    _db     = null;
-    _client = null;
-  });
-  _db = _client.db();
-  return _db;
+  // Serialize concurrent reconnection attempts to a single Promise
+  if (!_connectingPromise) {
+    _connectingPromise = _doConnect().finally(() => { _connectingPromise = null; });
+  }
+  return _connectingPromise;
 }
 
 export async function initMongo(): Promise<void> {

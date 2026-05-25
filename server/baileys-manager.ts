@@ -576,24 +576,41 @@ class SessionsManager extends EventEmitter {
         if (update.type === "notify") this._onMessagesFromSession(id, update.messages ?? []);
       });
 
-      // Detect when bot is removed/kicked from a group
+      // Detect when bot is removed/kicked from a group (or voluntarily leaves)
       sock.ev.on("group-participants.update", async (update: any) => {
         if (update.action !== "remove") return;
         const botJid = sock.user?.id;
         if (!botJid) return;
-        // Normalize JID — strip device suffix
         const botId = botJid.split(":")[0] + "@s.whatsapp.net";
         const participants: string[] = update.participants ?? [];
         if (!participants.includes(botId)) return;
-        // Bot was removed from this group — mark as Left in repository
         const groupJid: string = update.id;
-        console.log(`[Sessions] Removed from group: ${groupJid} — updating repository`);
+        console.log(`[Sessions] Removed/left group: ${groupJid} — updating repository`);
         try {
           const { linksRepository } = await import("./modules/links-repository.js");
           const _wid = this._workspaceIdBySessionId.get(id) ?? "main";
-          await linksRepository.handleGroupRemoval(_wid, groupJid);
+          await linksRepository.markLeftByJid(_wid, groupJid);
         } catch (err) {
           console.warn("[Sessions] Failed to handle group removal:", (err as Error).message);
+        }
+      });
+
+      // Detect group deletion or other group-level updates that remove bot from group
+      sock.ev.on("groups.update", async (updates: any[]) => {
+        for (const update of updates) {
+          if (!update?.id) continue;
+          // If the update has `delete: true` the group was deleted
+          if (update.delete) {
+            const groupJid: string = update.id;
+            console.log(`[Sessions] Group deleted: ${groupJid} — marking Left`);
+            try {
+              const { linksRepository } = await import("./modules/links-repository.js");
+              const _wid = this._workspaceIdBySessionId.get(id) ?? "main";
+              await linksRepository.markLeftByJid(_wid, groupJid);
+            } catch (err) {
+              console.warn("[Sessions] Failed to handle group deletion:", (err as Error).message);
+            }
+          }
         }
       });
     } catch (err) {
@@ -1123,6 +1140,24 @@ class SessionsManager extends EventEmitter {
     const s = this.getActiveStateForWorkspace(workspaceId);
     if (!s?.sock) return null;
     try { return await s.sock.groupMetadata(jid); } catch { return null; }
+  }
+
+  /**
+   * Fetch ALL groups the connected account is currently in via WhatsApp.
+   * Uses groupFetchAllParticipating() — the definitive source of truth.
+   * Returns a flat array of group objects.
+   */
+  async syncGroupsForWorkspace(workspaceId: string): Promise<{ synced: number; markedLeft: number }> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+
+    console.log(`[Sessions] Fetching all participating groups for workspace: ${workspaceId}`);
+    const allGroups: Record<string, any> = await s.sock.groupFetchAllParticipating();
+    const groupsArr = Object.values(allGroups);
+    console.log(`[Sessions] Found ${groupsArr.length} groups from WhatsApp for workspace: ${workspaceId}`);
+
+    const { linksRepository } = await import("./modules/links-repository.js");
+    return linksRepository.syncFromWhatsAppGroups(workspaceId, groupsArr);
   }
 
   /**

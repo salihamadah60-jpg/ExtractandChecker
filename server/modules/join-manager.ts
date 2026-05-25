@@ -175,6 +175,25 @@ async function joinOne(
     const latency  = Date.now() - t0;
     tel.record(latency);
 
+    // Check if group requires admin approval — bot would be in pendingParticipants, not a real member
+    if (groupJid) {
+      try {
+        const meta = await baileysManager.getGroupMetadataForWorkspace(groupJid, wid);
+        const botJid = baileysManager.getActiveStateForWorkspace(wid)?.sock?.user?.id;
+        const botId  = botJid ? botJid.split(":")[0] + "@s.whatsapp.net" : null;
+        const pending: any[] = meta?.pendingParticipants ?? [];
+        const isPending = botId && pending.some((p: any) =>
+          (typeof p === "string" ? p : p?.id ?? "")?.split(":")[0] + "@s.whatsapp.net" === botId
+        );
+        if (isPending) {
+          console.log(`[JoinManager:${wid}] ⏳ Admin-approval required — pending: ${record.url}`);
+          await linksRepository.setStatus(wid, record.url, "Ignored");
+          s.joiningCache.delete(inviteCode);
+          return { result: "ignored" };
+        }
+      } catch { /* metadata check failed — assume joined OK */ }
+    }
+
     await linksRepository.setStatus(wid, record.url, "Joined", currentPhone);
     await linksRepository.recordCheck(wid, record.url, undefined, undefined, undefined);
     if (groupJid) {

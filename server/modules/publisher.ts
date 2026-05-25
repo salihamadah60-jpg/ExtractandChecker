@@ -242,7 +242,28 @@ function _createManager(wid: string) {
 
           const db  = await getDb();
           const rec = await db.collection("Links_Repository").findOne({ workspaceId: wid, url: group.url }) as any;
-          const jid = rec?.groupJid;
+          let jid: string | undefined = rec?.groupJid;
+
+          // If no JID stored, try to resolve it live from WhatsApp group info
+          if (!jid) {
+            const inviteCode = group.url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/)?.[1];
+            if (inviteCode) {
+              try {
+                const sock = baileysManager.getActiveStateForWorkspace(wid)?.sock;
+                if (sock?.groupGetInviteInfo) {
+                  const info = await sock.groupGetInviteInfo(inviteCode);
+                  if (info?.id) {
+                    jid = info.id as string;
+                    await db.collection("Links_Repository").updateOne(
+                      { workspaceId: wid, url: group.url },
+                      { $set: { groupJid: jid, updatedAt: new Date() } }
+                    );
+                    console.log(`[Publisher:${wid}] Resolved groupJid for ${group.url} → ${jid}`);
+                  }
+                }
+              } catch { /* ignore — jid stays undefined */ }
+            }
+          }
 
           if (!jid) {
             console.warn(`[Publisher:${wid}] No groupJid for ${group.url} — skipping`);
@@ -277,6 +298,8 @@ function _createManager(wid: string) {
               { $inc: { sentCount: 1 }, $set: { lastSentAt: new Date() } }
             );
             await systemState.update(wid, { last_published_ad_index: adIdx });
+            // Persist progress snapshot so it survives server restarts
+            void systemState.setExtra(wid, { publishProgress: s.progress }).catch(() => {});
 
             s.progress.sent++;
             consecutiveFailures = 0;

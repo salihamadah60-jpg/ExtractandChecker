@@ -511,6 +511,17 @@ export async function registerRoutes(
     }
   });
 
+  // ── Sync all groups from WhatsApp (full group list, detects manual leaves) ──
+  app.post("/api/whatsapp/sync-groups", async (req: any, res) => {
+    try {
+      const wid: string = req.workspaceId ?? "main";
+      const result = await baileysManager.syncGroupsForWorkspace(wid);
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   // ── Start Baileys link check ───────────────────────────────────────────────
   app.post("/api/whatsapp/check", async (req: any, res) => {
     try {

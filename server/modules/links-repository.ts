@@ -272,34 +272,111 @@ export const linksRepository = {
     ads: { link: string; name?: string; members?: number; description?: string }[],
     descLinks?: string[]
   ): Promise<{ newGroups: number; newAds: number; newDescLinks: number }> {
-    let newGroups = 0;
-    let newAds = 0;
-    let newDescLinks = 0;
+    const c = await col();
+    const now = new Date();
 
-    for (const g of groups) {
-      const added = await this.addIfNew(workspaceId, g.link, "Group", "upload", {
-        name: g.name, members: g.members, description: g.description,
-      });
-      if (added) newGroups++;
+    const buildOp = (url: string, type: LinkType, source: LinkSource, extra: Partial<Pick<LinkRecord, "name" | "members" | "description">> = {}) => ({
+      updateOne: {
+        filter: { workspaceId, url },
+        update: {
+          $setOnInsert: { workspaceId, url, type, status: "Pending" as LinkStatus, source, addedAt: now, checkCount: 0 },
+          $set: { updatedAt: now, ...extra },
+        },
+        upsert: true,
+      },
+    });
+
+    const allOps = [
+      ...groups.map(g => buildOp(g.link, "Group", "upload", { name: g.name, members: g.members, description: g.description })),
+      ...ads.map(a => buildOp(a.link, "Group", "upload", { name: a.name, members: a.members, description: a.description })),
+      ...(descLinks ?? [])
+        .filter(url => url.includes("chat.whatsapp.com"))
+        .map(url => buildOp(url, "Group", "description")),
+    ];
+
+    if (!allOps.length) return { newGroups: 0, newAds: 0, newDescLinks: 0 };
+
+    const result = await c.bulkWrite(allOps, { ordered: false });
+    const newGroups    = Math.min(result.upsertedCount, groups.length);
+    const newAds       = Math.max(0, result.upsertedCount - newGroups);
+    const newDescLinks = result.upsertedCount - newGroups - newAds;
+
+    console.log(`[LinksRepository] Bulk saved (wid: ${workspaceId}) — upserted: ${result.upsertedCount}, modified: ${result.modifiedCount}`);
+    return { newGroups, newAds, newDescLinks: Math.max(0, newDescLinks) };
+  },
+
+  /**
+   * Sync groups fetched live from WhatsApp's groupFetchAllParticipating().
+   * - Upserts each group by groupJid (updates name/members/desc if changed).
+   * - Marks any DB "Joined" record whose JID is absent from WA as "Left"
+   *   (handles groups the user left manually outside the app).
+   */
+  async syncFromWhatsAppGroups(
+    workspaceId: string,
+    waGroups: Array<{ id: string; subject?: string; participants?: Array<{ id: string }>; desc?: string; size?: number }>
+  ): Promise<{ synced: number; markedLeft: number }> {
+    const c = await col();
+    const now = new Date();
+    const activeJids = new Set(waGroups.map(g => g.id));
+
+    const ops = waGroups.map(g => {
+      const members = typeof g.size === "number" ? g.size : (g.participants?.length ?? undefined);
+      return {
+        updateOne: {
+          filter: { workspaceId, groupJid: g.id },
+          update: {
+            $setOnInsert: {
+              workspaceId,
+              url: `https://chat.whatsapp.com/synced-${g.id}`,
+              type: "Group" as LinkType,
+              status: "Joined" as LinkStatus,
+              source: "manual" as LinkSource,
+              addedAt: now,
+              checkCount: 0,
+            },
+            $set: {
+              status: "Joined" as LinkStatus,
+              name: g.subject ?? undefined,
+              ...(members !== undefined ? { members } : {}),
+              ...(g.desc ? { description: g.desc } : {}),
+              updatedAt: now,
+            },
+          },
+          upsert: true,
+        },
+      };
+    });
+
+    let synced = 0;
+    if (ops.length) {
+      const r = await c.bulkWrite(ops, { ordered: false });
+      synced = r.upsertedCount + r.modifiedCount;
     }
 
-    for (const a of ads) {
-      const added = await this.addIfNew(workspaceId, a.link, "Group", "upload", {
-        name: a.name, members: a.members, description: a.description,
-      });
-      if (added) newAds++;
-    }
+    // Mark groups that WA no longer shows as Left
+    const leftResult = await c.updateMany(
+      {
+        workspaceId,
+        status: "Joined",
+        groupJid: { $exists: true, $ne: null, $nin: [...activeJids] },
+      },
+      { $set: { status: "Left" as LinkStatus, leftAt: now, updatedAt: now } }
+    );
 
-    if (descLinks) {
-      for (const url of descLinks) {
-        if (!url.includes("chat.whatsapp.com")) continue;
-        const added = await this.addIfNew(workspaceId, url, "Group", "description");
-        if (added) newDescLinks++;
-      }
-    }
+    console.log(`[LinksRepository] WA sync (wid: ${workspaceId}) — synced: ${synced}, markedLeft: ${leftResult.modifiedCount}`);
+    return { synced, markedLeft: leftResult.modifiedCount };
+  },
 
-    console.log(`[LinksRepository] Filtered saved (wid: ${workspaceId}) → ${newGroups} new groups, ${newAds} new ads, ${newDescLinks} new desc links`);
-    return { newGroups, newAds, newDescLinks };
+  /** Mark a single group Left by JID (e.g. when voluntary leave detected via events). */
+  async markLeftByJid(workspaceId: string, groupJid: string): Promise<void> {
+    const c = await col();
+    const result = await c.updateMany(
+      { workspaceId, groupJid, status: { $in: ["Joined", "Pending"] } },
+      { $set: { status: "Left" as LinkStatus, leftAt: new Date(), updatedAt: new Date() } }
+    );
+    if (result.modifiedCount > 0) {
+      console.log(`[LinksRepository] Marked Left (voluntary leave): ${groupJid} (wid: ${workspaceId})`);
+    }
   },
 
   async getDailyTrend(workspaceId: string, days = 14): Promise<{ date: string; count: number }[]> {

@@ -756,6 +756,11 @@ export default function Home() {
     onSuccess: () => { void refetchPublisherAds(); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
+  const syncGroupsMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/sync-groups", {}),
+    onSuccess: (data: any) => toast({ title: "تمت المزامنة", description: `${data?.synced ?? 0} مجموعة تمت مزامنتها، ${data?.markedLeft ?? 0} علامة مغادرة` }),
+    onError: (err: any) => toast({ title: "خطأ في المزامنة", description: err.message, variant: "destructive" }),
+  });
   const startPublishMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/publisher/start", {}),
     onSuccess: () => toast({ title: "بدأ نشر الإعلانات" }),
@@ -1659,6 +1664,16 @@ export default function Home() {
                       {addAdMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
                     </Button>
                   </div>
+                  {/* Sync groups from WhatsApp */}
+                  <Button size="sm" variant="outline"
+                    className="w-full text-xs h-8 border-blue-400/60 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                    onClick={() => syncGroupsMutation.mutate()}
+                    disabled={syncGroupsMutation.isPending || waStatus !== "connected"}
+                    data-testid="button-sync-groups">
+                    {syncGroupsMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 ml-1" />}
+                    مزامنة قائمة المجموعات من واتساب
+                  </Button>
+
                   {/* Start button */}
                   {(!publishProgress || publishProgress.status !== "running") && (
                     <Button size="sm" className="w-full text-xs h-8 bg-orange-500 hover:bg-orange-600 text-white"
