@@ -1127,6 +1127,32 @@ export async function registerRoutes(
    * Reset only the CURRENT phone's own join progress back to Pending.
    * Allows re-joining groups with the same account. Does NOT affect other phones.
    */
+  // ── Per-phone join statistics ────────────────────────────────────────────
+  app.get("/api/join/phone-stats", async (req: any, res) => {
+    try {
+      const wid: string = req.workspaceId ?? "main";
+      const sessions = baileysManager.getSessionsForWorkspace(wid);
+      const results: Array<{ phone: string; displayName: string; isActive: boolean; Pending: number; Joined: number; Ignored: number; Left: number }> = [];
+      for (const s of sessions) {
+        const phone = s.phoneNumber;
+        if (!phone) continue;
+        const counts = await linksRepository.countByStatusForPhone(wid, phone);
+        results.push({
+          phone,
+          displayName: s.displayName,
+          isActive: s.isActive,
+          Pending: counts.Pending,
+          Joined: counts.Joined,
+          Ignored: counts.Ignored,
+          Left: counts.Left,
+        });
+      }
+      res.json({ phones: results });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/join/reset-for-new-account", async (req: any, res) => {
     try {
       const wid = req.workspaceId ?? "main";

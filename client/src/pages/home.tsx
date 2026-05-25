@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   Upload, FileText, Download, CheckCircle2, XCircle, AlertCircle,
   Loader2, Wifi, WifiOff, LogOut, RefreshCw, Shield,
@@ -121,6 +121,7 @@ interface PreviousResultsRes {
   descriptionLinks?: number;
 }
 interface CoordinatorStatus { active: string | null; isRunning: boolean; }
+interface PhoneStat { phone: string; displayName: string; isActive: boolean; Pending: number; Joined: number; Ignored: number; Left: number; }
 interface RepoCounts { Pending: number; Joined: number; Ignored: number; Left: number; }
 interface JoinProgress2 {
   status: "running" | "waiting" | "sleeping" | "cooldown" | "paused" | "done" | "stopped" | "error";
@@ -179,6 +180,7 @@ function openWithKey(path: string): void {
 export default function Home() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [, navigate] = useLocation();
   const [step, setStep] = useState<Step>("upload");
   const [linkCounts, setLinkCounts] = useState({ whatsapp: 0, telegram: 0 });
   const [connectMode, setConnectMode] = useState<ConnectMode>("qr");
@@ -264,6 +266,10 @@ export default function Home() {
   const { data: joinProgress2Data, refetch: refetchJoinProgress2 } = useQuery<{ progress: JoinProgress2 | null }>({
     queryKey: ["/api/join/progress"],
     refetchInterval: coordinatorData?.active === "joining" ? 2000 : 15000,
+  });
+  const { data: phoneStatsData, refetch: refetchPhoneStats } = useQuery<{ phones: PhoneStat[] }>({
+    queryKey: ["/api/join/phone-stats"],
+    refetchInterval: coordinatorData?.active === "joining" ? 5000 : 30000,
   });
   const { data: leaveQueueData, refetch: refetchLeaveQueue } = useQuery<{ queue: LeaveQueueEntry[]; count: number }>({
     queryKey: ["/api/leave/queue"],
@@ -1204,6 +1210,44 @@ export default function Home() {
                       مزامنة مع الحساب الحالي
                     </Button>
                   </div>
+
+                  {/* ── Per-phone join stats ── */}
+                  {phoneStatsData?.phones && phoneStatsData.phones.length > 0 && (
+                    <div className="border-t border-border pt-2 mt-1 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">إحصائيات الأجهزة</p>
+                        <button onClick={() => void refetchPhoneStats()} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+                          <RefreshCw className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                      {phoneStatsData.phones.map((ps) => (
+                        <div key={ps.phone} className={`rounded-lg border p-2 space-y-1 ${ps.isActive ? "border-primary/40 bg-primary/5" : "border-border bg-muted/20"}`}>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[10px] font-medium text-foreground truncate">{ps.displayName}</span>
+                            {ps.isActive && <Badge variant="default" className="text-[9px] px-1 py-0 h-4">نشط</Badge>}
+                          </div>
+                          <div className="grid grid-cols-4 gap-1 text-center">
+                            <div className="bg-background rounded p-1 border">
+                              <p className="font-bold text-[11px] text-yellow-600 leading-none">{ps.Pending}</p>
+                              <p className="text-[8px] text-muted-foreground mt-0.5">معلق</p>
+                            </div>
+                            <div className="bg-background rounded p-1 border">
+                              <p className="font-bold text-[11px] text-green-600 leading-none">{ps.Joined}</p>
+                              <p className="text-[8px] text-muted-foreground mt-0.5">منضم</p>
+                            </div>
+                            <div className="bg-background rounded p-1 border">
+                              <p className="font-bold text-[11px] text-red-500 leading-none">{ps.Ignored}</p>
+                              <p className="text-[8px] text-muted-foreground mt-0.5">متجاهل</p>
+                            </div>
+                            <div className="bg-background rounded p-1 border">
+                              <p className="font-bold text-[11px] text-muted-foreground leading-none">{ps.Left}</p>
+                              <p className="text-[8px] text-muted-foreground mt-0.5">خرج</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1567,6 +1611,20 @@ export default function Home() {
               disabled={clearCredsMutation.isPending} data-testid="button-clear-credentials"
               title="حذف بيانات تسجيل الدخول">
               <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              size="sm" variant="ghost"
+              className="text-muted-foreground hover:text-foreground px-2 hidden sm:flex items-center gap-1"
+              onClick={() => {
+                localStorage.removeItem("workspace_key");
+                localStorage.removeItem("workspace_name");
+                navigate("/login");
+              }}
+              data-testid="button-switch-workspace"
+              title={`تبديل مساحة العمل${localStorage.getItem("workspace_name") ? " — " + localStorage.getItem("workspace_name") : ""}`}
+            >
+              <Hash className="w-3.5 h-3.5" />
+              <span className="text-xs">{localStorage.getItem("workspace_name") ?? "تبديل"}</span>
             </Button>
           </div>
         </div>
