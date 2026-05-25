@@ -329,7 +329,6 @@ export const linksRepository = {
               workspaceId,
               url: `https://chat.whatsapp.com/synced-${g.id}`,
               type: "Group" as LinkType,
-              status: "Joined" as LinkStatus,
               source: "manual" as LinkSource,
               addedAt: now,
               checkCount: 0,
