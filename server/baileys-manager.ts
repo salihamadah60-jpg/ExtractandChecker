@@ -158,12 +158,26 @@ class SessionsManager extends EventEmitter {
         console.log(`[Sessions] 👤 User activity detected (msgId: ${msg.key.id})`);
       }
     }
-    // Route to workspace-specific handler if session has a workspace
+    // Route to workspace-specific handler if session has a workspace.
+    // Fall back to "main" workspace handler for sessions without a workspace mapping
+    // so messages are never silently dropped.
     const workspaceId = sessionId ? this._workspaceIdBySessionId.get(sessionId) : undefined;
     if (workspaceId) {
-      this._messageHandlersByWorkspace.get(workspaceId)?.(messages);
+      const wsHandler = this._messageHandlersByWorkspace.get(workspaceId);
+      if (wsHandler) {
+        wsHandler(messages);
+      } else {
+        // Workspace is mapped but reader not yet started — fall through to main
+        this._messageHandlersByWorkspace.get("main")?.(messages) ?? this._messageHandler?.(messages);
+      }
     } else {
-      this._messageHandler?.(messages);
+      // No workspace mapping — route to "main" as fallback, then legacy global handler
+      const mainHandler = this._messageHandlersByWorkspace.get("main");
+      if (mainHandler) {
+        mainHandler(messages);
+      } else {
+        this._messageHandler?.(messages);
+      }
     }
   }
 

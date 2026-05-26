@@ -393,6 +393,11 @@ function _createManager(wid: string) {
         if (!text.trim()) return;
         if (s.stats) s.stats.messagesReceived++;
 
+        // Log every 10th message to prove real traffic (not just UI illusion)
+        if (s.stats && s.stats.messagesReceived % 10 === 1) {
+          console.log(`[MessageReader:${wid}] 📩 Real msg #${s.stats.messagesReceived} from group ${jid.split("@")[0].slice(-6)}`);
+        }
+
         const embeddedLinks = extractGroupLinks(text);
         const cls           = classifyMessage(text, embeddedLinks.whatsapp);
 
