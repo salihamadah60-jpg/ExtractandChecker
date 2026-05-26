@@ -528,12 +528,12 @@ class SessionsManager extends EventEmitter {
             setTimeout(() => this._connectSession(id, usePairing, phoneNumber, true), 2000);
           } else if (code === 440) {
             // Connection replaced by another WhatsApp Web session on the same account.
-            // Do NOT auto-reconnect — that would just replace itself again (infinite loop).
-            // Mark as disconnected and let the user decide.
+            // Auto-reconnect after 30s — enough time for the other session to become idle.
             const cur = this.sessions.get(id);
             if (cur) cur.pairingCode = null;
-            console.log(`[Sessions] ${id} — connection replaced by another device. Manual reconnect required.`);
             this._setStatus(id, "disconnected");
+            console.log(`[Sessions] ${id} — connection replaced (440). Auto-reconnecting in 30s…`);
+            setTimeout(() => this._connectSession(id, usePairing, phoneNumber, true), 30_000);
           } else if (code === 428 || code === 408 || code === 503 || !code) {
             // 428 = precondition required, 408 = timeout, 503 = server unavailable — all transient, safe to retry
             const cur = this.sessions.get(id);
@@ -542,9 +542,12 @@ class SessionsManager extends EventEmitter {
             const retryDelay = code === 503 ? 8000 : 3000; // longer backoff for 503
             setTimeout(() => this._connectSession(id, usePairing, phoneNumber, true), retryDelay);
           } else {
+            // Unknown disconnect code — auto-reconnect after 10s (covers edge cases)
             const cur = this.sessions.get(id);
             if (cur) cur.pairingCode = null;
-            this._setStatus(id, "disconnected");
+            this._setStatus(id, "connecting");
+            console.log(`[Sessions] ${id} — unknown disconnect code ${code ?? "?"}, auto-reconnecting in 10s…`);
+            setTimeout(() => this._connectSession(id, usePairing, phoneNumber, true), 10_000);
           }
         }
 

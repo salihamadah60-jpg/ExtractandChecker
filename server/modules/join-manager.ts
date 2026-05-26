@@ -188,29 +188,58 @@ async function joinOne(
     const latency  = Date.now() - t0;
     tel.record(latency);
 
-    // Check if group requires admin approval — bot would be in pendingParticipants, not a real member
+    // Check if group requires admin approval — bot must appear in participants, not pendingParticipants
     if (groupJid) {
       try {
-        const meta = await baileysManager.getGroupMetadataForWorkspace(groupJid, wid);
+        // Wait briefly so WhatsApp has time to update group state after the join request
+        await new Promise((r) => setTimeout(r, 2000));
+
+        let meta = await baileysManager.getGroupMetadataForWorkspace(groupJid, wid);
+
+        // If first attempt returned null (timing issue), retry once more after another 2s
+        if (!meta) {
+          await new Promise((r) => setTimeout(r, 2000));
+          meta = await baileysManager.getGroupMetadataForWorkspace(groupJid, wid);
+        }
+
         const botJid = baileysManager.getActiveStateForWorkspace(wid)?.sock?.user?.id;
         const botId  = botJid ? botJid.split(":")[0] + "@s.whatsapp.net" : null;
-        const pending: any[] = meta?.pendingParticipants ?? [];
-        const isPending = botId && pending.some((p: any) =>
-          (typeof p === "string" ? p : p?.id ?? "")?.split(":")[0] + "@s.whatsapp.net" === botId
-        );
-        if (isPending) {
-          console.log(`[JoinManager:${wid}] ⏳ Admin-approval required — pending: ${record.url}`);
-          await linksRepository.setStatus(wid, record.url, "Ignored");
-          // Mark as pending-admin-approval so it shows in the retry queue
-          const _db2 = await (await import("../mongo-auth-state.js")).getDb();
-          await _db2.collection("Links_Repository").updateOne(
-            { workspaceId: wid, url: record.url },
-            { $set: { pendingAdminApproval: true, groupJid: groupJid ?? undefined, updatedAt: new Date() } }
-          );
-          s.joiningCache.delete(inviteCode);
-          return { result: "ignored" };
+
+        if (meta && botId) {
+          const normalize = (p: any) =>
+            (typeof p === "string" ? p : p?.id ?? "").split(":")[0] + "@s.whatsapp.net";
+
+          // Check if bot is among full participants (confirmed member)
+          const allParticipants: any[] = meta.participants ?? [];
+          const isMember = allParticipants.some((p: any) => normalize(p) === botId);
+
+          // Check if bot is in the pending-approval queue
+          const pendingParts: any[] = meta.pendingParticipants ?? [];
+          const isInPending = pendingParts.some((p: any) => normalize(p) === botId);
+
+          // If bot is NOT a confirmed member (either explicitly pending or not visible yet)
+          if (!isMember) {
+            console.log(
+              `[JoinManager:${wid}] ⏳ Admin-approval required` +
+              ` (inPending=${isInPending}, isMember=false) — ${record.url}`
+            );
+            await linksRepository.setStatus(wid, record.url, "Ignored");
+            const _db2 = await (await import("../mongo-auth-state.js")).getDb();
+            await _db2.collection("Links_Repository").updateOne(
+              { workspaceId: wid, url: record.url },
+              { $set: { pendingAdminApproval: true, groupJid: groupJid ?? undefined, updatedAt: new Date() } }
+            );
+            s.joiningCache.delete(inviteCode);
+            return { result: "ignored" };
+          }
         }
-      } catch { /* metadata check failed — assume joined OK */ }
+        // meta is null after retries → can't verify; assume joined (log warning)
+        if (!meta) {
+          console.warn(`[JoinManager:${wid}] ⚠ Could not fetch metadata for ${groupJid} — assuming joined`);
+        }
+      } catch (metaErr) {
+        console.warn(`[JoinManager:${wid}] ⚠ Metadata check error for ${groupJid}:`, (metaErr as Error).message);
+      }
     }
 
     await linksRepository.setStatus(wid, record.url, "Joined", currentPhone);
@@ -256,11 +285,17 @@ async function joinOne(
           return { result: "ignored" };
         }
 
-      case "wait_and_retry":
+      case "wait_and_retry": {
+        // Rate-limited — keep the link as Pending so it is retried in the next session run.
+        // Do NOT mark as Ignored — that would permanently exclude the link.
         tel.record(latency);
-        await linksRepository.setStatus(wid, record.url, "Ignored");
-        console.warn(`[JoinManager:${wid}] Rate-limit skip: ${record.url}`);
+        const waitMs = classified.waitMs ?? 60_000;
+        console.warn(
+          `[JoinManager:${wid}] ⏳ Rate-limit hit — keeping as Pending for next run (backoff ${Math.round(waitMs / 1000)}s): ${record.url}`
+        );
+        s.joiningCache.delete(inviteCode);
         return { result: "failed" };
+      }
 
       case "retry": {
         const MAX_NET_RETRIES = 3;

@@ -375,6 +375,13 @@ export async function registerRoutes(
   app.post("/api/sessions", async (req: any, res) => {
     try {
       const wid: string = req.workspaceId ?? "main";
+      const existing = baileysManager.getSessionsForWorkspace(wid);
+      if (existing.length >= 1) {
+        return res.status(409).json({
+          error: "يُسمح بجلسة واتساب واحدة فقط لكل مساحة عمل. احذف الجلسة الحالية أولاً لإنشاء جديدة.",
+          sessions: existing,
+        });
+      }
       const id = await baileysManager.createSessionForWorkspace("", wid);
       res.json({ success: true, id, sessions: baileysManager.getSessionsForWorkspace(wid) });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
