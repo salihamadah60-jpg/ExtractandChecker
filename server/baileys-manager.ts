@@ -161,7 +161,21 @@ class SessionsManager extends EventEmitter {
     // Route to workspace-specific handler if session has a workspace.
     // Fall back to "main" workspace handler for sessions without a workspace mapping
     // so messages are never silently dropped.
-    const workspaceId = sessionId ? this._workspaceIdBySessionId.get(sessionId) : undefined;
+    let workspaceId = sessionId ? this._workspaceIdBySessionId.get(sessionId) : undefined;
+
+    // Self-healing: if no mapping found by sessionId, check if this session is the active
+    // session for any workspace that has a registered handler — and fix the missing mapping.
+    if (!workspaceId && sessionId) {
+      for (const [wid] of this._messageHandlersByWorkspace) {
+        if (this._activeSessionByWorkspace.get(wid) === sessionId) {
+          workspaceId = wid;
+          this._workspaceIdBySessionId.set(sessionId, wid); // fix missing mapping
+          console.log(`[Sessions] 🔧 Auto-mapped session ${sessionId.slice(0,8)} → workspace ${wid.slice(0,8)}`);
+          break;
+        }
+      }
+    }
+
     if (workspaceId) {
       const wsHandler = this._messageHandlersByWorkspace.get(workspaceId);
       if (wsHandler) {

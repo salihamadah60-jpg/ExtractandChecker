@@ -292,10 +292,13 @@ async function _runPipeline(wid: string): Promise<void> {
 const _listenerRegistered = new Set<string>();
 
 function _createManager(wid: string) {
-  // Register coordinator "released" listener once per workspace
+  // Register coordinator event listeners once per workspace
   if (!_listenerRegistered.has(wid)) {
     _listenerRegistered.add(wid);
-    getCoordinatorFor(wid).on("released", () => {
+    const coord = getCoordinatorFor(wid);
+
+    // Auto-resume after any other function finishes
+    coord.on("released", () => {
       const s = _st(wid);
       if (!s.shouldBeRunning || s.running || s.pipelineLock) return;
       setTimeout(async () => {
@@ -307,6 +310,21 @@ function _createManager(wid: string) {
           console.log(`[MessageReader:${wid}] Auto-resumed after coordinator released`);
         } catch { /* coordinator may have been re-acquired already */ }
       }, 3_000);
+    });
+
+    // Gracefully stop when a higher-priority function wants the coordinator
+    coord.on("preempted", () => {
+      const s = _st(wid);
+      if (!s.running) return;
+      console.log(`[MessageReader:${wid}] Preempted — stopping to yield coordinator`);
+      // Keep shouldBeRunning=true so we auto-resume after the other function finishes
+      s.running = false;
+      baileysManager.clearMessageHandlerForWorkspace(wid);
+      if (s.pipelineDebounce) { clearTimeout(s.pipelineDebounce); s.pipelineDebounce = null; }
+      if (s.stats) { s.stats.status = "stopped"; s.stats.stoppedAt = new Date().toISOString(); }
+      // Release so the preempting function can acquire
+      coord.release();
+      systemState.setActiveFunction(wid, null).catch(() => {});
     });
   }
 

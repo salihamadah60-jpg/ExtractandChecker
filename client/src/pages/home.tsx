@@ -689,7 +689,8 @@ export default function Home() {
   const recentResults: CheckResult[] = session?.recentResults ?? session?.results?.filter((r) => r.status !== "pending").slice(-20) ?? [];
   const joinPct = joinSession ? Math.round((joinSession.progress / joinSession.total) * 100) : 0;
 
-  const isCoordinatorBusy = coordinatorData?.isRunning ?? false;
+  // "reading" can be preempted — only block other buttons for non-reading active functions
+  const isCoordinatorBusy = (coordinatorData?.isRunning ?? false) && coordinatorData?.active !== "reading";
   const activeFunction = coordinatorData?.active ?? null;
   const joinProgress2 = joinProgress2Data?.progress ?? null;
   const join2Pct = joinProgress2 ? Math.round((joinProgress2.processed / Math.max(1, joinProgress2.total)) * 100) : 0;

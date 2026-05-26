@@ -44,6 +44,10 @@ class FunctionCoordinator extends EventEmitter {
    * Try to acquire the lock for a given function.
    * Returns true if acquired, false if another function is already running
    * OR if a join window is currently active.
+   *
+   * Special rule: if "reading" is the only active function and a higher-priority
+   * function wants to start, the reader is preempted (paused) automatically.
+   * The reader will auto-resume once the new function releases the coordinator.
    */
   async acquire(fn: BotFunction): Promise<boolean> {
     if (this._joinWindowActive && fn !== "joining") {
@@ -53,10 +57,32 @@ class FunctionCoordinator extends EventEmitter {
       );
       return false;
     }
-    if (this._active !== null) {
+
+    // Preempt the reader for any higher-priority function
+    if (this._active === "reading" && fn !== "reading") {
+      console.log(`[Coordinator] ⏸ Preempting "reading" to allow "${fn}" to start`);
+      this.emit("preempted");
+      // Wait for the reader to release (up to 5 s), then acquire for fn
+      const released = await new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => {
+          // Force-clear if reader didn't release in time
+          if (this._active === "reading") {
+            this._active    = null;
+            this._startedAt = null;
+          }
+          resolve(true);
+        }, 5_000);
+        this.once("released", () => { clearTimeout(timeout); resolve(true); });
+      });
+      if (!released || this._active !== null) {
+        console.warn(`[Coordinator] Cannot start "${fn}" after preempt — still busy`);
+        return false;
+      }
+    } else if (this._active !== null) {
       console.warn(`[Coordinator] Cannot start "${fn}" — "${this._active}" is already running`);
       return false;
     }
+
     this._active    = fn;
     this._startedAt = new Date();
     console.log(`[Coordinator] Started "${fn}"`);
