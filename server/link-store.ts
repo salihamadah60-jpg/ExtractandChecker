@@ -513,6 +513,16 @@ class LinkStore {
   }
 
   async saveToDisk(): Promise<void> {
+    // Serialize concurrent saves through a per-instance promise chain.
+    // Without this, two overlapping calls both write to the same .tmp file:
+    // call-A renames it, then call-B's rename fails with ENOENT because .tmp is gone.
+    this._saveChain = this._saveChain.then(() => this._doSaveToDisk()).catch(() => {});
+    return this._saveChain;
+  }
+
+  private _saveChain: Promise<void> = Promise.resolve();
+
+  private async _doSaveToDisk(): Promise<void> {
     try {
       // Ensure the directory exists before writing (guards against ENOENT on first run)
       await fs.mkdir(ROOT_DIR, { recursive: true });
@@ -524,9 +534,10 @@ class LinkStore {
         newRoundLinks: this.newRoundLinks,
       };
       const json = JSON.stringify(state, null, 2);
-      // Atomic write: write to .tmp first, then rename to prevent corruption on crash
-      await fs.writeFile(this._stateTmpFile, json, "utf-8");
-      await fs.rename(this._stateTmpFile, this._stateFile);
+      // Use a unique tmp filename per write to avoid cross-call collisions
+      const tmpFile = `${this._stateTmpFile}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+      await fs.writeFile(tmpFile, json, "utf-8");
+      await fs.rename(tmpFile, this._stateFile);
     } catch (err) {
       console.error(`[LinkStore:${this._wid}] Failed to save state:`, err);
     }

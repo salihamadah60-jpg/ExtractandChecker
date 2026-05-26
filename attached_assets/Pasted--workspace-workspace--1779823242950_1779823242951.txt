@@ -1,0 +1,63 @@
+أنشأت workspace جديدة وفشلت، وسببت في توقف الجلسة في ال workspace القديم التي ليس لها اي علاقة بها اي حدث تعارض يجب ان لا يحصل لانها جلسات مختلفه ومستخدمين مختلفين و workspace مختلفه.
+2026-05-26 20:48:03.22
+at async Fc.saveToDisk (/home/runner/workspace/dist/index.cjs:53:96084) {
+2026-05-26 20:48:03.22
+syscall: 'rename',
+2026-05-26 20:48:03.22
+}
+2026-05-26 20:48:03.22
+[LinkStore:main] Failed to save state: Error: ENOENT: no such file or directory, rename '/home/runner/workspace/.session-state.json.tmp' -> '/home/runner/workspace/.session-state.json'
+2026-05-26 20:48:03.22
+code: 'ENOENT',
+2026-05-26 20:48:03.22
+errno: -2,
+2026-05-26 20:48:11.33
+dest: '/home/runner/workspace/.session-state.json'
+2026-05-26 20:48:11.33
+[LinkStore:main] Failed to save state: Error: ENOENT: no such file or directory, rename '/home/runner/workspace/.session-state.json.tmp' -> '/home/runner/workspace/.session-state.json'
+2026-05-26 20:48:11.33
+at async Fc.saveToDisk (/home/runner/workspace/dist/index.cjs:53:96084) {
+2026-05-26 20:48:11.33
+at async Object.rename (node:internal/fs/promises:777:10)
+2026-05-26 20:48:11.33
+}
+2026-05-26 20:48:11.33
+code: 'ENOENT',
+2026-05-26 20:48:11.33
+path: '/home/runner/workspace/.session-state.json.tmp',
+2026-05-26 20:48:11.33
+syscall: 'rename',
+2026-05-26 20:48:11.33
+errno: -2,
+2026-05-26 20:48:13.18
+[LinkStore:main] Failed to save state: Error: ENOENT: no such file or directory, rename '/home/runner/workspace/.session-state.json.tmp' -> '/home/runner/workspace/.session-state.json'
+2026-05-26 20:48:13.18
+at async Fc.saveToDisk (/home/runner/workspace/dist/index.cjs:53:96084) {
+2026-05-26 20:48:13.18
+path: '/home/runner/workspace/.session-state.json.tmp',
+2026-05-26 20:48:13.18
+at async Object.rename (node:internal/fs/promises:777:10)
+2026-05-26 20:48:16.79
+path: '/home/runner/workspace/.session-state.json.tmp',
+2026-05-26 20:48:16.79
+syscall: 'rename',
+2026-05-26 20:48:16.79
+at async Object.rename (node:internal/fs/promises:777:10)
+2026-05-26 20:48:16.79
+[LinkStore:main] Failed to save state: Error: ENOENT: no such file or directory, rename '/home/runner/workspace/.session-state.json.tmp' -> '/home/runner/workspace/.session-state.json'
+2026-05-26 20:48:16.79
+dest: '/home/runner/workspace/.session-state.json'
+2026-05-26 20:48:16.79
+errno: -2,
+2026-05-26 20:48:16.79
+code: 'ENOENT',
+2026-05-26 20:48:16.79
+at async Fc.saveToDisk (/home/runner/workspace/dist/index.cjs:53:96084) {
+2026-05-26 20:48:16.79
+}
+2026-05-26 20:48:19.09
+[LinkStore:main] Failed to save state: Error: ENOENT: no such file or directory, rename '/home/runner/workspace/.session-state.json.tmp' -> '/home/runner/workspace/.session-state.json'
+2026-05-26 20:48:19.09
+at async Fc.saveToDisk (/home/runner/workspace/dist/index.cjs:53:96084) {
+2026-05-26 20:48:19.09
+at async Object.rename (node:internal/fs/promises:777:10)

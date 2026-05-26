@@ -1107,6 +1107,27 @@ class SessionsManager extends EventEmitter {
     }
   }
 
+  /**
+   * Connect (or reconnect) the session that belongs to this workspace WITHOUT
+   * touching the global _activeSessionId.  This ensures workspace-B's connection
+   * attempt never displaces workspace-A's slot in the global active-session field.
+   */
+  async connectForWorkspace(
+    workspaceId: string,
+    usePairing: boolean,
+    phoneNumber?: string,
+    skipClearAuth = false
+  ): Promise<void> {
+    let sessionId = this._activeSessionByWorkspace.get(workspaceId) ?? null;
+    if (!sessionId) {
+      sessionId = await this.createSessionForWorkspace("", workspaceId);
+    }
+    // Ensure workspace binding is up-to-date (no global side-effects)
+    this._workspaceIdBySessionId.set(sessionId, workspaceId);
+    this._activeSessionByWorkspace.set(workspaceId, sessionId);
+    await this._connectSession(sessionId, usePairing, phoneNumber, skipClearAuth);
+  }
+
   setMessageHandlerForWorkspace(workspaceId: string, handler: (msgs: any[]) => void): void {
     this._messageHandlersByWorkspace.set(workspaceId, handler);
   }

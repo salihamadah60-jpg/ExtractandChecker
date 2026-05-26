@@ -460,10 +460,9 @@ export async function registerRoutes(
   app.post("/api/whatsapp/connect", async (req: any, res) => {
     try {
       const wid: string = req.workspaceId ?? "main";
-      let wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
-      if (!wActiveId) wActiveId = await baileysManager.createSessionForWorkspace("", wid);
-      await baileysManager.activateSession(wActiveId);
-      baileysManager.connect(false).catch(console.error);
+      // Use workspace-scoped connect — does NOT touch global _activeSessionId,
+      // so it cannot interfere with other workspaces' sessions.
+      baileysManager.connectForWorkspace(wid, false).catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -476,10 +475,8 @@ export async function registerRoutes(
     if (!phone) return res.status(400).json({ error: "أدخل رقم الهاتف" });
     try {
       const wid: string = req.workspaceId ?? "main";
-      let wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
-      if (!wActiveId) wActiveId = await baileysManager.createSessionForWorkspace("", wid);
-      await baileysManager.activateSession(wActiveId);
-      baileysManager.connect(true, phone.replace(/\D/g, "")).catch(console.error);
+      // Use workspace-scoped connect — does NOT touch global _activeSessionId.
+      baileysManager.connectForWorkspace(wid, true, phone.replace(/\D/g, "")).catch(console.error);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
