@@ -139,12 +139,16 @@ export const linksRepository = {
 
   async findPendingForJoin(workspaceId: string, currentPhone?: string): Promise<LinkRecord[]> {
     const c = await col();
+    // Exclude internal sync-tracking URLs that are not real WhatsApp invite links.
+    // These follow the pattern wa-sync/<jid> or synced-<jid> and must never be joined.
+    const notSyncedUrl = { url: { $not: { $regex: "chat\\.whatsapp\\.com/(wa-sync/|synced-)" } } };
     if (currentPhone) {
       // Return links that this specific phone has NOT yet joined.
       // Uses the joinedByPhones array for accurate per-phone tracking.
       // Falls back to checking the legacy joinedByPhone field for old records.
       return c.find({
         workspaceId,
+        ...notSyncedUrl,
         $or: [
           { status: "Pending" },
           {
@@ -160,7 +164,7 @@ export const linksRepository = {
         ],
       }).sort({ addedAt: 1 }).toArray();
     }
-    return c.find({ workspaceId, status: "Pending" }).sort({ addedAt: 1 }).toArray();
+    return c.find({ workspaceId, status: "Pending", ...notSyncedUrl }).sort({ addedAt: 1 }).toArray();
   },
 
   async findJoined(workspaceId: string, currentPhone?: string): Promise<LinkRecord[]> {

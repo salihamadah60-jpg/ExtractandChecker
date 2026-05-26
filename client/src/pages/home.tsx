@@ -315,7 +315,7 @@ export default function Home() {
   });
   const { data: pendingApprovalData, refetch: refetchPendingApproval } = useQuery<any[]>({
     queryKey: ["/api/links-repository/pending-approval"],
-    refetchInterval: false,
+    refetchInterval: showPendingApprovalPanel ? 30000 : false,
     enabled: showPendingApprovalPanel,
   });
   const { data: sleepConfigData, refetch: refetchSleepConfig } = useQuery<SleepConfig & { durationHours: number }>({

@@ -132,6 +132,13 @@ async function joinOne(
   const s   = _st(wid);
   const tel = getTelemetryFor(wid);
 
+  // Guard: skip internal sync-tracking URLs (wa-sync/<jid> or synced-<jid>).
+  // These are not real WhatsApp invite links and must never be joined.
+  if (/chat\.whatsapp\.com\/(wa-sync\/|synced-)/.test(record.url)) {
+    console.log(`[JoinManager:${wid}] ⏭ Skipping internal sync URL: ${record.url}`);
+    return { result: "ignored" };
+  }
+
   const codeMatch    = record.url.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
   const channelMatch = record.url.match(/whatsapp\.com\/channel\/([A-Za-z0-9_-]+)/);
 
@@ -145,6 +152,12 @@ async function joinOne(
   }
 
   const inviteCode = codeMatch[1];
+
+  // Guard: if the extracted code looks like an internal tracking key, skip it.
+  if (/^(wa-sync|synced-)/.test(inviteCode)) {
+    console.log(`[JoinManager:${wid}] ⏭ Skipping internal invite code: ${inviteCode}`);
+    return { result: "ignored" };
+  }
 
   if (s.joiningCache.has(inviteCode)) {
     console.log(`[JoinManager:${wid}] ℹ Cache hit — already joining: ${inviteCode}`);
