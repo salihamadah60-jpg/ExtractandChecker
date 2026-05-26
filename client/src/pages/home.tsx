@@ -153,6 +153,7 @@ interface ReaderStats {
   status: "running" | "stopped" | "paused" | "error";
   messagesReceived: number; messagesFromAds: number; linksFound: number; linksNew: number;
   startedAt: string; stoppedAt?: string; pausedAt?: string;
+  totalMessages?: number; totalLinksFound?: number; totalLinksNew?: number;
 }
 interface ExcludedGroup { _id?: string; url: string; name?: string; addedAt: string; }
 interface SleepConfig { startHour: number; startMin: number; durationHours: number; }
@@ -1598,10 +1599,32 @@ export default function Home() {
               {showReaderPanel && (
                 <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
                   {readerStats && (
-                    <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
-                      <div className="bg-background rounded p-1.5 border"><p className="font-bold text-sm">{readerStats.messagesReceived}</p><p className="text-muted-foreground">رسالة</p></div>
-                      <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-1.5"><p className="font-bold text-sm text-orange-600">{readerStats.messagesFromAds}</p><p className="text-muted-foreground">إعلانات</p></div>
-                      <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p><p className="text-muted-foreground">جديدة</p></div>
+                    <div className="space-y-1.5">
+                      <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold">الجلسة الحالية</p>
+                      <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
+                        <div className="bg-background rounded p-1.5 border"><p className="font-bold text-sm">{readerStats.messagesReceived}</p><p className="text-muted-foreground">رسالة</p></div>
+                        <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-1.5"><p className="font-bold text-sm text-orange-600">{readerStats.messagesFromAds}</p><p className="text-muted-foreground">إعلانات</p></div>
+                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p><p className="text-muted-foreground">جديدة</p></div>
+                      </div>
+                      {(readerStats.totalMessages !== undefined) && (
+                        <>
+                          <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold pt-0.5">الإجمالي التراكمي</p>
+                          <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
+                            <div className="bg-blue-50/60 dark:bg-blue-900/10 rounded p-1.5 border border-blue-200/60 dark:border-blue-800/40">
+                              <p className="font-bold text-sm text-blue-700 dark:text-blue-400">{(readerStats.totalMessages ?? 0) + readerStats.messagesReceived}</p>
+                              <p className="text-muted-foreground">رسالة</p>
+                            </div>
+                            <div className="bg-blue-50/60 dark:bg-blue-900/10 rounded p-1.5 border border-blue-200/60 dark:border-blue-800/40">
+                              <p className="font-bold text-sm text-blue-700 dark:text-blue-400">{(readerStats.totalLinksFound ?? 0) + readerStats.linksFound}</p>
+                              <p className="text-muted-foreground">روابط</p>
+                            </div>
+                            <div className="bg-blue-50/60 dark:bg-blue-900/10 rounded p-1.5 border border-blue-200/60 dark:border-blue-800/40">
+                              <p className="font-bold text-sm text-blue-700 dark:text-blue-400">{(readerStats.totalLinksNew ?? 0) + readerStats.linksNew}</p>
+                              <p className="text-muted-foreground">جديدة</p>
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                   {readerStats && (

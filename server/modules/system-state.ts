@@ -15,6 +15,9 @@ export interface SystemStateDoc {
   last_read_message_id?: string;
   last_published_ad_index?: number;
   reader_continuous?: boolean;
+  reader_total_messages?: number;
+  reader_total_links_found?: number;
+  reader_total_links_new?: number;
   last_updated: Date;
   extra?: Record<string, unknown>;
 }
@@ -101,6 +104,36 @@ export const systemState = {
   async getReaderContinuous(workspaceId = "main"): Promise<boolean> {
     const state = await systemState.get(workspaceId);
     return state.reader_continuous ?? false;
+  },
+
+  /** Load accumulated reader totals from MongoDB (called on reader start). */
+  async getReaderTotals(workspaceId = "main"): Promise<{ messages: number; linksFound: number; linksNew: number }> {
+    const state = await systemState.get(workspaceId);
+    return {
+      messages:   state.reader_total_messages    ?? 0,
+      linksFound: state.reader_total_links_found ?? 0,
+      linksNew:   state.reader_total_links_new   ?? 0,
+    };
+  },
+
+  /** Atomically increment reader counters (batched — called every ~50 messages). */
+  async incrementReaderCounters(
+    workspaceId = "main",
+    delta: { messages: number; linksFound: number; linksNew: number }
+  ): Promise<void> {
+    const c = await col();
+    await c.updateOne(
+      { _id: workspaceId as any },
+      {
+        $inc: {
+          reader_total_messages:    delta.messages,
+          reader_total_links_found: delta.linksFound,
+          reader_total_links_new:   delta.linksNew,
+        },
+        $set: { last_updated: new Date() },
+      },
+      { upsert: true }
+    );
   },
 
   async checkRecovery(workspaceId = "main"): Promise<BotFunction | null> {

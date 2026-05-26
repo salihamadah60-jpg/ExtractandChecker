@@ -18,6 +18,7 @@ import { isAdOnlyMedicalGroup } from "../link-store.js";
 export interface ReaderStats {
   status: "running" | "stopped" | "paused" | "error";
   continuous:           boolean;
+  // ── Session counters (reset on each start) ──────────────────────────────────
   messagesReceived:     number;
   messagesFromAds:      number;
   linksFound:           number;
@@ -29,6 +30,10 @@ export interface ReaderStats {
   pipelineRuns?:        number;
   pipelineSkipped?:     number;
   bufferSize?:          number;
+  // ── Cumulative totals (loaded from MongoDB, survive restarts) ────────────────
+  totalMessages:        number;
+  totalLinksFound:      number;
+  totalLinksNew:        number;
 }
 
 // ── Per-workspace state ────────────────────────────────────────────────────────
@@ -40,6 +45,10 @@ const MAX_HANDLER_ERRORS    = 10;
 
 interface BufferEntry { url: string; isAdMessage: boolean; }
 
+const FLUSH_EVERY = 50; // flush delta to MongoDB every N messages
+
+interface BufferDelta { messages: number; linksFound: number; linksNew: number; }
+
 interface WState {
   stats:              ReaderStats | null;
   running:            boolean;
@@ -50,6 +59,7 @@ interface WState {
   pipelineDebounce:   ReturnType<typeof setTimeout> | null;
   lastPipelineRun:    number;
   handlerErrors:      number;
+  pendingDelta:       BufferDelta;  // unflushed increment waiting to be written to MongoDB
 }
 
 const _stateByWid = new Map<string, WState>();
@@ -66,9 +76,34 @@ function _st(wid: string): WState {
       pipelineDebounce: null,
       lastPipelineRun: 0,
       handlerErrors:   0,
+      pendingDelta:    { messages: 0, linksFound: 0, linksNew: 0 },
     });
   }
   return _stateByWid.get(wid)!;
+}
+
+/** Flush pending delta to MongoDB if there is anything to write. */
+async function _flushDelta(wid: string): Promise<void> {
+  const s = _st(wid);
+  const d = s.pendingDelta;
+  if (d.messages === 0 && d.linksFound === 0 && d.linksNew === 0) return;
+  const snapshot = { ...d };
+  s.pendingDelta = { messages: 0, linksFound: 0, linksNew: 0 };
+  try {
+    await systemState.incrementReaderCounters(wid, snapshot);
+    // Keep cumulative totals in stats up-to-date
+    if (s.stats) {
+      s.stats.totalMessages   = (s.stats.totalMessages   ?? 0) + snapshot.messages;
+      s.stats.totalLinksFound = (s.stats.totalLinksFound ?? 0) + snapshot.linksFound;
+      s.stats.totalLinksNew   = (s.stats.totalLinksNew   ?? 0) + snapshot.linksNew;
+    }
+  } catch (err) {
+    // Non-fatal: restore delta so it gets flushed next time
+    s.pendingDelta.messages   += snapshot.messages;
+    s.pendingDelta.linksFound += snapshot.linksFound;
+    s.pendingDelta.linksNew   += snapshot.linksNew;
+    console.warn(`[MessageReader:${wid}] Delta flush failed:`, (err as Error).message);
+  }
 }
 
 function _cleanLink(link: string): string {
@@ -301,8 +336,12 @@ function _createManager(wid: string) {
       s.paused          = false;
       s.pipelineBuffer  = new Map();
       s.handlerErrors   = 0;
+      s.pendingDelta    = { messages: 0, linksFound: 0, linksNew: 0 };
 
-      const state  = await systemState.get(wid);
+      const [state, totals] = await Promise.all([
+        systemState.get(wid),
+        systemState.getReaderTotals(wid),
+      ]);
       const lastId = state.last_read_message_id;
 
       s.stats = {
@@ -317,6 +356,9 @@ function _createManager(wid: string) {
         pipelineSkipped:  0,
         bufferSize:       0,
         lastMessageId:    lastId ?? undefined,
+        totalMessages:    totals.messages,
+        totalLinksFound:  totals.linksFound,
+        totalLinksNew:    totals.linksNew,
       };
 
       await systemState.setActiveFunction(wid, "reading");
@@ -357,9 +399,12 @@ function _createManager(wid: string) {
       baileysManager.clearMessageHandlerForWorkspace(wid);
       if (s.stats) { s.stats.status = "stopped"; s.stats.continuous = false; s.stats.stoppedAt = new Date().toISOString(); }
       getCoordinatorFor(wid).release();
-      await systemState.setActiveFunction(wid, null);
-      await systemState.setReaderContinuous(wid, false);
-      console.log(`[MessageReader:${wid}] Stopped — messages: ${s.stats?.messagesReceived ?? 0}, new links: ${s.stats?.linksNew ?? 0}`);
+      await Promise.all([
+        systemState.setActiveFunction(wid, null),
+        systemState.setReaderContinuous(wid, false),
+        _flushDelta(wid),
+      ]);
+      console.log(`[MessageReader:${wid}] Stopped — session messages: ${s.stats?.messagesReceived ?? 0}, total: ${s.stats?.totalMessages ?? 0}, new links: ${s.stats?.linksNew ?? 0}`);
     },
 
     async autoStartIfEnabled(): Promise<void> {
@@ -392,10 +437,11 @@ function _createManager(wid: string) {
 
         if (!text.trim()) return;
         if (s.stats) s.stats.messagesReceived++;
+        s.pendingDelta.messages++;
 
         // Log every 10th message to prove real traffic (not just UI illusion)
         if (s.stats && s.stats.messagesReceived % 10 === 1) {
-          console.log(`[MessageReader:${wid}] 📩 Real msg #${s.stats.messagesReceived} from group ${jid.split("@")[0].slice(-6)}`);
+          console.log(`[MessageReader:${wid}] 📩 Real msg #${s.stats.messagesReceived} (total: ${(s.stats.totalMessages ?? 0) + s.pendingDelta.messages}) from group ${jid.split("@")[0].slice(-6)}`);
         }
 
         const embeddedLinks = extractGroupLinks(text);
@@ -408,6 +454,7 @@ function _createManager(wid: string) {
 
         const allLinks = [...embeddedLinks.whatsapp];
         if (s.stats) s.stats.linksFound += allLinks.length;
+        s.pendingDelta.linksFound += allLinks.length;
 
         for (const url of allLinks) {
           if (s.pipelineBuffer.size >= PIPELINE_BUFFER_CAP) {
@@ -423,6 +470,7 @@ function _createManager(wid: string) {
           const added = await linksRepository.addIfNew(wid, cleanUrl, "Group", "message");
           if (added) {
             if (s.stats) { s.stats.linksNew++; s.stats.bufferSize = s.pipelineBuffer.size + 1; }
+            s.pendingDelta.linksNew++;
 
             // Non-ad message wins over ad message for same URL
             const existing = s.pipelineBuffer.get(cleanUrl);
@@ -431,6 +479,11 @@ function _createManager(wid: string) {
             }
             _schedulePipeline(wid);
           }
+        }
+
+        // Flush delta to MongoDB every FLUSH_EVERY messages (non-blocking)
+        if (s.stats && s.stats.messagesReceived % FLUSH_EVERY === 0) {
+          _flushDelta(wid).catch(() => {});
         }
 
         const msgId = msg.key?.id;
