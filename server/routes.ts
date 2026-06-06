@@ -533,8 +533,7 @@ export async function registerRoutes(
       // Ensure the workspace's active session is the global active session for checking
       const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
       if (wActiveId) await baileysManager.activateSession(wActiveId);
-      await baileysManager.startLinkChecking();
-      // Tag the check session with this workspace so other workspaces don't see it
+      await baileysManager.startLinkChecking(wid);
       const _ls1 = getLinkStoreFor(wid);
       if (_ls1.checkSession) _ls1.checkSession.workspaceId = wid;
       res.json({ success: true, sessionId: _ls1.checkSession?.id });
@@ -549,7 +548,7 @@ export async function registerRoutes(
       const wid: string = req.workspaceId ?? "main";
       const wActiveId = baileysManager.getActiveSessionIdForWorkspace(wid);
       if (wActiveId) await baileysManager.activateSession(wActiveId);
-      await baileysManager.startNewRoundChecking();
+      await baileysManager.startNewRoundChecking(wid);
       const _ls2 = getLinkStoreFor(wid);
       if (_ls2.checkSession) _ls2.checkSession.workspaceId = wid;
       res.json({ success: true, sessionId: _ls2.checkSession?.id });
@@ -581,7 +580,7 @@ export async function registerRoutes(
     const count = getLinkStoreFor(wid).retryErrors();
     if (count === 0) return res.status(400).json({ error: "لا توجد أخطاء للإعادة" });
     try {
-      await baileysManager.resumeChecking();
+      await baileysManager.resumeChecking(wid);
       res.json({ success: true, retrying: count });
     } catch (err: any) {
       res.status(400).json({ error: err.message });

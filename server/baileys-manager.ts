@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import qrcode from "qrcode";
-import { linkStore } from "./link-store.js";
+import { linkStore, getLinkStoreFor } from "./link-store.js";
 import {
   initMongo,
   useMongoAuthState,
@@ -701,34 +701,37 @@ class SessionsManager extends EventEmitter {
 
   // ── Link checking ───────────────────────────────────────────────────────────
 
-  async startLinkChecking(): Promise<void> {
+  async startLinkChecking(workspaceId = "main"): Promise<void> {
     if (!this.isConnected()) throw new Error("واتساب غير متصل");
-    const { whatsapp } = linkStore.extractedLinks;
+    const ls = getLinkStoreFor(workspaceId);
+    const { whatsapp } = ls.extractedLinks;
     if (!whatsapp.length) throw new Error("لا توجد روابط واتساب للفحص");
     this._checkPaused = false;
     this._checkStopped = false;
-    const session = linkStore.startSession(whatsapp);
+    const session = ls.startSession(whatsapp);
     this._runChecks(session).catch(console.error);
   }
 
-  async startNewRoundChecking(): Promise<void> {
+  async startNewRoundChecking(workspaceId = "main"): Promise<void> {
     if (!this.isConnected()) throw new Error("واتساب غير متصل");
+    const ls = getLinkStoreFor(workspaceId);
     this._checkPaused = false;
     this._checkStopped = false;
-    const session = linkStore.startNewRoundSession();
+    const session = ls.startNewRoundSession();
     this._runChecks(session).catch(console.error);
   }
 
   /** Resume checking on the current session without resetting it (for retry-errors). */
-  async resumeChecking(): Promise<void> {
+  async resumeChecking(workspaceId = "main"): Promise<void> {
     if (!this.isConnected()) throw new Error("واتساب غير متصل");
-    const session = linkStore.checkSession;
+    const ls = getLinkStoreFor(workspaceId);
+    const session = ls.checkSession;
     if (!session) throw new Error("لا توجد جلسة فحص محفوظة");
     if (!session.results.some((r) => r.status === "pending")) throw new Error("لا توجد روابط معلقة للفحص");
     this._checkPaused = false;
     this._checkStopped = false;
     session.status = "running";
-    linkStore.updateProgress();
+    ls.updateProgress();
     this._runChecks(session).catch(console.error);
   }
 
