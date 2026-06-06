@@ -1347,6 +1347,56 @@ export async function registerRoutes(
     }
   });
 
+  // ── Publish Schedules ───────────────────────────────────────────────────────
+  app.get("/api/publisher/schedules", async (req: any, res) => {
+    try {
+      const { publishScheduler } = await import("./modules/publish-scheduler.js");
+      const schedules = await publishScheduler.list(req.workspaceId ?? "main");
+      res.json({ schedules });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/publisher/schedules", async (req: any, res) => {
+    const { name, intervalValue, intervalUnit } = req.body ?? {};
+    if (!intervalValue || !intervalUnit) return res.status(400).json({ error: "intervalValue و intervalUnit مطلوبان" });
+    const iv = Number(intervalValue);
+    if (!Number.isFinite(iv) || iv <= 0) return res.status(400).json({ error: "قيمة التكرار يجب أن تكون رقماً موجباً" });
+    try {
+      const { publishScheduler } = await import("./modules/publish-scheduler.js");
+      const schedule = await publishScheduler.create(req.workspaceId ?? "main", name ?? "", iv, intervalUnit);
+      res.json({ success: true, schedule });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+  });
+
+  app.put("/api/publisher/schedules/:id", async (req: any, res) => {
+    const { name, intervalValue, intervalUnit } = req.body ?? {};
+    try {
+      const { publishScheduler } = await import("./modules/publish-scheduler.js");
+      await publishScheduler.update(req.params.id, req.workspaceId ?? "main", {
+        ...(name !== undefined && { name }),
+        ...(intervalValue !== undefined && { intervalValue: Number(intervalValue) }),
+        ...(intervalUnit !== undefined && { intervalUnit }),
+      });
+      res.json({ success: true });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+  });
+
+  app.patch("/api/publisher/schedules/:id/toggle", async (req: any, res) => {
+    try {
+      const { publishScheduler } = await import("./modules/publish-scheduler.js");
+      const enabled = await publishScheduler.toggle(req.params.id, req.workspaceId ?? "main");
+      res.json({ success: true, enabled });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+  });
+
+  app.delete("/api/publisher/schedules/:id", async (req: any, res) => {
+    try {
+      const { publishScheduler } = await import("./modules/publish-scheduler.js");
+      await publishScheduler.delete(req.params.id, req.workspaceId ?? "main");
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── Message Reader ─────────────────────────────────────────────────────────
   app.post("/api/reader/start", async (req: any, res) => {
     try {

@@ -1,13 +1,24 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   ArrowRight, Database, Users, CheckCircle2, XCircle, Clock,
   TrendingUp, BookOpen, Loader2, RefreshCw,
   MessageSquare, UserPlus, Link2, Moon, Thermometer,
   PauseCircle, Activity, AlertTriangle, Zap, Radio,
+  CalendarClock, Plus, Trash2, Timer,
 } from "lucide-react";
 
 interface DashboardStats {
@@ -51,6 +62,42 @@ interface WindowRecord {
 interface TelemetryData {
   report: { avgLatencyMs: number; lastLatencyMs: number; sampleCount: number; cooldownActive: boolean; warning?: string };
   windowHistory: WindowRecord[];
+}
+
+type IntervalUnit = "seconds" | "minutes" | "hours" | "days" | "weeks";
+
+interface PublishSchedule {
+  _id: string;
+  name: string;
+  intervalValue: number;
+  intervalUnit: IntervalUnit;
+  enabled: boolean;
+  nextRunAt: string;
+  lastRunAt?: string;
+  createdAt: string;
+}
+
+const UNIT_LABELS: Record<IntervalUnit, string> = {
+  seconds: "ثانية",
+  minutes: "دقيقة",
+  hours: "ساعة",
+  days: "يوم",
+  weeks: "أسبوع",
+};
+
+function formatNextRun(dateStr: string): string {
+  const d = new Date(dateStr);
+  const now = Date.now();
+  const diffMs = d.getTime() - now;
+  if (diffMs <= 0) return "الآن";
+  const diffSec = Math.round(diffMs / 1000);
+  if (diffSec < 60) return `خلال ${diffSec} ث`;
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `خلال ${diffMin} د`;
+  const diffH = Math.round(diffMin / 60);
+  if (diffH < 24) return `خلال ${diffH} س`;
+  const diffD = Math.round(diffH / 24);
+  return `خلال ${diffD} يوم`;
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: React.ReactNode }> = {
@@ -140,7 +187,26 @@ function TrendBar({ trend }: { trend: { date: string; count: number }[] }) {
   );
 }
 
+const WS_KEY = () => localStorage.getItem("workspace_key") ?? "";
+
+async function apiFetch(path: string, opts?: RequestInit) {
+  const res = await fetch(path, {
+    credentials: "include",
+    headers: { "X-Workspace-Key": WS_KEY(), "Content-Type": "application/json", ...(opts?.headers ?? {}) },
+    ...opts,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export default function Dashboard() {
+  const qc = useQueryClient();
+
+  // ── Schedule form state ────────────────────────────────────────────────────
+  const [schedName, setSchedName] = useState("");
+  const [schedValue, setSchedValue] = useState("1");
+  const [schedUnit, setSchedUnit] = useState<IntervalUnit>("hours");
+
   const { data, isLoading, refetch, isFetching } = useQuery<DashboardStats>({
     queryKey: ["/api/dashboard/stats"],
     queryFn: async () => {
@@ -163,6 +229,33 @@ export default function Dashboard() {
     refetchInterval: 20_000,
     staleTime: 15_000,
     retry: 1,
+  });
+
+  const { data: schedulesData, isLoading: schedulesLoading } = useQuery<{ schedules: PublishSchedule[] }>({
+    queryKey: ["/api/publisher/schedules"],
+    queryFn: () => apiFetch("/api/publisher/schedules"),
+    refetchInterval: 10_000,
+    staleTime: 8_000,
+    retry: 1,
+  });
+
+  const createSchedule = useMutation({
+    mutationFn: (body: { name: string; intervalValue: number; intervalUnit: IntervalUnit }) =>
+      apiFetch("/api/publisher/schedules", { method: "POST", body: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/publisher/schedules"] });
+      setSchedName(""); setSchedValue("1"); setSchedUnit("hours");
+    },
+  });
+
+  const toggleSchedule = useMutation({
+    mutationFn: (id: string) => apiFetch(`/api/publisher/schedules/${id}/toggle`, { method: "PATCH" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/publisher/schedules"] }),
+  });
+
+  const deleteSchedule = useMutation({
+    mutationFn: (id: string) => apiFetch(`/api/publisher/schedules/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/publisher/schedules"] }),
   });
 
   const statusOrder: (keyof DashboardStats["byStatus"])[] = ["Pending", "Joined", "Left", "Ignored"];
@@ -555,6 +648,126 @@ export default function Dashboard() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* ── Publish Scheduler Card ──────────────────────────────── */}
+            <Card className="shadow-sm border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <CalendarClock className="w-4 h-4 text-primary" />
+                  جدولة النشر التلقائي
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Create form */}
+                <div className="flex flex-col gap-2 p-3 rounded-lg border bg-muted/30">
+                  <p className="text-xs font-medium text-muted-foreground mb-1">إضافة جدول جديد</p>
+                  <Input
+                    data-testid="input-sched-name"
+                    placeholder="اسم الجدول (اختياري)"
+                    value={schedName}
+                    onChange={e => setSchedName(e.target.value)}
+                    className="h-8 text-sm"
+                    dir="rtl"
+                  />
+                  <div className="flex gap-2">
+                    <Input
+                      data-testid="input-sched-value"
+                      type="number"
+                      min={1}
+                      value={schedValue}
+                      onChange={e => setSchedValue(e.target.value)}
+                      className="h-8 text-sm w-24 flex-shrink-0"
+                    />
+                    <Select value={schedUnit} onValueChange={v => setSchedUnit(v as IntervalUnit)}>
+                      <SelectTrigger className="h-8 text-sm flex-1" data-testid="select-sched-unit">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="seconds">ثواني</SelectItem>
+                        <SelectItem value="minutes">دقائق</SelectItem>
+                        <SelectItem value="hours">ساعات</SelectItem>
+                        <SelectItem value="days">أيام</SelectItem>
+                        <SelectItem value="weeks">أسابيع</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      data-testid="button-create-schedule"
+                      size="sm"
+                      className="h-8 px-3 flex-shrink-0"
+                      disabled={createSchedule.isPending || !schedValue || Number(schedValue) <= 0}
+                      onClick={() => {
+                        const iv = Number(schedValue);
+                        if (!iv || iv <= 0) return;
+                        createSchedule.mutate({ name: schedName, intervalValue: iv, intervalUnit: schedUnit });
+                      }}
+                    >
+                      {createSchedule.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                    </Button>
+                  </div>
+                  {createSchedule.isError && (
+                    <p className="text-xs text-red-600">{(createSchedule.error as Error).message}</p>
+                  )}
+                </div>
+
+                {/* Schedule list */}
+                {schedulesLoading ? (
+                  <div className="flex justify-center py-4">
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                  </div>
+                ) : !schedulesData?.schedules?.length ? (
+                  <p className="text-sm text-muted-foreground text-center py-4">لا توجد جداول مضافة</p>
+                ) : (
+                  <div className="divide-y rounded-lg border overflow-hidden">
+                    {schedulesData.schedules.map(sched => (
+                      <div
+                        key={sched._id}
+                        data-testid={`row-schedule-${sched._id}`}
+                        className="flex items-center gap-3 px-3 py-2.5 bg-background hover:bg-muted/20 transition-colors"
+                      >
+                        <Switch
+                          data-testid={`switch-schedule-${sched._id}`}
+                          checked={sched.enabled}
+                          disabled={toggleSchedule.isPending}
+                          onCheckedChange={() => toggleSchedule.mutate(sched._id)}
+                          className="flex-shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{sched.name}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                              <Timer className="w-3 h-3" />
+                              كل {sched.intervalValue} {UNIT_LABELS[sched.intervalUnit]}
+                            </span>
+                            {sched.enabled && sched.nextRunAt && (
+                              <span className="text-xs text-primary/80 flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                {formatNextRun(sched.nextRunAt)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <Badge
+                          variant={sched.enabled ? "default" : "outline"}
+                          className={`text-[10px] flex-shrink-0 ${sched.enabled ? "bg-primary/15 text-primary border-primary/20" : ""}`}
+                        >
+                          {sched.enabled ? "مفعّل" : "موقوف"}
+                        </Badge>
+                        <Button
+                          data-testid={`button-delete-schedule-${sched._id}`}
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-red-600 hover:bg-red-50"
+                          disabled={deleteSchedule.isPending}
+                          onClick={() => deleteSchedule.mutate(sched._id)}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    ))}
                   </div>
                 )}
               </CardContent>

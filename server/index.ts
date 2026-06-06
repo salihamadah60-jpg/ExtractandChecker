@@ -13,6 +13,7 @@ import { adminStore } from "./modules/admin";
 import { centralLinksStore } from "./modules/central-links";
 import { excludedGroups } from "./modules/excluded-groups";
 import { getSleepConfig, updateSleepConfigSync } from "./modules/sleep-config";
+import { publishScheduler } from "./modules/publish-scheduler";
 
 const app = express();
 const httpServer = createServer(app);
@@ -117,6 +118,7 @@ const initServer = async () => {
       updateSleepConfigSync(sleepCfg);
       // Check if a function was interrupted on last restart — reset the lock
       await systemState.checkRecovery("main");
+      await publishScheduler.init();
     } catch (err) {
       console.warn("[Startup] MongoDB modules init failed (continuing without):", (err as Error).message);
     }
