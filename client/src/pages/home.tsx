@@ -16,7 +16,16 @@ import {
   ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
   Pause, Play, Square, Menu, X, MessageCircle, Send, LayoutDashboard,
   TrendingUp, Activity, Zap, BarChart2, AlertTriangle, Ban, Moon,
+  CalendarClock, Timer, Plus,
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { SiWhatsapp, SiTelegram } from "react-icons/si";
 
 type WAStatus = "disconnected" | "connecting" | "qr_ready" | "pairing" | "connected" | "auth_failed";
@@ -175,6 +184,26 @@ const STEPS: { key: Step; label: string }[] = [
   { key: "results", label: "النتائج" },
 ];
 
+type IntervalUnit = "seconds" | "minutes" | "hours" | "days" | "weeks";
+interface PublishSchedule {
+  _id: string; name: string; intervalValue: number; intervalUnit: IntervalUnit;
+  enabled: boolean; nextRunAt: string; lastRunAt?: string; createdAt: string;
+}
+const UNIT_LABELS: Record<IntervalUnit, string> = {
+  seconds: "ثانية", minutes: "دقيقة", hours: "ساعة", days: "يوم", weeks: "أسبوع",
+};
+function formatNextRun(dateStr: string): string {
+  const diffMs = new Date(dateStr).getTime() - Date.now();
+  if (diffMs <= 0) return "الآن";
+  const s = Math.round(diffMs / 1000);
+  if (s < 60) return `${s}ث`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}د`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}س`;
+  return `${Math.round(h / 24)}ي`;
+}
+
 function wkHeaders(): Record<string, string> {
   const k = localStorage.getItem("workspace_key") ?? "";
   return k ? { "X-Workspace-Key": k } : {};
@@ -214,6 +243,10 @@ export default function Home() {
   const [showJoinSidePanel, setShowJoinSidePanel] = useState(false);
   const [showPublisherPanel, setShowPublisherPanel] = useState(false);
   const [showPublishHistory, setShowPublishHistory] = useState(false);
+  const [showSchedulerPanel, setShowSchedulerPanel] = useState(false);
+  const [schedName, setSchedName] = useState("");
+  const [schedValue, setSchedValue] = useState("1");
+  const [schedUnit, setSchedUnit] = useState<IntervalUnit>("hours");
   const [showReaderPanel, setShowReaderPanel] = useState(false);
   const [showLeavePanel, setShowLeavePanel] = useState(false);
   const [showTelemetryPanel, setShowTelemetryPanel] = useState(false);
@@ -808,6 +841,66 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
+  const { data: schedulesData, isLoading: schedulesLoading } = useQuery<{ schedules: PublishSchedule[] }>({
+    queryKey: ["/api/publisher/schedules"],
+    queryFn: async () => {
+      const k = localStorage.getItem("workspace_key") ?? "";
+      const res = await fetch("/api/publisher/schedules", { credentials: "include", headers: k ? { "X-Workspace-Key": k } : {} });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: showSchedulerPanel ? 8_000 : false,
+    enabled: showSchedulerPanel,
+    retry: 1,
+  });
+
+  const createScheduleMutation = useMutation({
+    mutationFn: async (body: { name: string; intervalValue: number; intervalUnit: IntervalUnit }) => {
+      const k = localStorage.getItem("workspace_key") ?? "";
+      const res = await fetch("/api/publisher/schedules", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json", ...(k ? { "X-Workspace-Key": k } : {}) },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/publisher/schedules"] });
+      setSchedName(""); setSchedValue("1"); setSchedUnit("hours");
+      toast({ title: "تم إنشاء الجدول" });
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const toggleScheduleMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const k = localStorage.getItem("workspace_key") ?? "";
+      const res = await fetch(`/api/publisher/schedules/${id}/toggle`, {
+        method: "PATCH", credentials: "include",
+        headers: k ? { "X-Workspace-Key": k } : {},
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/publisher/schedules"] }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const deleteScheduleMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const k = localStorage.getItem("workspace_key") ?? "";
+      const res = await fetch(`/api/publisher/schedules/${id}`, {
+        method: "DELETE", credentials: "include",
+        headers: k ? { "X-Workspace-Key": k } : {},
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/publisher/schedules"] }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   const pauseLeaveMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/leave/pause", {}),
     onSuccess: () => toast({ title: "تم تعليق المغادرة مؤقتاً" }),
@@ -964,12 +1057,13 @@ export default function Home() {
   }, [publishProgress]);
 
   const canNavigateTo = (target: Step): boolean => {
+    if (target === step) return false;
     const hasLinks = linkCounts.whatsapp > 0 || linkCounts.telegram > 0;
     switch (target) {
       case "upload": return true;
-      case "links": return hasLinks;
-      case "checking": return !!session;
-      case "results": return session?.status === "done";
+      case "links": return true;
+      case "checking": return !!session || hasLinks;
+      case "results": return !!session || !!(previousResults?.hasPreviousSession);
       default: return false;
     }
   };
@@ -1653,7 +1747,7 @@ export default function Home() {
                   ) : (
                     <Button size="sm" className="w-full text-xs h-8"
                       onClick={() => startReaderMutation.mutate()}
-                      disabled={startReaderMutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
+                      disabled={startReaderMutation.isPending || waStatus !== "connected"}
                       data-testid="sidebar-start-reader">
                       {startReaderMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <MessageCircle className="w-3.5 h-3.5 ml-1" />}
                       بدء القراءة
@@ -1783,6 +1877,110 @@ export default function Home() {
                       {startPublishMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <Send className="w-3.5 h-3.5 ml-1" />}
                       بدء النشر للمجموعات المنضمة
                     </Button>
+                  )}
+
+                  {/* ── جدولة النشر التلقائي ── */}
+                  <Button variant="ghost" size="sm" className={`w-full text-xs h-7 justify-start gap-1 ${showSchedulerPanel ? "text-orange-600" : "text-muted-foreground hover:text-foreground"}`}
+                    onClick={() => setShowSchedulerPanel(o => !o)}
+                    data-testid="button-scheduler-toggle">
+                    <CalendarClock className="w-3 h-3 ml-1" />
+                    {showSchedulerPanel ? "إخفاء الجدولة" : "جدولة النشر التلقائي"}
+                    {schedulesData?.schedules?.filter(s => s.enabled).length ? <Badge variant="secondary" className="text-[9px] h-3.5 px-1 mr-auto">{schedulesData.schedules.filter(s => s.enabled).length} نشط</Badge> : null}
+                    {showSchedulerPanel ? <ChevronUp className="w-3 h-3 mr-1" /> : <ChevronDown className="w-3 h-3 mr-1" />}
+                  </Button>
+                  {showSchedulerPanel && (
+                    <div className="border border-orange-200/60 dark:border-orange-800/40 rounded-lg p-2.5 space-y-2 bg-orange-50/30 dark:bg-orange-900/5">
+                      {/* Create form */}
+                      <div className="space-y-1.5">
+                        <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold">إضافة جدول جديد</p>
+                        <Input
+                          data-testid="input-sched-name"
+                          placeholder="اسم الجدول (اختياري)"
+                          value={schedName}
+                          onChange={e => setSchedName(e.target.value)}
+                          className="h-7 text-xs"
+                          dir="rtl"
+                        />
+                        <div className="flex gap-1.5">
+                          <Input
+                            data-testid="input-sched-value"
+                            type="number"
+                            min={1}
+                            value={schedValue}
+                            onChange={e => setSchedValue(e.target.value)}
+                            className="h-7 text-xs w-16 flex-shrink-0"
+                          />
+                          <Select value={schedUnit} onValueChange={v => setSchedUnit(v as IntervalUnit)}>
+                            <SelectTrigger className="h-7 text-xs flex-1" data-testid="select-sched-unit">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="seconds">ثواني</SelectItem>
+                              <SelectItem value="minutes">دقائق</SelectItem>
+                              <SelectItem value="hours">ساعات</SelectItem>
+                              <SelectItem value="days">أيام</SelectItem>
+                              <SelectItem value="weeks">أسابيع</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            data-testid="button-create-schedule"
+                            size="sm"
+                            className="h-7 px-2 flex-shrink-0 bg-orange-500 hover:bg-orange-600 text-white"
+                            disabled={createScheduleMutation.isPending || !schedValue || Number(schedValue) <= 0}
+                            onClick={() => {
+                              const iv = Number(schedValue);
+                              if (!iv || iv <= 0) return;
+                              createScheduleMutation.mutate({ name: schedName, intervalValue: iv, intervalUnit: schedUnit });
+                            }}
+                          >
+                            {createScheduleMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                          </Button>
+                        </div>
+                        {createScheduleMutation.isError && (
+                          <p className="text-[10px] text-red-600">{(createScheduleMutation.error as Error).message}</p>
+                        )}
+                      </div>
+                      {/* List */}
+                      {schedulesLoading ? (
+                        <div className="flex justify-center py-2"><Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /></div>
+                      ) : !schedulesData?.schedules?.length ? (
+                        <p className="text-[10px] text-muted-foreground text-center py-1">لا توجد جداول</p>
+                      ) : (
+                        <div className="space-y-1 max-h-48 overflow-y-auto">
+                          {schedulesData.schedules.map(sched => (
+                            <div key={sched._id} data-testid={`row-schedule-${sched._id}`}
+                              className="flex items-center gap-1.5 bg-background border rounded p-1.5 text-[10px]">
+                              <Switch
+                                data-testid={`switch-schedule-${sched._id}`}
+                                checked={sched.enabled}
+                                disabled={toggleScheduleMutation.isPending}
+                                onCheckedChange={() => toggleScheduleMutation.mutate(sched._id)}
+                                className="scale-75 flex-shrink-0"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium truncate">{sched.name}</p>
+                                <div className="flex items-center gap-1 text-muted-foreground">
+                                  <Timer className="w-2.5 h-2.5" />
+                                  <span>كل {sched.intervalValue} {UNIT_LABELS[sched.intervalUnit]}</span>
+                                  {sched.enabled && sched.nextRunAt && (
+                                    <span className="text-orange-600">· {formatNextRun(sched.nextRunAt)}</span>
+                                  )}
+                                </div>
+                              </div>
+                              <Button
+                                data-testid={`button-del-sched-${sched._id}`}
+                                variant="ghost" size="icon"
+                                className="h-5 w-5 flex-shrink-0 hover:bg-destructive/10"
+                                disabled={deleteScheduleMutation.isPending}
+                                onClick={() => deleteScheduleMutation.mutate(sched._id)}
+                              >
+                                <Trash2 className="w-3 h-3 text-destructive" />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   {/* ── سجل جلسات النشر ── */}
