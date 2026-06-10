@@ -130,7 +130,7 @@ interface PreviousResultsRes {
   descriptionLinks?: number;
 }
 interface CoordinatorStatus { active: string | null; isRunning: boolean; }
-interface PhoneStat { phone: string; displayName: string; isActive: boolean; Pending: number; Joined: number; Ignored: number; Left: number; }
+interface PhoneStat { phone: string; displayName: string; isActive: boolean; Pending: number; PendingReal: number; PendingForMe: number; Joined: number; Ignored: number; Left: number; }
 interface RepoCounts { Pending: number; Joined: number; Ignored: number; Left: number; }
 interface JoinProgress2 {
   status: "running" | "waiting" | "sleeping" | "cooldown" | "paused" | "done" | "stopped" | "error";
@@ -1194,20 +1194,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* ── مستودع الروابط ── */}
-              {repoCounts && (
-                <div className="border rounded-lg p-2.5 space-y-1.5 bg-muted/30">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">مستودع الروابط</p>
-                  <div className="grid grid-cols-4 gap-1 text-center">
-                    {([["Pending","معلق","text-yellow-600"],["Joined","منضم","text-green-600"],["Ignored","متجاهل","text-red-500"],["Left","خرج","text-muted-foreground"]] as const).map(([k,l,c]) => (
-                      <div key={k} className="bg-background rounded p-1 border">
-                        <p className={`font-bold text-sm leading-none ${c}`}>{repoCounts[k as keyof RepoCounts] ?? 0}</p>
-                        <p className="text-[9px] text-muted-foreground mt-0.5">{l}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               {/* ── الانضمام من المستودع (new API) ── */}
               <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showJoinSidePanel ? "border-primary bg-primary/5" : ""}`}
@@ -1486,20 +1472,28 @@ export default function Home() {
                         </button>
                       </div>
                       {phoneStatsData.phones.map((ps) => (
-                        <div key={ps.phone} className={`rounded-lg border p-2 space-y-1 ${ps.isActive ? "border-primary/40 bg-primary/5" : "border-border bg-muted/20"}`}>
+                        <div key={ps.phone} className={`rounded-lg border p-2 space-y-1.5 ${ps.isActive ? "border-primary/40 bg-primary/5" : "border-border bg-muted/20"}`}>
                           <div className="flex items-center justify-between gap-1">
                             <span className="text-[10px] font-medium text-foreground truncate">{ps.displayName}</span>
                             {ps.isActive && <Badge variant="default" className="text-[9px] px-1 py-0 h-4">نشط</Badge>}
                           </div>
-                          <div className="grid grid-cols-4 gap-1 text-center">
-                            <div className="bg-background rounded p-1 border">
-                              <p className="font-bold text-[11px] text-yellow-600 leading-none">{ps.Pending}</p>
-                              <p className="text-[8px] text-muted-foreground mt-0.5">معلق</p>
-                            </div>
+                          {/* Row 1: joined + pending breakdown */}
+                          <div className="grid grid-cols-3 gap-1 text-center">
                             <div className="bg-background rounded p-1 border">
                               <p className="font-bold text-[11px] text-green-600 leading-none">{ps.Joined}</p>
                               <p className="text-[8px] text-muted-foreground mt-0.5">منضم</p>
                             </div>
+                            <div className="bg-background rounded p-1 border">
+                              <p className="font-bold text-[11px] text-yellow-600 leading-none">{ps.PendingReal ?? ps.Pending}</p>
+                              <p className="text-[8px] text-muted-foreground mt-0.5">معلق</p>
+                            </div>
+                            <div className="bg-background rounded p-1 border border-dashed border-yellow-400/60">
+                              <p className="font-bold text-[11px] text-yellow-500 leading-none">{ps.PendingForMe ?? 0}</p>
+                              <p className="text-[8px] text-muted-foreground mt-0.5">بانتظاري</p>
+                            </div>
+                          </div>
+                          {/* Row 2: ignored + left */}
+                          <div className="grid grid-cols-2 gap-1 text-center">
                             <div className="bg-background rounded p-1 border">
                               <p className="font-bold text-[11px] text-red-500 leading-none">{ps.Ignored}</p>
                               <p className="text-[8px] text-muted-foreground mt-0.5">متجاهل</p>

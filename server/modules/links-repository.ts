@@ -244,14 +244,18 @@ export const linksRepository = {
     return this.resetMyJoinProgress(workspaceId, currentPhone);
   },
 
-  async countByStatusForPhone(workspaceId: string, currentPhone?: string): Promise<Record<LinkStatus, number>> {
+  async countByStatusForPhone(workspaceId: string, currentPhone?: string): Promise<Record<LinkStatus, number> & { PendingReal: number; PendingForMe: number }> {
     const c = await col();
     const all = await c.aggregate([
       { $match: { workspaceId } },
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]).toArray();
-    const result: Record<string, number> = { Pending: 0, Joined: 0, Ignored: 0, Left: 0 };
+    const result: Record<string, number> = { Pending: 0, Joined: 0, Ignored: 0, Left: 0, PendingReal: 0, PendingForMe: 0 };
     all.forEach((d: any) => { result[d._id] = d.count; });
+
+    // PendingReal = links not joined by anyone yet
+    result.PendingReal = result.Pending;
+    result.PendingForMe = 0;
 
     if (currentPhone) {
       // Count links this specific phone has joined (using joinedByPhones array)
@@ -263,13 +267,16 @@ export const linksRepository = {
           { joinedByPhone: currentPhone, joinedByPhones: { $exists: false } },
         ],
       });
-      // Links joined by the system but NOT by this phone are effectively Pending for this phone
-      const joinedByOthers = result.Joined - joinedByMe;
+      // Links joined by other phones but NOT this phone — still pending for this phone
+      const joinedByOthers = Math.max(0, result.Joined - joinedByMe);
       result.Joined = joinedByMe;
-      result.Pending = result.Pending + Math.max(0, joinedByOthers);
+      result.Pending = result.Pending + joinedByOthers;
+      // PendingReal = truly unjoined by anyone; PendingForMe = joined by others, not yet by me
+      result.PendingReal = result.PendingReal; // unchanged (original Pending)
+      result.PendingForMe = joinedByOthers;
     }
 
-    return result as Record<LinkStatus, number>;
+    return result as Record<LinkStatus, number> & { PendingReal: number; PendingForMe: number };
   },
 
   async getAllUrls(workspaceId: string): Promise<Set<string>> {
@@ -330,22 +337,23 @@ export const linksRepository = {
 
   /**
    * Sync groups fetched live from WhatsApp's groupFetchAllParticipating().
-   * - Upserts each group by groupJid (updates name/members/desc if changed).
-   * - Marks any DB "Joined" record whose JID is absent from WA as "Left"
-   *   (handles groups the user left manually outside the app).
+   * - Step 1: Match existing DB records by groupJid and update them.
+   * - Step 2: For groups that didn't match by JID, try matching by invite-code URL
+   *           (handles groups uploaded from DOCX before joining — no JID stored yet).
+   * - Step 3: Insert completely new groups (joined outside the app) with wa-sync URLs.
+   * - Step 4: Mark any DB "Joined" record whose JID is absent from WA as "Left".
    */
   async syncFromWhatsAppGroups(
     workspaceId: string,
-    waGroups: Array<{ id: string; subject?: string; participants?: Array<{ id: string }>; desc?: string; size?: number }>
+    waGroups: Array<{ id: string; subject?: string; inviteCode?: string; participants?: Array<{ id: string }>; desc?: string; size?: number }>
   ): Promise<{ synced: number; markedLeft: number; inserted: number; updated: number }> {
     const c = await col();
     const now = new Date();
     const activeJids = new Set(waGroups.map(g => g.id));
 
-    // ── Step 1: upsert by groupJid (matches groups that have groupJid in DB) ──
+    // ── Step 1: upsert by groupJid (fast path — groups already tracked) ──
     const ops = waGroups.map(g => {
       const members = typeof g.size === "number" ? g.size : (g.participants?.length ?? undefined);
-      // Build $set cleanly — never include undefined values (causes BSON issues)
       const setFields: Record<string, unknown> = {
         groupJid: g.id,
         status: "Joined" as LinkStatus,
@@ -382,7 +390,6 @@ export const linksRepository = {
         matched  = r.matchedCount;
         console.log(`[LinksRepository] bulkWrite — matched:${r.matchedCount} modified:${r.modifiedCount} upserted:${r.upsertedCount}`);
       } catch (err: any) {
-        // BulkWriteError: partial success, extract counts from err.result
         const res = err?.result;
         if (res) {
           upserted = res.upsertedCount ?? 0;
@@ -394,12 +401,42 @@ export const linksRepository = {
       }
     }
 
-    // ── Step 2: mark groups no longer seen in WA as Left ──
+    // ── Step 2: match by invite-code URL (groups uploaded from DOCX — no JID yet) ──
+    // For each WA group, try to find a DB record whose URL contains the same invite code.
+    let codeMatched = 0;
+    for (const g of waGroups) {
+      // Use inviteCode if provided; otherwise extract from WA group ID (not always available).
+      // The invite code can be obtained from baileysManager.getGroupInviteCode — but here
+      // we only have what was passed in. If inviteCode is provided, use it for matching.
+      if (!g.inviteCode) continue;
+      const urlPattern = new RegExp(`chat\\.whatsapp\\.com/${g.inviteCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
+      const members = typeof g.size === "number" ? g.size : (g.participants?.length ?? undefined);
+      const setFields: Record<string, unknown> = {
+        groupJid: g.id,
+        status: "Joined" as LinkStatus,
+        updatedAt: now,
+      };
+      if (g.subject)              setFields.name = g.subject;
+      if (members !== undefined)  setFields.members = members;
+      if (g.desc)                 setFields.description = g.desc;
+
+      const r = await c.updateMany(
+        { workspaceId, url: { $regex: urlPattern }, groupJid: { $exists: false } },
+        { $set: setFields }
+      );
+      codeMatched += r.modifiedCount;
+    }
+    if (codeMatched > 0) {
+      console.log(`[LinksRepository] Invite-code match — updated ${codeMatched} records with groupJid`);
+      matched += codeMatched;
+    }
+
+    // ── Step 3: mark groups no longer seen in WA as Left ──
     const leftResult = await c.updateMany(
       {
         workspaceId,
         status: "Joined",
-        groupJid: { $exists: true, $ne: null, $nin: [...activeJids] },
+        groupJid: { $exists: true, $nin: ["", ...activeJids] },
       },
       { $set: { status: "Left" as LinkStatus, leftAt: now, updatedAt: now } }
     );

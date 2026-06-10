@@ -484,18 +484,23 @@ function _createManager(wid: string) {
 
           const cleanUrl = _cleanLink(url);
 
-          // Add to DB if new
-          const added = await linksRepository.addIfNew(wid, cleanUrl, "Group", "message");
-          if (added) {
+          // Only buffer — do NOT write to DB yet.
+          // Links are saved to DB only after pipeline validation (checkLinks + NLP filter).
+          // This prevents expired/invalid links from polluting the Links_Repository.
+          const alreadyInDb     = await linksRepository.exists(wid, cleanUrl);
+          const alreadyInBuffer = s.pipelineBuffer.has(cleanUrl);
+
+          if (!alreadyInDb && !alreadyInBuffer) {
             if (s.stats) { s.stats.linksNew++; s.stats.bufferSize = s.pipelineBuffer.size + 1; }
             s.pendingDelta.linksNew++;
-
-            // Non-ad message wins over ad message for same URL
-            const existing = s.pipelineBuffer.get(cleanUrl);
-            if (!existing || (existing.isAdMessage && !cls.isAd)) {
-              s.pipelineBuffer.set(cleanUrl, { url: cleanUrl, isAdMessage: cls.isAd });
-            }
+            s.pipelineBuffer.set(cleanUrl, { url: cleanUrl, isAdMessage: cls.isAd });
             _schedulePipeline(wid);
+          } else if (alreadyInBuffer) {
+            // Non-ad message wins over ad classification for same buffered URL
+            const existing = s.pipelineBuffer.get(cleanUrl);
+            if (existing && existing.isAdMessage && !cls.isAd) {
+              s.pipelineBuffer.set(cleanUrl, { url: cleanUrl, isAdMessage: false });
+            }
           }
         }
 

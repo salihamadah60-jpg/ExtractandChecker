@@ -1184,7 +1184,11 @@ export async function registerRoutes(
     try {
       const wid: string = req.workspaceId ?? "main";
       const sessions = baileysManager.getSessionsForWorkspace(wid);
-      const results: Array<{ phone: string; displayName: string; isActive: boolean; Pending: number; Joined: number; Ignored: number; Left: number }> = [];
+      const results: Array<{
+        phone: string; displayName: string; isActive: boolean;
+        Pending: number; PendingReal: number; PendingForMe: number;
+        Joined: number; Ignored: number; Left: number;
+      }> = [];
       for (const s of sessions) {
         const phone = s.phoneNumber;
         if (!phone) continue;
@@ -1194,6 +1198,8 @@ export async function registerRoutes(
           displayName: s.displayName,
           isActive: s.isActive,
           Pending: counts.Pending,
+          PendingReal: counts.PendingReal,
+          PendingForMe: counts.PendingForMe,
           Joined: counts.Joined,
           Ignored: counts.Ignored,
           Left: counts.Left,
