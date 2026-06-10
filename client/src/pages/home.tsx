@@ -560,10 +560,10 @@ export default function Home() {
   });
 
   const retryErrorsMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/whatsapp/check/retry-errors", {}),
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/check/retry-errors", {}).then(r => r.json()),
     onSuccess: (data: any) => {
       setStep("checking");
-      toast({ title: `إعادة فحص ${data.retrying} رابط بها أخطاء` });
+      toast({ title: `إعادة فحص ${data?.retrying ?? 0} رابط بها أخطاء` });
       qc.invalidateQueries({ queryKey: ["/api/whatsapp/progress"] });
     },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
@@ -734,9 +734,10 @@ export default function Home() {
   const leaveQueue = leaveQueueData?.queue ?? [];
 
   const resetJoinForNewAccountMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/join/reset-for-new-account", {}),
+    mutationFn: () => apiRequest("POST", "/api/join/reset-for-new-account", {}).then(r => r.json()),
     onSuccess: (data: any) => {
-      toast({ title: `تمت إعادة التعيين — ${data.resetCount} رابط جاهز للحساب الجديد` });
+      const count = data?.resetCount ?? 0;
+      toast({ title: `تمت إعادة التعيين — ${count} رابط جاهز للحساب الجديد` });
       void refetchRepoCounts();
       void refetchJoinProgress2();
     },
@@ -798,7 +799,7 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
   const syncGroupsMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/whatsapp/sync-groups", {}),
+    mutationFn: () => apiRequest("POST", "/api/whatsapp/sync-groups", {}).then(r => r.json()),
     onSuccess: (data: any) => toast({
       title: "تمت مزامنة المجموعات",
       description: [
@@ -929,7 +930,7 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
   const retryApprovalAllMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/links-repository/retry-approval-all", {}),
+    mutationFn: () => apiRequest("POST", "/api/links-repository/retry-approval-all", {}).then(r => r.json()),
     onSuccess: (data: any) => { void refetchPendingApproval(); toast({ title: `تمت إعادة ${data?.count ?? 0} رابط للقائمة` }); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
