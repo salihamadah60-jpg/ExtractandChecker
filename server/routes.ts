@@ -1102,10 +1102,21 @@ export async function registerRoutes(
     if (!Array.isArray(urls) || !urls.length) return res.status(400).json({ error: "urls مطلوبة" });
     const wid = req.workspaceId ?? "main";
     let added = 0, duplicates = 0, invalid = 0;
-    const waRegex = /^https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+$/;
+    // Extract the WhatsApp link from anywhere within each line (handles messy copy-paste)
+    const waExtract = /https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+/;
+    const waExact   = /^https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+$/;
+    const seen = new Set<string>();
     for (const raw of urls) {
-      const url = String(raw).replace(/[.,;)>\]'"»«\s]+$/, "").trim();
-      if (!waRegex.test(url)) { invalid++; continue; }
+      const line = String(raw).trim();
+      if (!line) continue;
+      // Try to pull the link out of a messy line (e.g. "انضم: https://chat.whatsapp.com/ABC123 - مجموعة")
+      const match = line.match(waExtract);
+      if (!match) { invalid++; continue; }
+      // Strip trailing punctuation/whitespace that regex may have captured
+      const url = match[0].replace(/[.,;)>\]'"»«\s]+$/, "").trim();
+      if (!waExact.test(url)) { invalid++; continue; }
+      if (seen.has(url)) { duplicates++; continue; }
+      seen.add(url);
       const wasNew = await linksRepository.addIfNew(wid, url, "Group", "manual");
       if (wasNew) added++;
       else duplicates++;

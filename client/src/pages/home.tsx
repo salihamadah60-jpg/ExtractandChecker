@@ -209,6 +209,23 @@ function wkHeaders(): Record<string, string> {
   return k ? { "X-Workspace-Key": k } : {};
 }
 
+/** Extract all unique WhatsApp group links from any free-form text (handles messy paste) */
+function extractBulkLinks(text: string): string[] {
+  const re = /https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+/g;
+  const all = [...text.matchAll(re)].map(m => m[0].replace(/[.,;)>\]'"»«\s]+$/, "").trim());
+  return [...new Set(all.filter(Boolean))];
+}
+
+/** Human-friendly join time estimate given a link count */
+function joinTimeEstimate(count: number): { windows: number; totalMin: number; label: string } {
+  const windows = Math.ceil(count / 4);
+  const totalMin = windows * 10;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const label = h > 0 ? (m > 0 ? `${h}س ${m}د` : `${h}س`) : `${m}د`;
+  return { windows, totalMin, label };
+}
+
 function openWithKey(path: string): void {
   const k = localStorage.getItem("workspace_key") ?? "";
   window.open(k ? `${path}?wk=${encodeURIComponent(k)}` : path, "_blank");
@@ -275,7 +292,7 @@ export default function Home() {
   const [newAdMedia, setNewAdMedia] = useState<File | null>(null);
   const [newAdCaption, setNewAdCaption] = useState("");
   const adMediaRef = useRef<HTMLInputElement>(null);
-  const [showBulkPaste, setShowBulkPaste] = useState(false);
+  const [showBulkPaste, setShowBulkPaste] = useState(true);
   const [bulkPasteText, setBulkPasteText] = useState("");
   const [joinMaxLinks, setJoinMaxLinks] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1385,30 +1402,44 @@ export default function Home() {
                   {(!joinProgress2 || joinProgress2.status === "done" || joinProgress2.status === "stopped") && (
                     <div className="space-y-2">
                       {/* Max links input */}
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1">
-                          <Input
-                            type="number"
-                            min={1}
-                            max={500}
-                            placeholder="عدد الروابط (فارغ = الكل)"
-                            value={joinMaxLinks}
-                            onChange={e => setJoinMaxLinks(e.target.value)}
-                            className="h-8 text-xs text-right"
-                            data-testid="input-join-max-links"
-                          />
-                        </div>
-                        {joinMaxLinks && parseInt(joinMaxLinks) > 0 && (
-                          <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-400 whitespace-nowrap">
-                            تجريبي
-                          </Badge>
-                        )}
+                      <div>
+                        <label className="text-[10px] text-muted-foreground block mb-1">عدد الروابط للانضمام</label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={9999}
+                          placeholder="فارغ = كل الروابط المعلقة"
+                          value={joinMaxLinks}
+                          onChange={e => setJoinMaxLinks(e.target.value)}
+                          className="h-8 text-xs text-right"
+                          data-testid="input-join-max-links"
+                        />
                       </div>
-                      {joinMaxLinks && parseInt(joinMaxLinks) > 0 && (
-                        <p className="text-[10px] text-amber-600 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1">
-                          وضع تجريبي: سيتم الانضمام إلى {joinMaxLinks} رابط فقط ثم يتوقف تلقائياً
-                        </p>
-                      )}
+                      {/* Time distribution estimator */}
+                      {joinMaxLinks && parseInt(joinMaxLinks) > 0 && (() => {
+                        const count = parseInt(joinMaxLinks);
+                        const { windows, label } = joinTimeEstimate(count);
+                        return (
+                          <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-1.5 text-[10px]" data-testid="join-time-estimate">
+                            <p className="font-semibold text-primary text-center text-[11px]">توزيع الوقت التقديري</p>
+                            <div className="grid grid-cols-3 gap-1 text-center">
+                              <div className="bg-background rounded p-1.5 border border-border">
+                                <p className="font-bold text-sm">{count}</p>
+                                <p className="text-muted-foreground">رابط</p>
+                              </div>
+                              <div className="bg-background rounded p-1.5 border border-border">
+                                <p className="font-bold text-sm">{windows}</p>
+                                <p className="text-muted-foreground">نافذة × 10د</p>
+                              </div>
+                              <div className="bg-background rounded p-1.5 border border-primary/30">
+                                <p className="font-bold text-sm text-primary">{label}</p>
+                                <p className="text-muted-foreground">إجمالي</p>
+                              </div>
+                            </div>
+                            <p className="text-center text-muted-foreground">4 روابط / نافذة · التوقيت عشوائي داخل كل نافذة</p>
+                          </div>
+                        );
+                      })()}
                       <Button size="sm" className="w-full text-xs h-8"
                         onClick={() => { requestNotifPermIfNeeded(); startJoin2Mutation.mutate(); }}
                         disabled={startJoin2Mutation.isPending || waStatus !== "connected" || isCoordinatorBusy}
@@ -1416,7 +1447,7 @@ export default function Home() {
                         {startJoin2Mutation.isPending
                           ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" />
                           : <UserPlus className="w-3.5 h-3.5 ml-1" />}
-                        {joinMaxLinks && parseInt(joinMaxLinks) > 0 ? `بدء تجريبي (${joinMaxLinks})` : "بدء الانضمام"}
+                        {joinMaxLinks && parseInt(joinMaxLinks) > 0 ? `بدء الانضمام (${joinMaxLinks} رابط)` : "بدء الانضمام — كل الروابط"}
                       </Button>
                     </div>
                   )}
@@ -2127,6 +2158,11 @@ export default function Home() {
                 data-testid="sidebar-leave-queue">
                 <LogOut className="w-4 h-4 text-red-500 flex-shrink-0" />
                 <span className="flex-1 text-right text-sm">قائمة المغادرة</span>
+                {leaveQueue.filter(e => e.reason === "ad-auto-detected").length > 0 && (
+                  <Badge className="text-[10px] h-4 px-1.5 bg-orange-500 hover:bg-orange-500 text-white border-0" data-testid="badge-ad-leave-count">
+                    {leaveQueue.filter(e => e.reason === "ad-auto-detected").length} إعلان
+                  </Badge>
+                )}
                 {leaveQueue.length > 0 && <Badge variant="destructive" className="text-[10px]">{leaveQueue.length}</Badge>}
                 {showLeavePanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
               </Button>
@@ -2474,14 +2510,14 @@ export default function Home() {
                     />
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[10px] text-muted-foreground">
-                        {bulkPasteText.split("\n").filter(l => l.trim().includes("chat.whatsapp.com/")).length} رابط واتساب صالح
+                        <span className="font-semibold text-primary">{extractBulkLinks(bulkPasteText).length}</span> رابط واتساب صالح مكتشف
                       </span>
                       <Button size="sm" className="h-8 text-xs px-3"
                         onClick={() => {
-                          const urls = bulkPasteText.split("\n").map(l => l.trim()).filter(Boolean);
+                          const urls = extractBulkLinks(bulkPasteText);
                           if (urls.length) bulkPasteMutation.mutate(urls);
                         }}
-                        disabled={bulkPasteMutation.isPending || !bulkPasteText.trim()}
+                        disabled={bulkPasteMutation.isPending || extractBulkLinks(bulkPasteText).length === 0}
                         data-testid="button-bulk-paste-submit">
                         {bulkPasteMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5 ml-1" />}
                         إضافة إلى المستودع
