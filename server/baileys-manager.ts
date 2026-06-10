@@ -1246,8 +1246,13 @@ class SessionsManager extends EventEmitter {
     const groupsArr = Object.values(allGroups);
     console.log(`[Sessions] Found ${groupsArr.length} groups from WhatsApp for workspace: ${workspaceId}`);
 
+    // Pass the current phone number so it gets recorded in joinedByPhones for every synced group.
+    // Without this, groups joined outside the app would have an empty joinedByPhones and
+    // the join-manager would attempt to re-join them (risking account bans).
+    const currentPhone = this.getConnectedPhoneForWorkspace(workspaceId) ?? this.getConnectedPhone() ?? undefined;
+
     const { linksRepository } = await import("./modules/links-repository.js");
-    return linksRepository.syncFromWhatsAppGroups(workspaceId, groupsArr);
+    return linksRepository.syncFromWhatsAppGroups(workspaceId, groupsArr, currentPhone);
   }
 
   /**

@@ -345,7 +345,8 @@ export const linksRepository = {
    */
   async syncFromWhatsAppGroups(
     workspaceId: string,
-    waGroups: Array<{ id: string; subject?: string; inviteCode?: string; participants?: Array<{ id: string }>; desc?: string; size?: number }>
+    waGroups: Array<{ id: string; subject?: string; inviteCode?: string; participants?: Array<{ id: string }>; desc?: string; size?: number }>,
+    currentPhone?: string
   ): Promise<{ synced: number; markedLeft: number; inserted: number; updated: number }> {
     const c = await col();
     const now = new Date();
@@ -358,25 +359,34 @@ export const linksRepository = {
         groupJid: g.id,
         status: "Joined" as LinkStatus,
         updatedAt: now,
+        joinedAt: now,
       };
       if (g.subject)              setFields.name = g.subject;
       if (members !== undefined)  setFields.members = members;
       if (g.desc)                 setFields.description = g.desc;
+      if (currentPhone)           setFields.joinedByPhone = currentPhone;
+
+      const update: Record<string, unknown> = {
+        $setOnInsert: {
+          workspaceId,
+          url: `https://chat.whatsapp.com/wa-sync/${g.id}`,
+          type: "Group" as LinkType,
+          source: "manual" as LinkSource,
+          addedAt: now,
+          checkCount: 0,
+        },
+        $set: setFields,
+      };
+
+      // Record the phone in joinedByPhones array — $addToSet never creates duplicates
+      if (currentPhone) {
+        (update as any).$addToSet = { joinedByPhones: currentPhone };
+      }
 
       return {
         updateOne: {
           filter: { workspaceId, groupJid: g.id },
-          update: {
-            $setOnInsert: {
-              workspaceId,
-              url: `https://chat.whatsapp.com/wa-sync/${g.id}`,
-              type: "Group" as LinkType,
-              source: "manual" as LinkSource,
-              addedAt: now,
-              checkCount: 0,
-            },
-            $set: setFields,
-          },
+          update,
           upsert: true,
         },
       };
@@ -420,9 +430,13 @@ export const linksRepository = {
       if (members !== undefined)  setFields.members = members;
       if (g.desc)                 setFields.description = g.desc;
 
+      const codeUpdate: Record<string, unknown> = { $set: setFields };
+      if (currentPhone) {
+        (codeUpdate as any).$addToSet = { joinedByPhones: currentPhone };
+      }
       const r = await c.updateMany(
         { workspaceId, url: { $regex: urlPattern }, groupJid: { $exists: false } },
-        { $set: setFields }
+        codeUpdate
       );
       codeMatched += r.modifiedCount;
     }
