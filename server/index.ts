@@ -13,6 +13,7 @@ import { adminStore } from "./modules/admin";
 import { centralLinksStore } from "./modules/central-links";
 import { excludedGroups } from "./modules/excluded-groups";
 import { getSleepConfig, updateSleepConfigSync } from "./modules/sleep-config";
+import { getJoinConfig, updateJoinConfigSync } from "./modules/join-config";
 import { publishScheduler } from "./modules/publish-scheduler";
 
 const app = express();
@@ -116,6 +117,9 @@ const initServer = async () => {
       // Load sleep config from DB and update in-memory sync cache
       const sleepCfg = await getSleepConfig();
       updateSleepConfigSync(sleepCfg);
+      // Load join config from DB and update in-memory sync cache
+      const joinCfg = await getJoinConfig();
+      updateJoinConfigSync(joinCfg);
       // Check if a function was interrupted on last restart — reset the lock
       await systemState.checkRecovery("main");
       await publishScheduler.init();

@@ -141,10 +141,15 @@ function TrendBar({ trend }: { trend: { date: string; count: number }[] }) {
 }
 
 export default function Dashboard() {
+  function wkH() {
+    const k = typeof localStorage !== "undefined" ? localStorage.getItem("workspace_key") ?? "" : "";
+    return k ? { "X-Workspace-Key": k } : {};
+  }
+
   const { data, isLoading, refetch, isFetching } = useQuery<DashboardStats>({
     queryKey: ["/api/dashboard/stats"],
     queryFn: async () => {
-      const res = await fetch("/api/dashboard/stats", { credentials: "include" });
+      const res = await fetch("/api/dashboard/stats", { headers: wkH() });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json() as Promise<DashboardStats>;
     },
@@ -156,7 +161,7 @@ export default function Dashboard() {
   const { data: telemetryData } = useQuery<TelemetryData>({
     queryKey: ["/api/telemetry"],
     queryFn: async () => {
-      const res = await fetch("/api/telemetry", { credentials: "include" });
+      const res = await fetch("/api/telemetry", { headers: wkH() });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json() as Promise<TelemetryData>;
     },

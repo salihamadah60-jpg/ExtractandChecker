@@ -17,6 +17,7 @@ import { workspaceStore } from "./modules/workspace.js";
 import { adminStore } from "./modules/admin.js";
 import { centralLinksStore } from "./modules/central-links.js";
 import { adminAuth } from "./middleware/admin-auth.js";
+import { getJoinConfig, setJoinConfig } from "./modules/join-config.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1176,6 +1177,25 @@ export async function registerRoutes(
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/join/config", async (req: any, res) => {
+    try {
+      res.json(await getJoinConfig());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/join/config", async (req: any, res) => {
+    const { slotsPerWindow } = req.body ?? {};
+    const n = Number(slotsPerWindow);
+    if (!n || n < 2 || n > 8) return res.status(400).json({ error: "slotsPerWindow يجب أن يكون بين 2 و 8" });
+    try {
+      res.json(await setJoinConfig({ slotsPerWindow: n }));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 

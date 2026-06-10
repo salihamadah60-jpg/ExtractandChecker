@@ -13,6 +13,7 @@ import { systemState }               from "./system-state.js";
 import { linksRepository }           from "./links-repository.js";
 import { classifyWAError }           from "./wa-error-handler.js";
 import { WINDOW_DURATION_MS, SLOTS_PER_WINDOW, computeSlotOffsets, shuffle } from "./human-mimicry.js";
+import { getJoinConfigSync } from "./join-config.js";
 import { isSleepTime, msUntilWakeUp } from "./sleep-scheduler.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -504,32 +505,26 @@ function _createManager(wid: string) {
           }
 
           // Open a new 10-minute window
-          const windowStart = Date.now();
-          const windowEnd   = windowStart + WINDOW_DURATION_MS;
-          const windowNum   = (s.progress?.windowNumber ?? 0) + 1;
+          const windowStart    = Date.now();
+          const windowEnd      = windowStart + WINDOW_DURATION_MS;
+          const windowNum      = (s.progress?.windowNumber ?? 0) + 1;
+          const slotsPerWindow = getJoinConfigSync().slotsPerWindow;
 
           if (s.progress) { s.progress.windowNumber = windowNum; s.progress.status = "waiting"; }
 
-          const [off0, off1, off2, off3] = computeSlotOffsets();
-          const slotTimes = [
-            windowStart + off0,
-            windowStart + off1,
-            windowStart + off2,
-            windowStart + off3,
-          ];
-          const slotNames = ["الأولى", "الثانية", "الثالثة", "الرابعة"];
+          const offsets   = computeSlotOffsets(slotsPerWindow);
+          const slotTimes = offsets.map(off => windowStart + off);
 
           console.log(
-            `[JoinManager:${wid}] 🪟 Window ${windowNum}: ` +
-            `slot0 @+${Math.round(off0 / 1000)}s, slot1 @+${Math.round(off1 / 1000)}s, ` +
-            `slot2 @+${Math.round(off2 / 1000)}s, slot3 @+${Math.round(off3 / 1000)}s — ` +
-            `queue[${queueIdx}/${queue.length}]`
+            `[JoinManager:${wid}] 🪟 Window ${windowNum} (${slotsPerWindow} slots): ` +
+            offsets.map((o, i) => `s${i}@+${Math.round(o / 1000)}s`).join(", ") +
+            ` — queue[${queueIdx}/${queue.length}]`
           );
 
           coord.setWindowActive(true);
           let windowBroken = false;
 
-          for (let slotIdx = 0; slotIdx < SLOTS_PER_WINDOW; slotIdx++) {
+          for (let slotIdx = 0; slotIdx < slotsPerWindow; slotIdx++) {
             if (queueIdx >= queue.length || s.stopRequested) break;
 
             const joinAt   = slotTimes[slotIdx];
@@ -540,7 +535,7 @@ function _createManager(wid: string) {
               if (s.progress) s.progress.nextJoinAt = new Date(joinAt).toISOString();
               const outcome = await interruptibleSleep(
                 wid, waitMs,
-                `نافذة ${windowNum} — انتظار الفتحة ${slotNames[slotIdx]}`,
+                `نافذة ${windowNum} — فتحة ${slotIdx + 1}/${slotsPerWindow}`,
                 "waiting",
                 () => new Date(joinAt).toISOString()
               );
@@ -590,7 +585,7 @@ function _createManager(wid: string) {
               const report = tel.getReport();
               tel.recordWindow({
                 windowNumber:  windowNum,
-                slotsExecuted: Math.min(SLOTS_PER_WINDOW, queueIdx),
+                slotsExecuted: Math.min(slotsPerWindow, queueIdx),
                 joined:        snap.joined,
                 failed:        snap.failed,
                 ignored:       snap.ignored,

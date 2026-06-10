@@ -39,32 +39,43 @@ export function gaussianRandomDelay(minMs: number, maxMs: number): Promise<void>
 }
 
 /**
- * Compute randomised offsets for all 4 join slots within a 10-minute window.
+ * Compute randomised offsets for N join slots within a 10-minute window.
  *
- * Each slot owns a 150-second period:
- *   Slot 0 →   0 – 150 s
- *   Slot 1 → 150 – 300 s
- *   Slot 2 → 300 – 450 s
- *   Slot 3 → 450 – 600 s
+ * Each slot owns an equal period of (WINDOW_DURATION_MS / slots).
+ * Anti-clustering safeguard: consecutive slots are kept at least
+ * MIN_SEPARATION_MS (55 s) apart.
  *
- * Anti-clustering safeguard: if two consecutive slots land within
- * MIN_SEPARATION_MS (55 s) of each other, the later slot is pushed
- * forward by enough to guarantee the safe gap.
+ * @param slots Number of joins per window (2–8, default SLOTS_PER_WINDOW)
  */
-export function computeSlotOffsets(): [number, number, number, number] {
-  const P = SLOT_PERIOD_MS; // 150 000 ms
+export function computeSlotOffsets(slots: number = SLOTS_PER_WINDOW): number[] {
+  const n = Math.max(2, Math.min(8, Math.round(slots)));
+  const P = Math.floor(WINDOW_DURATION_MS / n); // period per slot in ms
 
-  let off0 = randomInt(0,       P     - 1);
-  let off1 = randomInt(P,       2 * P - 1);
-  let off2 = randomInt(2 * P,   3 * P - 1);
-  let off3 = randomInt(3 * P,   WINDOW_DURATION_MS - 1);
+  const offsets: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const lo = i * P;
+    const hi = Math.min((i + 1) * P - 1, WINDOW_DURATION_MS - 1);
+    offsets.push(randomInt(lo, hi));
+  }
 
   // Enforce minimum separation between consecutive slots
-  if (off1 - off0 < MIN_SEPARATION_MS) off1 = Math.min(off0 + MIN_SEPARATION_MS + randomInt(0, 12_000), 2 * P - 1);
-  if (off2 - off1 < MIN_SEPARATION_MS) off2 = Math.min(off1 + MIN_SEPARATION_MS + randomInt(0, 12_000), 3 * P - 1);
-  if (off3 - off2 < MIN_SEPARATION_MS) off3 = Math.min(off2 + MIN_SEPARATION_MS + randomInt(0, 12_000), WINDOW_DURATION_MS - 1);
+  for (let i = 1; i < offsets.length; i++) {
+    if (offsets[i] - offsets[i - 1] < MIN_SEPARATION_MS) {
+      const ceiling = Math.min(((i + 1) * P) - 1, WINDOW_DURATION_MS - 1);
+      offsets[i] = Math.min(
+        offsets[i - 1] + MIN_SEPARATION_MS + randomInt(0, 12_000),
+        ceiling,
+      );
+    }
+  }
 
-  return [off0, off1, off2, off3];
+  return offsets;
+}
+
+/** @deprecated Use computeSlotOffsets() instead — kept for backward compat */
+export function computeSlotOffsets4(): [number, number, number, number] {
+  const r = computeSlotOffsets(4);
+  return [r[0], r[1], r[2], r[3]];
 }
 
 /** @deprecated Use computeSlotOffsets() instead */

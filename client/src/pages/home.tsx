@@ -216,9 +216,9 @@ function extractBulkLinks(text: string): string[] {
   return [...new Set(all.filter(Boolean))];
 }
 
-/** Human-friendly join time estimate given a link count */
-function joinTimeEstimate(count: number): { windows: number; totalMin: number; label: string } {
-  const windows = Math.ceil(count / 4);
+/** Human-friendly join time estimate given a link count and slots per window */
+function joinTimeEstimate(count: number, slots = 4): { windows: number; totalMin: number; label: string } {
+  const windows = Math.ceil(count / slots);
   const totalMin = windows * 10;
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
@@ -337,6 +337,11 @@ export default function Home() {
     queryKey: ["/api/join/progress"],
     refetchInterval: coordinatorData?.active === "joining" ? 2000 : 15000,
   });
+  const { data: joinConfigData, refetch: refetchJoinConfig } = useQuery<{ slotsPerWindow: number }>({
+    queryKey: ["/api/join/config"],
+    staleTime: 30_000,
+  });
+  const joinSlotsPerWindow = joinConfigData?.slotsPerWindow ?? 4;
   const { data: phoneStatsData, refetch: refetchPhoneStats } = useQuery<{ phones: PhoneStat[] }>({
     queryKey: ["/api/join/phone-stats"],
     refetchInterval: coordinatorData?.active === "joining" ? 5000 : 30000,
@@ -766,6 +771,16 @@ export default function Home() {
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
+  const setJoinConfigMutation = useMutation({
+    mutationFn: (slotsPerWindow: number) => apiRequest("POST", "/api/join/config", { slotsPerWindow }),
+    onSuccess: (data: any) => {
+      const n = data?.slotsPerWindow ?? "?";
+      toast({ title: `معدل الانضمام: ${n} روابط / 10 دقائق` });
+      void refetchJoinConfig();
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
   const startJoin2Mutation = useMutation({
     mutationFn: () => {
       const max = parseInt(joinMaxLinks, 10);
@@ -773,7 +788,7 @@ export default function Home() {
     },
     onSuccess: () => {
       const max = parseInt(joinMaxLinks, 10);
-      toast({ title: max > 0 ? `بدأ الانضمام التجريبي — ${max} روابط فقط` : "بدأ الانضمام — 4 روابط كل 10 دقائق" });
+      toast({ title: max > 0 ? `بدأ الانضمام التجريبي — ${max} روابط فقط` : `بدأ الانضمام — ${joinSlotsPerWindow} روابط كل 10 دقائق` });
       void refetchJoinProgress2();
     },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
@@ -1401,9 +1416,30 @@ export default function Home() {
                   {/* ── Start section (idle / done / stopped) ── */}
                   {(!joinProgress2 || joinProgress2.status === "done" || joinProgress2.status === "stopped") && (
                     <div className="space-y-2">
+                      {/* Slots per window selector */}
+                      <div>
+                        <label className="text-[10px] text-muted-foreground block mb-1">معدل الانضمام (روابط / 10 دقائق)</label>
+                        <div className="flex gap-1">
+                          {[2, 3, 4, 5, 6].map(n => (
+                            <button
+                              key={n}
+                              onClick={() => setJoinConfigMutation.mutate(n)}
+                              disabled={setJoinConfigMutation.isPending}
+                              data-testid={`button-slots-${n}`}
+                              className={`flex-1 h-7 rounded text-xs font-bold border transition-colors
+                                ${joinSlotsPerWindow === n
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "bg-background text-foreground border-border hover:border-primary/60 hover:bg-primary/5"
+                                }`}
+                            >
+                              {n}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       {/* Max links input */}
                       <div>
-                        <label className="text-[10px] text-muted-foreground block mb-1">عدد الروابط للانضمام</label>
+                        <label className="text-[10px] text-muted-foreground block mb-1">عدد الروابط للانضمام (اختياري)</label>
                         <Input
                           type="number"
                           min={1}
@@ -1415,28 +1451,29 @@ export default function Home() {
                           data-testid="input-join-max-links"
                         />
                       </div>
-                      {/* Time distribution estimator */}
-                      {joinMaxLinks && parseInt(joinMaxLinks) > 0 && (() => {
-                        const count = parseInt(joinMaxLinks);
-                        const { windows, label } = joinTimeEstimate(count);
+                      {/* Time distribution — always visible */}
+                      {(() => {
+                        const count = parseInt(joinMaxLinks) > 0 ? parseInt(joinMaxLinks) : (repoCounts?.pending ?? 0);
+                        const hasExplicit = joinMaxLinks && parseInt(joinMaxLinks) > 0;
+                        const { windows, label } = joinTimeEstimate(count, joinSlotsPerWindow);
                         return (
                           <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-1.5 text-[10px]" data-testid="join-time-estimate">
-                            <p className="font-semibold text-primary text-center text-[11px]">توزيع الوقت التقديري</p>
+                            <p className="font-semibold text-primary text-center text-[11px]">توزيع الوقت التقديري {!hasExplicit && <span className="text-muted-foreground font-normal">(كل الروابط المعلقة)</span>}</p>
                             <div className="grid grid-cols-3 gap-1 text-center">
                               <div className="bg-background rounded p-1.5 border border-border">
-                                <p className="font-bold text-sm">{count}</p>
+                                <p className="font-bold text-sm">{count > 0 ? count : "—"}</p>
                                 <p className="text-muted-foreground">رابط</p>
                               </div>
                               <div className="bg-background rounded p-1.5 border border-border">
-                                <p className="font-bold text-sm">{windows}</p>
+                                <p className="font-bold text-sm">{count > 0 ? windows : "—"}</p>
                                 <p className="text-muted-foreground">نافذة × 10د</p>
                               </div>
                               <div className="bg-background rounded p-1.5 border border-primary/30">
-                                <p className="font-bold text-sm text-primary">{label}</p>
+                                <p className="font-bold text-sm text-primary">{count > 0 ? label : "—"}</p>
                                 <p className="text-muted-foreground">إجمالي</p>
                               </div>
                             </div>
-                            <p className="text-center text-muted-foreground">4 روابط / نافذة · التوقيت عشوائي داخل كل نافذة</p>
+                            <p className="text-center text-muted-foreground">{joinSlotsPerWindow} روابط / نافذة · التوقيت عشوائي داخل كل نافذة</p>
                           </div>
                         );
                       })()}
@@ -1455,7 +1492,7 @@ export default function Home() {
                   {/* ── Rate info ── */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
                     <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                    <span>معدل آمن: 4 روابط كل 10 دقائق — نوم 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر — إيقاف/استئناف تلقائي عند انقطاع واتساب</span>
+                    <span>معدل آمن: <span className="font-semibold text-foreground">{joinSlotsPerWindow}</span> روابط كل 10 دقائق — نوم 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر — إيقاف/استئناف تلقائي عند انقطاع واتساب</span>
                   </div>
                   {/* Note about Stop vs WhatsApp connection */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-blue-50 dark:bg-blue-900/20 rounded p-2">
@@ -1757,13 +1794,13 @@ export default function Home() {
                     />
                     <Button size="sm" className="w-full h-7 text-xs gap-1"
                       onClick={() => {
-                        const urls = bulkPasteText.split("\n").map(l => l.trim()).filter(Boolean);
+                        const urls = extractBulkLinks(bulkPasteText);
                         if (urls.length) bulkPasteMutation.mutate(urls);
                       }}
-                      disabled={bulkPasteMutation.isPending || !bulkPasteText.trim()}
+                      disabled={bulkPasteMutation.isPending || extractBulkLinks(bulkPasteText).length === 0}
                       data-testid="button-bulk-paste-sidebar">
                       {bulkPasteMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <PlusCircle className="w-3 h-3" />}
-                      إضافة ({bulkPasteText.split("\n").filter(l => l.trim().includes("chat.whatsapp.com/")).length})
+                      إضافة (<span className="font-bold">{extractBulkLinks(bulkPasteText).length}</span>)
                     </Button>
                   </div>
                 </div>
