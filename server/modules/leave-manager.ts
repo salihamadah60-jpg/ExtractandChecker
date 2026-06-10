@@ -11,11 +11,12 @@ import { classifyWAError }   from "./wa-error-handler.js";
 import { DELAYS, randomInt } from "./human-mimicry.js";
 
 export interface LeaveQueueEntry {
-  workspaceId: string;
-  url:         string;
-  groupJid?:   string;
-  enqueuedAt:  Date;
-  reason?:     string;
+  workspaceId:  string;
+  url:          string;
+  groupJid?:    string;
+  enqueuedAt:   Date;
+  reason?:      string;
+  scheduledAt?: Date;
 }
 
 export interface LeaveProgress {
@@ -76,17 +77,39 @@ function _createManager(wid: string) {
       console.log(`[LeaveManager:${wid}] LeavingQueue ready`);
     },
 
-    async enqueue(url: string, reason?: string): Promise<boolean> {
+    async enqueue(url: string, reason?: string, scheduledAt?: Date): Promise<boolean> {
       const c  = await col();
       const db = await getDb();
       const rec = await db.collection("Links_Repository").findOne({ workspaceId: wid, url }) as any;
       const groupJid = rec?.groupJid ?? undefined;
       try {
-        await c.insertOne({ workspaceId: wid, url, groupJid, enqueuedAt: new Date(), reason } as LeaveQueueEntry);
+        await c.insertOne({ workspaceId: wid, url, groupJid, enqueuedAt: new Date(), reason, scheduledAt } as LeaveQueueEntry);
         return true;
       } catch {
         return false;
       }
+    },
+
+    async updateSchedule(url: string, scheduledAt: Date | null): Promise<void> {
+      const c = await col();
+      await c.updateOne(
+        { workspaceId: wid, url },
+        scheduledAt ? { $set: { scheduledAt } } : { $unset: { scheduledAt: "" } },
+      );
+    },
+
+    async leaveNow(url: string): Promise<void> {
+      if (!baileysManager.isConnectedForWorkspace(wid)) {
+        throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
+      }
+      const db  = await getDb();
+      const rec = await db.collection("Links_Repository").findOne({ workspaceId: wid, url }) as any;
+      const jid = rec?.groupJid;
+      if (!jid) throw new Error("لم يُعثر على JID للمجموعة — غير قادر على المغادرة الفورية");
+      await baileysManager.leaveGroupForWorkspace(jid, wid);
+      await linksRepository.setStatus(wid, url, "Left");
+      const c = await col();
+      await c.deleteOne({ workspaceId: wid, url });
     },
 
     async dequeue(url: string): Promise<void> {
@@ -179,6 +202,14 @@ function _createManager(wid: string) {
           }
 
           s.progress.currentLink = entry.url;
+
+          // Skip entries scheduled for the future
+          if (entry.scheduledAt && entry.scheduledAt > new Date()) {
+            console.log(`[LeaveManager:${wid}] ⏰ Skipping future-scheduled: ${entry.url} (due: ${entry.scheduledAt.toISOString()})`);
+            s.progress.processed++;
+            continue;
+          }
+
           const jid = entry.groupJid;
 
           if (!jid) {

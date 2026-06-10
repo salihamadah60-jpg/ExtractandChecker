@@ -1226,6 +1226,38 @@ class SessionsManager extends EventEmitter {
     this._trackBotSend(result?.key?.id);
   }
 
+  async sendAdMessageForWorkspace(
+    jid: string,
+    ad: { text: string; mediaData?: string; mediaType?: string; mediaCaption?: string; mediaFilename?: string },
+    workspaceId: string,
+  ): Promise<void> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+
+    let content: any;
+    if (ad.mediaData && ad.mediaType) {
+      const buf = Buffer.from(ad.mediaData, "base64");
+      const caption = ad.mediaCaption ?? ad.text ?? "";
+      if (ad.mediaType === "image") {
+        content = { image: buf, caption };
+      } else if (ad.mediaType === "video") {
+        content = { video: buf, caption };
+      } else {
+        content = {
+          document: buf,
+          fileName: ad.mediaFilename ?? "file",
+          mimetype: "application/octet-stream",
+          caption,
+        };
+      }
+    } else {
+      content = { text: ad.text };
+    }
+
+    const result = await s.sock.sendMessage(jid, content);
+    this._trackBotSend(result?.key?.id);
+  }
+
   async getGroupMetadataForWorkspace(jid: string, workspaceId: string): Promise<any | null> {
     const s = this.getActiveStateForWorkspace(workspaceId);
     if (!s?.sock) return null;

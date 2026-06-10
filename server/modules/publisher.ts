@@ -17,6 +17,10 @@ export interface AdMessage {
   _id?: string;
   workspaceId: string;
   text: string;
+  mediaData?: string;
+  mediaType?: "image" | "video" | "document";
+  mediaCaption?: string;
+  mediaFilename?: string;
   createdAt: Date;
   sentCount: number;
   lastSentAt?: Date;
@@ -116,9 +120,16 @@ function _createManager(wid: string) {
       if (s.progress && s.progress.status === "paused") s.progress.status = "running";
     },
 
-    async addAd(text: string): Promise<string> {
+    async addAd(text: string, media?: { data: string; type: "image" | "video" | "document"; caption?: string; filename?: string }): Promise<string> {
       const c = await col(wid);
-      const result = await c.insertOne({ workspaceId: wid, text, createdAt: new Date(), sentCount: 0 } as AdMessage);
+      const doc: AdMessage = { workspaceId: wid, text, createdAt: new Date(), sentCount: 0 };
+      if (media) {
+        doc.mediaData    = media.data;
+        doc.mediaType    = media.type;
+        doc.mediaCaption = media.caption;
+        doc.mediaFilename = media.filename;
+      }
+      const result = await c.insertOne(doc);
       return result.insertedId.toString();
     },
 
@@ -279,7 +290,7 @@ function _createManager(wid: string) {
           const t0 = Date.now();
           try {
             await DELAYS.typingBeforeSend();
-            await baileysManager.sendTextMessageForWorkspace(jid, ad.text, wid);
+            await baileysManager.sendAdMessageForWorkspace(jid, ad, wid);
 
             const latency = Date.now() - t0;
             tel.record(latency);

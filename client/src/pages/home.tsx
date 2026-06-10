@@ -151,8 +151,8 @@ interface TelemetryRes {
   windowHistory: WindowRecord[];
   joinProgress: JoinProgress2 | null;
 }
-interface LeaveQueueEntry { url: string; groupJid?: string; enqueuedAt: string; reason?: string; }
-interface AdMessage { _id: string; text: string; createdAt: string; sentCount: number; lastSentAt?: string; }
+interface LeaveQueueEntry { url: string; groupJid?: string; enqueuedAt: string; reason?: string; scheduledAt?: string; }
+interface AdMessage { _id: string; text: string; mediaData?: string; mediaType?: "image" | "video" | "document"; mediaCaption?: string; mediaFilename?: string; createdAt: string; sentCount: number; lastSentAt?: string; }
 interface PublishProgress {
   status: "running" | "done" | "stopped" | "paused" | "error" | "cooldown";
   total: number; processed: number; sent: number; failed: number;
@@ -272,6 +272,11 @@ export default function Home() {
     return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
   }, []);
   const [newAdText, setNewAdText] = useState("");
+  const [newAdMedia, setNewAdMedia] = useState<File | null>(null);
+  const [newAdCaption, setNewAdCaption] = useState("");
+  const adMediaRef = useRef<HTMLInputElement>(null);
+  const [showBulkPaste, setShowBulkPaste] = useState(false);
+  const [bulkPasteText, setBulkPasteText] = useState("");
   const [joinMaxLinks, setJoinMaxLinks] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
   const newRoundFileRef = useRef<HTMLInputElement>(null);
@@ -789,13 +794,48 @@ export default function Home() {
   });
 
   const addAdMutation = useMutation({
-    mutationFn: (text: string) => apiRequest("POST", "/api/publisher/ads", { text }),
-    onSuccess: () => { setNewAdText(""); void refetchPublisherAds(); toast({ title: "تمت إضافة الإعلان" }); },
+    mutationFn: async (params: { text: string; media?: File | null; caption?: string }) => {
+      const { text, media, caption } = params;
+      if (media) {
+        const fd = new FormData();
+        if (text) fd.append("text", text);
+        fd.append("media", media);
+        if (caption) fd.append("caption", caption);
+        const key = localStorage.getItem("workspace_key") ?? "";
+        const hdrs: Record<string, string> = {};
+        if (key) hdrs["X-Workspace-Key"] = key;
+        const r = await fetch("/api/publisher/ads", { method: "POST", body: fd, headers: hdrs, credentials: "include" });
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+      }
+      return apiRequest("POST", "/api/publisher/ads", { text }).then(r => r.json());
+    },
+    onSuccess: () => { setNewAdText(""); setNewAdMedia(null); setNewAdCaption(""); void refetchPublisherAds(); toast({ title: "تمت إضافة الإعلان" }); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
   const removeAdMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/publisher/ads/${id}`, {}),
     onSuccess: () => { void refetchPublisherAds(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const leaveNowMutation = useMutation({
+    mutationFn: (url: string) => apiRequest("POST", "/api/leave/leave-now", { url }),
+    onSuccess: () => { toast({ title: "تمت المغادرة الفورية" }); void refetchLeaveQueue(); },
+    onError: (err: any) => toast({ title: "خطأ في المغادرة الفورية", description: err.message, variant: "destructive" }),
+  });
+  const updateScheduleMutation = useMutation({
+    mutationFn: ({ url, scheduledAt }: { url: string; scheduledAt: string | null }) =>
+      apiRequest("PUT", "/api/leave/schedule", { url, scheduledAt }),
+    onSuccess: () => { void refetchLeaveQueue(); toast({ title: "تم حفظ الموعد المجدول" }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const bulkPasteMutation = useMutation({
+    mutationFn: (urls: string[]) => apiRequest("POST", "/api/links-repository/bulk-paste", { urls }).then(r => r.json()),
+    onSuccess: (data: any) => {
+      toast({ title: `تمت إضافة ${data.added} رابط جديد`, description: `مكرر: ${data.duplicates}، غير صالح: ${data.invalid}` });
+      setBulkPasteText("");
+      setShowBulkPaste(false);
+    },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
   const syncGroupsMutation = useMutation({
@@ -1674,6 +1714,27 @@ export default function Home() {
                       </div>
                     </div>
                   )}
+                  {/* Bulk paste inside manual upload panel */}
+                  <div className="border-t border-primary/20 pt-2 space-y-1.5">
+                    <p className="text-[10px] text-muted-foreground font-medium">أو الصق الروابط مباشرة:</p>
+                    <textarea
+                      className="w-full h-20 text-[10px] font-mono rounded border bg-background p-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                      placeholder={"https://chat.whatsapp.com/ABC123\nhttps://chat.whatsapp.com/DEF456"}
+                      value={bulkPasteText}
+                      onChange={(e) => setBulkPasteText(e.target.value)}
+                      data-testid="textarea-bulk-paste-sidebar"
+                    />
+                    <Button size="sm" className="w-full h-7 text-xs gap-1"
+                      onClick={() => {
+                        const urls = bulkPasteText.split("\n").map(l => l.trim()).filter(Boolean);
+                        if (urls.length) bulkPasteMutation.mutate(urls);
+                      }}
+                      disabled={bulkPasteMutation.isPending || !bulkPasteText.trim()}
+                      data-testid="button-bulk-paste-sidebar">
+                      {bulkPasteMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <PlusCircle className="w-3 h-3" />}
+                      إضافة ({bulkPasteText.split("\n").filter(l => l.trim().includes("chat.whatsapp.com/")).length})
+                    </Button>
+                  </div>
                 </div>
               )}
 
@@ -1827,10 +1888,20 @@ export default function Home() {
                   )}
                   {/* Ad list */}
                   {publisherAdsData && publisherAdsData.length > 0 && (
-                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                    <div className="space-y-1 max-h-44 overflow-y-auto">
                       {publisherAdsData.map((ad) => (
                         <div key={ad._id} className="flex items-start gap-1.5 bg-background rounded p-2 border text-xs">
-                          <span className="flex-1 line-clamp-2 text-muted-foreground">{ad.text}</span>
+                          <div className="flex-1 min-w-0">
+                            {ad.mediaType && (
+                              <div className="flex items-center gap-1 mb-1">
+                                <Badge variant="secondary" className="text-[9px] h-4 px-1 gap-0.5">
+                                  {ad.mediaType === "image" ? "🖼" : ad.mediaType === "video" ? "🎥" : "📄"}
+                                  {ad.mediaFilename ? ad.mediaFilename.slice(0, 18) : ad.mediaType}
+                                </Badge>
+                              </div>
+                            )}
+                            <span className="line-clamp-2 text-muted-foreground">{ad.mediaCaption ?? ad.text}</span>
+                          </div>
                           <div className="flex flex-col items-end gap-1 flex-shrink-0">
                             <Badge variant="outline" className="text-[9px] h-4 px-1">{ad.sentCount}×</Badge>
                             <Button size="sm" variant="ghost" className="h-5 w-5 p-0 hover:bg-destructive/10" onClick={() => removeAdMutation.mutate(ad._id)} disabled={removeAdMutation.isPending} data-testid={`button-remove-ad-${ad._id}`}><Trash2 className="w-3 h-3 text-destructive" /></Button>
@@ -1840,18 +1911,43 @@ export default function Home() {
                     </div>
                   )}
                   {/* Add ad */}
-                  <div className="flex gap-1.5">
-                    <Input
-                      placeholder="نص الإعلان الجديد..."
-                      value={newAdText}
-                      onChange={(e) => setNewAdText(e.target.value)}
-                      className="flex-1 h-8 text-xs"
-                      onKeyDown={(e) => { if (e.key === "Enter" && newAdText.trim()) addAdMutation.mutate(newAdText); }}
-                      data-testid="input-new-ad"
-                    />
-                    <Button size="sm" className="h-8 px-2" onClick={() => addAdMutation.mutate(newAdText)} disabled={addAdMutation.isPending || !newAdText.trim()} data-testid="button-add-ad">
-                      {addAdMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
-                    </Button>
+                  <div className="space-y-1.5">
+                    {newAdMedia && (
+                      <div className="flex items-center gap-1.5 bg-orange-50 dark:bg-orange-900/20 rounded p-1.5 border border-orange-200 dark:border-orange-800 text-xs">
+                        <span className="flex-1 truncate text-orange-700 dark:text-orange-300">
+                          {newAdMedia.type.startsWith("image/") ? "🖼" : newAdMedia.type.startsWith("video/") ? "🎥" : "📄"} {newAdMedia.name}
+                        </span>
+                        <Button size="sm" variant="ghost" className="h-5 w-5 p-0" onClick={() => setNewAdMedia(null)}><X className="w-3 h-3 text-orange-600" /></Button>
+                      </div>
+                    )}
+                    {newAdMedia && (
+                      <Input
+                        placeholder="تعليق الوسائط (اختياري)..."
+                        value={newAdCaption}
+                        onChange={(e) => setNewAdCaption(e.target.value)}
+                        className="h-8 text-xs"
+                        data-testid="input-ad-caption"
+                      />
+                    )}
+                    <div className="flex gap-1.5">
+                      <Input
+                        placeholder={newAdMedia ? "نص الإعلان (اختياري)..." : "نص الإعلان الجديد..."}
+                        value={newAdText}
+                        onChange={(e) => setNewAdText(e.target.value)}
+                        className="flex-1 h-8 text-xs"
+                        onKeyDown={(e) => { if (e.key === "Enter" && (newAdText.trim() || newAdMedia)) addAdMutation.mutate({ text: newAdText, media: newAdMedia, caption: newAdCaption }); }}
+                        data-testid="input-new-ad"
+                      />
+                      <Button size="sm" variant="outline" className="h-8 px-2 border-orange-300 text-orange-600 hover:bg-orange-50 flex-shrink-0" onClick={() => adMediaRef.current?.click()} title="إرفاق صورة/فيديو/مستند" data-testid="button-attach-media">
+                        <Plus className="w-3.5 h-3.5" />
+                      </Button>
+                      <input ref={adMediaRef} type="file" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.zip" className="hidden"
+                        onChange={(e) => { if (e.target.files?.[0]) { setNewAdMedia(e.target.files[0]); } e.target.value = ""; }}
+                        data-testid="input-ad-media-file" />
+                      <Button size="sm" className="h-8 px-2" onClick={() => addAdMutation.mutate({ text: newAdText, media: newAdMedia, caption: newAdCaption })} disabled={addAdMutation.isPending || (!newAdText.trim() && !newAdMedia)} data-testid="button-add-ad">
+                        {addAdMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
+                      </Button>
+                    </div>
                   </div>
                   {/* Sync groups from WhatsApp */}
                   <Button size="sm" variant="outline"
@@ -2037,11 +2133,32 @@ export default function Home() {
               {showLeavePanel && (
                 <div className="border border-red-200 dark:border-red-800 rounded-lg p-3 space-y-2 bg-red-50/50 dark:bg-red-900/10">
                   {leaveQueue.length > 0 ? (
-                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                    <div className="space-y-1.5 max-h-52 overflow-y-auto">
                       {leaveQueue.map((entry) => (
-                        <div key={entry.url} className="flex items-center gap-1.5 bg-background rounded p-2 border text-xs">
-                          <span className="flex-1 font-mono truncate text-muted-foreground">{entry.url}</span>
-                          <Button size="sm" variant="ghost" className="h-5 w-5 p-0 hover:bg-destructive/10 flex-shrink-0" onClick={() => dequeueLeaveMutation.mutate(entry.url)} disabled={dequeueLeaveMutation.isPending}><Trash2 className="w-3 h-3 text-destructive" /></Button>
+                        <div key={entry.url} className="bg-background rounded p-2 border text-xs space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            {entry.reason === "ad-auto-detected" && (
+                              <Badge variant="secondary" className="text-[9px] h-4 px-1 bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 flex-shrink-0">إعلان</Badge>
+                            )}
+                            <span className="flex-1 font-mono truncate text-muted-foreground">{entry.url.replace("https://chat.whatsapp.com/", "")}</span>
+                            <Button size="sm" variant="ghost" className="h-5 w-5 p-0 hover:bg-green-100 flex-shrink-0" title="مغادرة فورية" onClick={() => leaveNowMutation.mutate(entry.url)} disabled={leaveNowMutation.isPending || waStatus !== "connected"} data-testid={`button-leave-now-${entry.url}`}>
+                              <LogOut className="w-3 h-3 text-green-600" />
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-5 w-5 p-0 hover:bg-destructive/10 flex-shrink-0" onClick={() => dequeueLeaveMutation.mutate(entry.url)} disabled={dequeueLeaveMutation.isPending} data-testid={`button-dequeue-${entry.url}`}>
+                              <Trash2 className="w-3 h-3 text-destructive" />
+                            </Button>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Timer className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                            <input
+                              type="datetime-local"
+                              className="flex-1 h-6 text-[10px] bg-muted rounded px-1 border border-border text-foreground"
+                              value={entry.scheduledAt ? new Date(entry.scheduledAt).toISOString().slice(0, 16) : ""}
+                              onChange={(e) => updateScheduleMutation.mutate({ url: entry.url, scheduledAt: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                              data-testid={`input-schedule-${entry.url}`}
+                            />
+                            {entry.scheduledAt && <Badge variant="outline" className="text-[9px] h-4 px-1 border-amber-400 text-amber-600">مجدول</Badge>}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -2074,7 +2191,7 @@ export default function Home() {
                       </Button>
                     )}
                   </div>
-                  <p className="text-[10px] text-muted-foreground">تأخير 5–15 ث قبل كل مغادرة لحماية الحساب</p>
+                  <p className="text-[10px] text-muted-foreground">تأخير 5–15 ث قبل كل مغادرة · <LogOut className="w-3 h-3 inline text-green-600" /> مغادرة فورية بدون تأخير</p>
                 </div>
               )}
 
@@ -2331,6 +2448,50 @@ export default function Home() {
                 )}
               </CardContent>
             </Card>
+            {/* Bulk paste links */}
+            <Card>
+              <CardContent className="pt-4 space-y-2">
+                <button
+                  className="w-full flex items-center justify-between text-sm font-semibold hover:text-primary transition-colors"
+                  onClick={() => setShowBulkPaste(o => !o)}
+                  data-testid="button-toggle-bulk-paste"
+                >
+                  <span className="flex items-center gap-2">
+                    <Link2 className="w-4 h-4 text-primary" />
+                    لصق روابط واتساب مباشرة
+                  </span>
+                  {showBulkPaste ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                </button>
+                {showBulkPaste && (
+                  <div className="space-y-2 pt-1">
+                    <p className="text-xs text-muted-foreground">الصق روابط واتساب (رابط واحد في كل سطر) وستُضاف مباشرة إلى المستودع</p>
+                    <textarea
+                      className="w-full h-28 text-xs font-mono rounded border bg-muted/40 p-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                      placeholder={"https://chat.whatsapp.com/ABC123\nhttps://chat.whatsapp.com/DEF456\n..."}
+                      value={bulkPasteText}
+                      onChange={(e) => setBulkPasteText(e.target.value)}
+                      data-testid="textarea-bulk-paste"
+                    />
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-muted-foreground">
+                        {bulkPasteText.split("\n").filter(l => l.trim().includes("chat.whatsapp.com/")).length} رابط واتساب صالح
+                      </span>
+                      <Button size="sm" className="h-8 text-xs px-3"
+                        onClick={() => {
+                          const urls = bulkPasteText.split("\n").map(l => l.trim()).filter(Boolean);
+                          if (urls.length) bulkPasteMutation.mutate(urls);
+                        }}
+                        disabled={bulkPasteMutation.isPending || !bulkPasteText.trim()}
+                        data-testid="button-bulk-paste-submit">
+                        {bulkPasteMutation.isPending ? <Loader2 className="w-3.5 h-3.5 ml-1 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5 ml-1" />}
+                        إضافة إلى المستودع
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             <Card>
               <CardContent className="pt-4">
                 <h3 className="text-sm font-semibold mb-2">ما الذي يمكنني رفعه؟</h3>

@@ -27,6 +27,11 @@ const upload = multer({
   },
 });
 
+const mediaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+});
+
 // Groups and channels only — personal contacts, API links, and wa.me/phone are excluded
 function extractLinks(text: string, html: string) {
   const combined = text + " " + html;
@@ -1091,6 +1096,24 @@ export async function registerRoutes(
     }
   });
 
+  // ── Bulk paste: paste multiple WhatsApp links as plain text ────────────────
+  app.post("/api/links-repository/bulk-paste", async (req: any, res) => {
+    const { urls } = req.body ?? {};
+    if (!Array.isArray(urls) || !urls.length) return res.status(400).json({ error: "urls مطلوبة" });
+    const wid = req.workspaceId ?? "main";
+    let added = 0, duplicates = 0, invalid = 0;
+    const waRegex = /^https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+$/;
+    for (const raw of urls) {
+      const url = String(raw).replace(/[.,;)>\]'"»«\s]+$/, "").trim();
+      if (!waRegex.test(url)) { invalid++; continue; }
+      const wasNew = await linksRepository.addIfNew(wid, url, "Group", "manual");
+      if (wasNew) added++;
+      else duplicates++;
+    }
+    console.log(`[BulkPaste:${wid}] total: ${urls.length}, added: ${added}, dup: ${duplicates}, invalid: ${invalid}`);
+    res.json({ success: true, added, duplicates, invalid, total: urls.length });
+  });
+
   // ── Manual upload: DOCX → insert links into MongoDB directly ───────────────
   app.post("/api/links-repository/manual-upload", upload.single("file"), async (req: any, res) => {
     try {
@@ -1234,11 +1257,34 @@ export async function registerRoutes(
   });
 
   app.post("/api/leave/enqueue", async (req: any, res) => {
-    const { url, reason } = req.body ?? {};
+    const { url, reason, scheduledAt } = req.body ?? {};
     if (!url) return res.status(400).json({ error: "url مطلوب" });
     try {
-      const added = await getLeaveManagerFor(req.workspaceId ?? "main").enqueue(url, reason);
+      const lm = getLeaveManagerFor(req.workspaceId ?? "main");
+      const added = await lm.enqueue(url, reason, scheduledAt ? new Date(scheduledAt) : undefined);
       res.json({ success: true, added });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/leave/schedule", async (req: any, res) => {
+    const { url, scheduledAt } = req.body ?? {};
+    if (!url) return res.status(400).json({ error: "url مطلوب" });
+    try {
+      await getLeaveManagerFor(req.workspaceId ?? "main").updateSchedule(url, scheduledAt ? new Date(scheduledAt) : null);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/leave/leave-now", async (req: any, res) => {
+    const { url } = req.body ?? {};
+    if (!url) return res.status(400).json({ error: "url مطلوب" });
+    try {
+      await getLeaveManagerFor(req.workspaceId ?? "main").leaveNow(url);
+      res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1283,11 +1329,26 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/publisher/ads", async (req: any, res) => {
-    const { text } = req.body ?? {};
-    if (!text?.trim()) return res.status(400).json({ error: "نص الإعلان مطلوب" });
+  app.post("/api/publisher/ads", mediaUpload.single("media"), async (req: any, res) => {
+    const text = (req.body?.text ?? "").trim();
+    if (!text && !req.file) return res.status(400).json({ error: "نص الإعلان أو وسائط مطلوبة" });
     try {
-      const id = await getPublisherFor(req.workspaceId ?? "main").addAd(text.trim());
+      let media: { data: string; type: "image" | "video" | "document"; caption?: string; filename?: string } | undefined;
+      if (req.file) {
+        const mime = req.file.mimetype ?? "";
+        const mediaType: "image" | "video" | "document" = mime.startsWith("image/")
+          ? "image"
+          : mime.startsWith("video/")
+          ? "video"
+          : "document";
+        media = {
+          data:     req.file.buffer.toString("base64"),
+          type:     mediaType,
+          caption:  (req.body?.caption ?? text) || undefined,
+          filename: req.file.originalname,
+        };
+      }
+      const id = await getPublisherFor(req.workspaceId ?? "main").addAd(text, media);
       res.json({ success: true, id });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
