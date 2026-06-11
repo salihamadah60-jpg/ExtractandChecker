@@ -223,7 +223,7 @@ export default function Dashboard() {
                   <Card key={s} className={`${cfg.bg} border-0`}>
                     <CardContent className="p-4 text-center">
                       <div className={`flex justify-center mb-1 ${cfg.color}`}>{cfg.icon}</div>
-                      <p className={`text-2xl font-bold ${cfg.color}`}>{data.byStatus[s].toLocaleString()}</p>
+                      <p className={`text-2xl font-bold ${cfg.color}`}>{(data.byStatus[s] ?? 0).toLocaleString()}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">{cfg.label}</p>
                     </CardContent>
                   </Card>

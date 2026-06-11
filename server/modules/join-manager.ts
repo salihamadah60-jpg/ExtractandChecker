@@ -14,6 +14,8 @@ import { linksRepository }           from "./links-repository.js";
 import { classifyWAError }           from "./wa-error-handler.js";
 import { WINDOW_DURATION_MS, SLOTS_PER_WINDOW, computeSlotOffsets, shuffle } from "./human-mimicry.js";
 import { getJoinConfigSync } from "./join-config.js";
+import { isAdOnlyMedicalGroup }     from "../link-store.js";
+import { getLeaveManagerFor }       from "./leave-manager.js";
 import { isSleepTime, msUntilWakeUp } from "./sleep-scheduler.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -129,7 +131,7 @@ async function joinOne(
   consecutiveFailures: number,
   currentPhone?: string,
   retryCount = 0
-): Promise<{ result: "joined" | "ignored" | "failed" | "stop_all" | "stop_join"; waitMs?: number }> {
+): Promise<{ result: "joined" | "ignored" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean }> {
   const s   = _st(wid);
   const tel = getTelemetryFor(wid);
 
@@ -190,6 +192,7 @@ async function joinOne(
     tel.record(latency);
 
     // Check if group requires admin approval — bot must appear in participants, not pendingParticipants
+    let capturedMeta: any = null;
     if (groupJid) {
       try {
         // Wait briefly so WhatsApp has time to update group state after the join request
@@ -202,6 +205,7 @@ async function joinOne(
           await new Promise((r) => setTimeout(r, 2000));
           meta = await baileysManager.getGroupMetadataForWorkspace(groupJid, wid);
         }
+        capturedMeta = meta;
 
         const botJid = baileysManager.getActiveStateForWorkspace(wid)?.sock?.user?.id;
         const botId  = botJid ? botJid.split(":")[0] + "@s.whatsapp.net" : null;
@@ -250,8 +254,21 @@ async function joinOne(
       const c  = (await db).collection("Links_Repository");
       await c.updateOne({ workspaceId: wid, url: record.url }, { $set: { groupJid, updatedAt: new Date() } });
     }
-    console.log(`[JoinManager:${wid}] ✓ Joined (${latency}ms) [${currentPhone ?? "?"}]: ${record.url}`);
-    return { result: "joined" };
+
+    // Ad-group detection: add to leave queue if the group is ad-only
+    let isAdDetected = false;
+    if (capturedMeta && isAdOnlyMedicalGroup(capturedMeta.subject ?? "", capturedMeta.desc ?? "")) {
+      isAdDetected = true;
+      try {
+        await getLeaveManagerFor(wid).enqueue(record.url, "اكتشاف تلقائي — مجموعة إعلانية");
+        console.log(`[JoinManager:${wid}] 📤 مجموعة إعلانية → قائمة المغادرة: ${record.url}`);
+      } catch (e) {
+        console.warn(`[JoinManager:${wid}] ⚠ تعذّر إضافة الإعلانات لقائمة المغادرة:`, (e as Error).message);
+      }
+    }
+
+    console.log(`[JoinManager:${wid}] ✓ Joined${isAdDetected ? " [إعلانات]" : ""} (${latency}ms) [${currentPhone ?? "?"}]: ${record.url}`);
+    return { result: "joined", isAd: isAdDetected };
 
   } catch (err: unknown) {
     const latency    = Date.now() - t0;
@@ -288,14 +305,14 @@ async function joinOne(
 
       case "wait_and_retry": {
         // Rate-limited — keep the link as Pending so it is retried in the next session run.
-        // Do NOT mark as Ignored — that would permanently exclude the link.
+        // Return "network_failed" so the outer loop does NOT count this as a consecutive failure.
         tel.record(latency);
         const waitMs = classified.waitMs ?? 60_000;
         console.warn(
           `[JoinManager:${wid}] ⏳ Rate-limit hit — keeping as Pending for next run (backoff ${Math.round(waitMs / 1000)}s): ${record.url}`
         );
         s.joiningCache.delete(inviteCode);
-        return { result: "failed" };
+        return { result: "network_failed" };
       }
 
       case "retry": {
@@ -305,11 +322,24 @@ async function joinOne(
           console.warn(`[JoinManager:${wid}] ⚠ Network hiccup (attempt ${retryCount + 1}/${MAX_NET_RETRIES}) — waiting ${delayMs / 1000}s: ${record.url}`);
           s.joiningCache.delete(inviteCode);
           await new Promise((r) => setTimeout(r, delayMs));
-          if (s.stopRequested) return { result: "failed" };
+          if (s.stopRequested) return { result: "network_failed" };
+          // If WA disconnected, wait up to 60 s for reconnect before retrying
+          if (!baileysManager.isConnectedForWorkspace(wid)) {
+            console.log(`[JoinManager:${wid}] ⏳ WA disconnected — polling for reconnect (max 60s)…`);
+            let waited = 0;
+            while (!baileysManager.isConnectedForWorkspace(wid) && waited < 60_000 && !s.stopRequested) {
+              await new Promise(r => setTimeout(r, 2_000));
+              waited += 2_000;
+            }
+            if (!baileysManager.isConnectedForWorkspace(wid)) {
+              console.warn(`[JoinManager:${wid}] ⚠ WA still disconnected — deferring link: ${record.url}`);
+              return { result: "network_failed" };
+            }
+          }
           return joinOne(wid, record, consecutiveFailures, currentPhone, retryCount + 1);
         }
         console.warn(`[JoinManager:${wid}] ⚠ Network error — ${MAX_NET_RETRIES} retries exhausted, leaving Pending: ${record.url}`);
-        return { result: "failed" };
+        return { result: "network_failed" };
       }
 
       default:
@@ -567,9 +597,10 @@ function _createManager(wid: string) {
               break;
             }
 
-            if (r.result === "joined")       { consecutiveFailures = 0; if (s.progress) s.progress.joined++; }
-            else if (r.result === "ignored") { if (s.progress) s.progress.ignored++; }
-            else                             { consecutiveFailures++; if (s.progress) s.progress.failed++; }
+            if (r.result === "joined")             { consecutiveFailures = 0; if (s.progress) { s.progress.joined++; if (r.isAd) s.progress.skipped_ads++; } }
+            else if (r.result === "ignored")        { if (s.progress) s.progress.ignored++; }
+            else if (r.result === "network_failed") { if (s.progress) s.progress.failed++; /* no consecutiveFailures++ — network issue, not account */ }
+            else                                    { consecutiveFailures++; if (s.progress) s.progress.failed++; }
 
             queueIdx++;
             if (s.progress) { s.progress.processed++; s.progress.currentLink = undefined; }
