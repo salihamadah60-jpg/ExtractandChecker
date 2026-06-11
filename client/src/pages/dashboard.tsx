@@ -21,9 +21,11 @@ interface DashboardStats {
   total: number;
   todayCount: number;
   readerStats: {
-    status: string; continuous: boolean; messagesReceived: number; messagesSkippedAds: number;
+    status: string; continuous: boolean; messagesReceived: number; messagesFromAds: number;
     linksFound: number; linksNew: number; pipelineRuns?: number; startedAt: string;
     lastMessageId?: string; pausedAt?: string;
+    lastPipelineAt?: string; lastPipelineChecked?: number;
+    lastPipelineGroups?: number; lastPipelineAds?: number;
   } | null;
   joinProgress: {
     status: string; total: number; processed: number;
@@ -318,14 +320,38 @@ export default function Dashboard() {
                           <p className="text-xs text-muted-foreground">روابط جديدة</p>
                         </div>
                         <div className="bg-muted/50 rounded-lg p-2.5">
-                          <p className="text-lg font-bold text-muted-foreground">{data.readerStats.messagesSkippedAds.toLocaleString()}</p>
-                          <p className="text-xs text-muted-foreground">إعلانات تجاهل</p>
+                          <p className="text-lg font-bold text-orange-500">{(data.readerStats.messagesFromAds ?? 0).toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground">رسائل إعلانية</p>
                         </div>
                         <div className="bg-muted/50 rounded-lg p-2.5">
                           <p className="text-lg font-bold text-primary">{data.readerStats.pipelineRuns ?? 0}</p>
                           <p className="text-xs text-muted-foreground">تشغيل pipeline</p>
                         </div>
                       </div>
+                      {/* Last pipeline run results */}
+                      {data.readerStats.lastPipelineAt && (
+                        <div className="border border-primary/20 rounded-lg p-2.5 bg-primary/5 space-y-1.5">
+                          <p className="text-xs font-medium text-primary flex items-center gap-1.5">
+                            <Activity className="w-3 h-3" />
+                            آخر تشغيل pipeline — {new Date(data.readerStats.lastPipelineAt).toLocaleTimeString("ar")}
+                          </p>
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                            <div>
+                              <p className="text-sm font-bold">{data.readerStats.lastPipelineChecked ?? 0}</p>
+                              <p className="text-[10px] text-muted-foreground">فُحص</p>
+                            </div>
+                            <div>
+                              <p className="text-sm font-bold text-green-600">{data.readerStats.lastPipelineGroups ?? 0}</p>
+                              <p className="text-[10px] text-muted-foreground">مجموعات</p>
+                            </div>
+                            <div>
+                              <p className="text-sm font-bold text-orange-500">{data.readerStats.lastPipelineAds ?? 0}</p>
+                              <p className="text-[10px] text-muted-foreground">إعلانات تجاهل</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Checkpoint display */}
                       {data.readerStats.lastMessageId && (
                         <div className="flex items-center gap-2 text-xs bg-primary/5 border border-primary/20 rounded-lg px-3 py-2">

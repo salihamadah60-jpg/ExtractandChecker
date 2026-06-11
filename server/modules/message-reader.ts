@@ -30,6 +30,11 @@ export interface ReaderStats {
   pipelineRuns?:        number;
   pipelineSkipped?:     number;
   bufferSize?:          number;
+  // ── Last pipeline run results ───────────────────────────────────────────────
+  lastPipelineAt?:      string;
+  lastPipelineChecked?: number;
+  lastPipelineGroups?:  number;
+  lastPipelineAds?:     number;
   // ── Cumulative totals (loaded from MongoDB, survive restarts) ────────────────
   totalMessages:        number;
   totalLinksFound:      number;
@@ -49,6 +54,8 @@ const FLUSH_EVERY = 50; // flush delta to MongoDB every N messages
 
 interface BufferDelta { messages: number; linksFound: number; linksNew: number; }
 
+interface AdGroupStats { ads: number; total: number; enqueued: boolean; }
+
 interface WState {
   stats:              ReaderStats | null;
   running:            boolean;
@@ -60,6 +67,7 @@ interface WState {
   lastPipelineRun:    number;
   handlerErrors:      number;
   pendingDelta:       BufferDelta;  // unflushed increment waiting to be written to MongoDB
+  adRatioByGroup:     Map<string, AdGroupStats>; // tracks ad-message ratio per group JID
 }
 
 const _stateByWid = new Map<string, WState>();
@@ -77,6 +85,7 @@ function _st(wid: string): WState {
       lastPipelineRun: 0,
       handlerErrors:   0,
       pendingDelta:    { messages: 0, linksFound: 0, linksNew: 0 },
+      adRatioByGroup:  new Map(),
     });
   }
   return _stateByWid.get(wid)!;
@@ -210,33 +219,18 @@ async function _runPipeline(wid: string): Promise<void> {
       })
       .map((r) => ({ link: _cleanLink(r.url), name: r.name, members: r.members, description: r.description }));
 
-    // 4. Save + trigger join + auto-enqueue ads for leaving
-    if (groups.length + ads.length > 0) {
-      await linksRepository.saveFilteredLinks(wid, groups, ads);
-      console.log(`[Pipeline:${wid}] Saved ${groups.length} groups + ${ads.length} ads`);
+    // 4. Save GROUPS only — ad-source links are intentionally discarded to prevent DB pollution.
+    //    Per-group ad detection (for the leave queue) happens live in _handleMessage.
+    if (s.stats) {
+      s.stats.lastPipelineAt      = new Date().toISOString();
+      s.stats.lastPipelineChecked = linksToCheck.length;
+      s.stats.lastPipelineGroups  = groups.length;
+      s.stats.lastPipelineAds     = ads.length;
+    }
 
-      // Auto-enqueue ads into the leave queue
-      if (ads.length > 0) {
-        try {
-          const { getLeaveManagerFor } = await import("./leave-manager.js");
-          const lm = getLeaveManagerFor(wid);
-          let enqueued = 0;
-          for (const ad of ads) {
-            const added = await lm.enqueue(ad.link, "ad-auto-detected");
-            if (added) enqueued++;
-          }
-          if (enqueued > 0) {
-            console.log(`[Pipeline:${wid}] Auto-enqueued ${enqueued} ad groups for leaving`);
-            if (!coord.isRunning()) {
-              lm.processQueue().catch((err: Error) =>
-                console.warn(`[Pipeline:${wid}] Leave deferred:`, err.message)
-              );
-            }
-          }
-        } catch (err) {
-          console.warn(`[Pipeline:${wid}] Leave enqueue skip:`, (err as Error).message);
-        }
-      }
+    if (groups.length > 0) {
+      await linksRepository.saveFilteredLinks(wid, groups, []);
+      console.log(`[Pipeline:${wid}] ✓ ${groups.length} groups saved | ${ads.length} ad-links discarded (not polluting DB)`);
 
       if (!coord.isRunning()) {
         try {
@@ -249,7 +243,7 @@ async function _runPipeline(wid: string): Promise<void> {
         }
       }
     } else {
-      console.log(`[Pipeline:${wid}] No valid groups — skipping join`);
+      console.log(`[Pipeline:${wid}] No valid groups — ${ads.length} ad-links discarded, skipping join`);
     }
 
     if (s.stats) s.stats.pipelineRuns = (s.stats.pipelineRuns ?? 0) + 1;
@@ -353,6 +347,7 @@ function _createManager(wid: string) {
       s.running         = true;
       s.paused          = false;
       s.pipelineBuffer  = new Map();
+      s.adRatioByGroup  = new Map();
       s.handlerErrors   = 0;
       s.pendingDelta    = { messages: 0, linksFound: 0, linksNew: 0 };
 
@@ -468,6 +463,38 @@ function _createManager(wid: string) {
         // Track ad messages (don't skip — extract links and flag them as ad-source)
         if (cls.isAd) {
           if (s.stats) s.stats.messagesFromAds++;
+        }
+
+        // Per-group ad-ratio tracking: detect groups we are IN that are mostly ads
+        // and auto-enqueue them in the leave queue when ratio exceeds threshold.
+        {
+          const grpStats = s.adRatioByGroup.get(jid) ?? { ads: 0, total: 0, enqueued: false };
+          grpStats.total++;
+          if (cls.isAd) grpStats.ads++;
+          s.adRatioByGroup.set(jid, grpStats);
+
+          if (!grpStats.enqueued && grpStats.total >= 10 && grpStats.ads / grpStats.total > 0.7) {
+            grpStats.enqueued = true; // prevent duplicate enqueues
+            (async () => {
+              try {
+                const { getLeaveManagerFor } = await import("./leave-manager.js");
+                const db  = await (await import("../mongo-auth-state.js")).getDb();
+                const rec = await db.collection("Links_Repository").findOne(
+                  { workspaceId: wid, groupJid: jid }
+                ) as any;
+                if (rec?.url) {
+                  const ratio = Math.round(grpStats.ads / grpStats.total * 100);
+                  await getLeaveManagerFor(wid).enqueue(
+                    rec.url,
+                    `اكتشاف تلقائي — مجموعة إعلانية (${ratio}% من رسائلها إعلانات)`
+                  );
+                  console.log(`[MessageReader:${wid}] 📤 مجموعة إعلانية → قائمة المغادرة (${jid.split("@")[0].slice(-6)})`);
+                }
+              } catch (e) {
+                console.warn(`[MessageReader:${wid}] Ad-group enqueue skip:`, (e as Error).message);
+              }
+            })();
+          }
         }
 
         const allLinks = [...embeddedLinks.whatsapp];
