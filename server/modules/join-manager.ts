@@ -54,6 +54,8 @@ interface WState {
   pauseRequested: boolean;
   autoPaused:     boolean;
   joiningCache:   Set<string>;
+  /** True while start() is executing — prevents concurrent invocations */
+  running:        boolean;
 }
 
 const _stateByWid = new Map<string, WState>();
@@ -66,6 +68,7 @@ function _st(wid: string): WState {
       pauseRequested: false,
       autoPaused:     false,
       joiningCache:   new Set(),
+      running:        false,
     });
   }
   return _stateByWid.get(wid)!;
@@ -329,49 +332,72 @@ async function joinOne(
           return { result: "ignored" };
         }
 
+      case "pending_approval": {
+        // 406 not-acceptable: WhatsApp confirmed the invite code is valid but a
+        // join request from this account is ALREADY PENDING admin approval.
+        // Do NOT retry — just mark as PendingApproval and move on.
+        // The group-participants.update watcher will flip it to Joined when approved.
+        await linksRepository.setStatus(wid, record.url, "Ignored");
+        try {
+          const _paDb = await (await import("../mongo-auth-state.js")).getDb();
+          await _paDb.collection("Links_Repository").updateOne(
+            { workspaceId: wid, url: record.url },
+            { $set: {
+                pendingAdminApproval: true,
+                pendingApprovalSince: new Date(),
+                updatedAt:            new Date(),
+            }}
+          );
+        } catch { /* non-fatal */ }
+        console.log(`[JoinManager:${wid}] ⏳ طلب انضمام مُرسَل مسبقاً — ينتظر موافقة المشرف: ${record.url}`);
+        s.joiningCache.delete(inviteCode);
+        return { result: "pending_approval" };
+      }
+
       case "wait_and_retry": {
-        // Rate-limited — keep the link as Pending so it is retried in the next session run.
-        // Return "network_failed" so the outer loop does NOT count this as a consecutive failure.
+        // Rate-limited — keep the link as Pending so it is retried in the next session.
+        // Return "network_failed" so consecutiveFailures is NOT incremented.
         tel.record(latency);
         const waitMs = classified.waitMs ?? 60_000;
         console.warn(
-          `[JoinManager:${wid}] ⏳ Rate-limit hit — keeping as Pending for next run (backoff ${Math.round(waitMs / 1000)}s): ${record.url}`
+          `[JoinManager:${wid}] ⏳ حد المعدل — الرابط يبقى معلقاً للجلسة التالية (backoff ${Math.round(waitMs / 1000)}s): ${record.url}`
         );
         s.joiningCache.delete(inviteCode);
         return { result: "network_failed" };
       }
 
       case "retry": {
+        // True OS/TCP network error — safe to retry up to 3 times.
+        // These are the ONLY errors that warrant "Network hiccup" messaging.
         const MAX_NET_RETRIES = 3;
         if (retryCount < MAX_NET_RETRIES) {
           const delayMs = Math.min(15_000 * (retryCount + 1), 60_000);
-          console.warn(`[JoinManager:${wid}] ⚠ Network hiccup (attempt ${retryCount + 1}/${MAX_NET_RETRIES}) — waiting ${delayMs / 1000}s: ${record.url}`);
+          console.warn(
+            `[JoinManager:${wid}] 🔌 خطأ شبكي حقيقي (محاولة ${retryCount + 1}/${MAX_NET_RETRIES}) — انتظار ${delayMs / 1000}ث: ${record.url}`
+          );
           s.joiningCache.delete(inviteCode);
           await new Promise((r) => setTimeout(r, delayMs));
           if (s.stopRequested) return { result: "network_failed" };
-          // If WA disconnected, wait up to 60 s for reconnect before retrying
           if (!baileysManager.isConnectedForWorkspace(wid)) {
-            console.log(`[JoinManager:${wid}] ⏳ WA disconnected — polling for reconnect (max 60s)…`);
+            console.log(`[JoinManager:${wid}] ⏳ واتساب منقطع — انتظار إعادة الاتصال (max 60s)…`);
             let waited = 0;
             while (!baileysManager.isConnectedForWorkspace(wid) && waited < 60_000 && !s.stopRequested) {
               await new Promise(r => setTimeout(r, 2_000));
               waited += 2_000;
             }
             if (!baileysManager.isConnectedForWorkspace(wid)) {
-              console.warn(`[JoinManager:${wid}] ⚠ WA still disconnected — deferring link: ${record.url}`);
+              console.warn(`[JoinManager:${wid}] ⚠ واتساب لا يزال منقطعاً — تأجيل الرابط: ${record.url}`);
               return { result: "network_failed" };
             }
           }
           return joinOne(wid, record, consecutiveFailures, currentPhone, retryCount + 1);
         }
-        console.warn(`[JoinManager:${wid}] ⚠ Network error — ${MAX_NET_RETRIES} retries exhausted, leaving Pending: ${record.url}`);
+        console.warn(`[JoinManager:${wid}] ✗ فشل الاتصال بعد ${MAX_NET_RETRIES} محاولات — الرابط يبقى معلقاً: ${record.url}`);
         return { result: "network_failed" };
       }
 
       default:
         // "skip" action = confirmed dead link (revoked / expired / group deleted).
-        // Mark Ignored and return "ignored" — NOT "failed", so consecutiveFailures
-        // is not inflated by dead links.
         await linksRepository.setStatus(wid, record.url, "Ignored");
         console.warn(`[JoinManager:${wid}] ✗ رابط منتهٍ: ${classified.reason} | ${record.url}`);
         return { result: "ignored" };
@@ -460,17 +486,29 @@ function _createManager(wid: string) {
       const coord = getCoordinatorFor(wid);
       const tel   = getTelemetryFor(wid);
 
+      // ── Guard: prevent concurrent invocations ──────────────────────────────
+      // This is the PRIMARY protection against duplicate concurrent runs.
+      // The coordinator lock alone is not sufficient because acquire() is async
+      // and a race window exists between the running check and the actual lock.
+      const s = _st(wid);
+      if (s.running) {
+        console.warn(`[JoinManager:${wid}] ⚠ start() ignored — session already running`);
+        return;
+      }
+      s.running = true;
+
       if (!baileysManager.isConnectedForWorkspace(wid)) {
+        s.running = false;
         throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
       }
 
       const acquired = await coord.acquire("joining");
       if (!acquired) {
+        s.running = false;
         const active = coord.getActive();
         throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً. يُرجى الانتظار.`);
       }
 
-      const s = _st(wid);
       s.stopRequested  = false;
       s.pauseRequested = false;
       tel.reset();
@@ -651,7 +689,8 @@ function _createManager(wid: string) {
             await systemState.setExtra(wid, { joinProgress: s.progress }).catch(() => {});
           }
 
-          coord.setWindowActive(false);
+          // Note: coord.setWindowActive(false) is called in the finally block — NOT here.
+          // Calling it here AND in finally caused duplicate "Join window CLOSED" log lines.
 
           {
             const snap = s.progress;
@@ -705,6 +744,7 @@ function _createManager(wid: string) {
         );
 
       } finally {
+        s.running = false;
         coord.setWindowActive(false);
         coord.release();
         await systemState.setActiveFunction(wid, null).catch(() => {});

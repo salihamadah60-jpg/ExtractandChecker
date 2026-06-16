@@ -59,6 +59,8 @@ interface AdGroupStats { ads: number; total: number; enqueued: boolean; }
 interface WState {
   stats:              ReaderStats | null;
   running:            boolean;
+  /** True between the `if (s.running) return` check and s.running=true — closes the async race window */
+  starting:           boolean;
   paused:             boolean;
   shouldBeRunning:    boolean;
   pipelineBuffer:     Map<string, BufferEntry>;  // url → entry (non-ad wins)
@@ -75,17 +77,18 @@ const _stateByWid = new Map<string, WState>();
 function _st(wid: string): WState {
   if (!_stateByWid.has(wid)) {
     _stateByWid.set(wid, {
-      stats:           null,
-      running:         false,
-      paused:          false,
-      shouldBeRunning: false,
-      pipelineBuffer:  new Map(),
-      pipelineLock:    false,
+      stats:            null,
+      running:          false,
+      starting:         false,
+      paused:           false,
+      shouldBeRunning:  false,
+      pipelineBuffer:   new Map(),
+      pipelineLock:     false,
       pipelineDebounce: null,
-      lastPipelineRun: 0,
-      handlerErrors:   0,
-      pendingDelta:    { messages: 0, linksFound: 0, linksNew: 0 },
-      adRatioByGroup:  new Map(),
+      lastPipelineRun:  0,
+      handlerErrors:    0,
+      pendingDelta:     { messages: 0, linksFound: 0, linksNew: 0 },
+      adRatioByGroup:   new Map(),
     });
   }
   return _stateByWid.get(wid)!;
@@ -298,10 +301,10 @@ function _createManager(wid: string) {
     // Auto-resume after any other function finishes
     coord.on("released", () => {
       const s = _st(wid);
-      if (!s.shouldBeRunning || s.running || s.pipelineLock) return;
+      if (!s.shouldBeRunning || s.running || s.starting || s.pipelineLock) return;
       setTimeout(async () => {
         const s2 = _st(wid);
-        if (!s2.shouldBeRunning || s2.running || s2.pipelineLock) return;
+        if (!s2.shouldBeRunning || s2.running || s2.starting || s2.pipelineLock) return;
         if (!baileysManager.isConnectedForWorkspace(wid)) return;
         try {
           await getMessageReaderFor(wid).start();
@@ -334,21 +337,28 @@ function _createManager(wid: string) {
 
     async start(): Promise<void> {
       const s = _st(wid);
-      if (s.running) return;
+      // Close the async race window: check both running AND starting flags.
+      // Without `starting`, two concurrent calls both pass `if (s.running)` before
+      // either sets it to true, causing two handlers to be registered simultaneously.
+      if (s.running || s.starting) return;
+      s.starting = true;
 
       if (!baileysManager.isConnectedForWorkspace(wid)) {
+        s.starting = false;
         throw new Error("واتساب غير متصل. يُرجى الاتصال أولاً.");
       }
 
-      const coord   = getCoordinatorFor(wid);
+      const coord    = getCoordinatorFor(wid);
       const acquired = await coord.acquire("reading");
       if (!acquired) {
+        s.starting = false;
         const active = coord.getActive();
         throw new Error(`لا يمكن البدء — وظيفة "${active}" تعمل حالياً.`);
       }
 
       s.shouldBeRunning = true;
       s.running         = true;
+      s.starting        = false;  // fully started — release the race-window lock
       s.paused          = false;
       s.pipelineBuffer  = new Map();
       s.adRatioByGroup  = new Map();

@@ -1,23 +1,42 @@
 /**
  * wa-error-handler.ts — Comprehensive WhatsApp error classification
  *
- * Every Baileys error goes through here. Returns an action and explanation.
- * This is the SINGLE place where we decide how to react to any WA error.
+ * Every Baileys groupAcceptInvite error goes through here.
+ * Returns an action and explanation.
+ *
+ * Real Baileys / WhatsApp stanza error codes (Boom wrappers):
+ *   400 bad-request       — invalid / malformed invite code
+ *   401 not-authorized    — account kicked/banned from this specific group
+ *   403 forbidden         — group full, admin-restricted, or link revoked
+ *   404 item-not-found    — group or invite does not exist
+ *   405 not-allowed       — action not permitted (group locked, etc.)
+ *   406 not-acceptable    — join request ALREADY SENT and awaiting admin approval
+ *   408 timeout           — request timed out (transient)
+ *   409 conflict          — account is already a member
+ *   410 gone              — group deleted or link permanently expired
+ *   421 resource-limit    — WhatsApp is blocking joining specifically
+ *   429 rate-overlimit    — too many requests in a short window
+ *   500/503               — WhatsApp server error (transient)
  *
  * Actions:
- *   skip           — This link is dead/revoked. Mark Ignored and continue.
- *   already_member — We're already in this group. Mark Joined and continue.
- *   community      — This is a community invite, not a plain group. Handle separately.
- *   wait_and_retry — Rate-limited. Wait backoff ms then retry same link.
- *   retry          — Transient error. Retry after short delay (max 3 times).
- *   stop_join      — WhatsApp blocked join action. Stop joining, wait long.
- *   stop_all       — ACCOUNT UNDER THREAT. Halt ALL functions immediately.
+ *   skip                    — Dead/revoked link. Mark Ignored and move on.
+ *   already_member          — Already in the group. Mark Joined and move on.
+ *   pending_approval        — Join REQUEST already submitted; awaiting admin.
+ *                             Mark PendingApproval and do NOT retry — the
+ *                             group-participants.update watcher handles approval.
+ *   community               — Community invite, not a plain group.
+ *   wait_and_retry          — Rate-limited. Back off then retry same link.
+ *   retry                   — True transient/network error. Up to 3 retries.
+ *   stop_join               — WA blocking joins specifically. Pause joining.
+ *   stop_all                — ACCOUNT UNDER THREAT. Halt ALL functions now.
+ *   kicked                  — Account removed/banned from this group; link valid.
  */
 
 export type WAErrorAction =
   | "skip"
-  | "kicked"         // account was removed/banned from this specific group; link is still valid
+  | "kicked"
   | "already_member"
+  | "pending_approval"
   | "community"
   | "wait_and_retry"
   | "retry"
@@ -25,60 +44,85 @@ export type WAErrorAction =
   | "stop_all";
 
 export interface WAErrorResult {
-  action: WAErrorAction;
-  reason: string;
-  waitMs?: number;   // for wait_and_retry
-  critical: boolean; // true = log prominently + notify UI
+  action:   WAErrorAction;
+  reason:   string;
+  waitMs?:  number;
+  critical: boolean;
 }
 
-// ── Patterns that map message → action ────────────────────────────────────────
+// ── Pattern tables ─────────────────────────────────────────────────────────────
 
 /**
- * Low-level network errors — transient, safe to retry after a delay.
- * These should NEVER mark a link as Ignored/Skip.
+ * True low-level OS/network errors — the WhatsApp server was never reached.
+ * These are the ONLY errors that justify a "Network hiccup" retry message.
+ * Must NOT be confused with WhatsApp application-level errors.
  */
 const NETWORK_ERROR_PATTERNS: RegExp[] = [
-  /ETIMEDOUT/,   /ECONNRESET/,   /ECONNREFUSED/,
-  /ENOTFOUND/,   /ENETUNREACH/,  /EHOSTUNREACH/,
-  /ECONNABORTED/,/ENETDOWN/,     /EPIPE/,
+  /ETIMEDOUT/,     /ECONNRESET/,   /ECONNREFUSED/,
+  /ENOTFOUND/,     /ENETUNREACH/,  /EHOSTUNREACH/,
+  /ECONNABORTED/,  /ENETDOWN/,     /EPIPE/,
   /socket hang up/i,
-  /network.*error/i,
   /connection.*reset/i,
   /connection.*refused/i,
   /getaddrinfo ENOTFOUND/i,
   /connect ETIMEDOUT/i,
   /read ECONNRESET/i,
   /write ECONNRESET/i,
-  /network timeout/i,
-  /request timeout/i,
   /socket closed/i,
   /websocket.*close/i,
 ];
 
-// "not-authorized" = the account was kicked/banned from this specific group.
-// The invite link is still valid — treat separately, NOT as a dead link.
+/**
+ * 406 not-acceptable — WhatsApp confirmed the invite code is valid but a
+ * join REQUEST for this account is ALREADY PENDING admin approval.
+ * Retrying is pointless and will just spam the group admin.
+ */
+const PENDING_APPROVAL_PATTERNS: RegExp[] = [
+  /not-acceptable/i,
+  /not_acceptable/i,
+  /request.*pending/i,
+  /already.*pending/i,
+  /pending.*approval/i,
+  /waiting.*approval/i,
+  /approval.*required/i,
+];
+
+/**
+ * 401 / not-authorized — account was kicked or banned from THIS group.
+ * The invite link is still valid. Mark kickedFromGroup, not Ignored.
+ */
 const KICKED_PATTERNS: RegExp[] = [
   /not-authorized/i,
   /not authorized/i,
   /not_authorized/i,
 ];
 
+/**
+ * Dead, revoked, or permanently invalid links.
+ * 400 bad-request, 403 forbidden (when link revoked), 404 item-not-found,
+ * 405 not-allowed, 410 gone.
+ */
 const SKIP_PATTERNS: RegExp[] = [
   /item-not-found/i,
   /not-found/i,
   /gone/i,
   /bad-request/i,
   /bad request/i,
+  /bad-param/i,
+  /bad_param/i,
   /invalid/i,
   /expired/i,
-  /forbidden/i,
   /link.*(revoked|expired|invalid)/i,
   /group.*(deleted|closed|not exist)/i,
   /invite.*invalid/i,
   /join-denied/i,
   /group full/i,
   /group-full/i,
+  /no-room/i,
   /admin.*denied/i,
+  /not-allowed/i,
+  /not_allowed/i,
+  /forbidden/i,
   /غير صالح|منتهي|لا توجد/i,
 ];
 
@@ -106,7 +150,6 @@ const RATE_LIMIT_PATTERNS: RegExp[] = [
   /flood/i,
 ];
 
-// WhatsApp showing "unable to join" repeatedly = account under pressure
 const STOP_JOIN_PATTERNS: RegExp[] = [
   /unable.*access.*group/i,
   /unable.*join/i,
@@ -120,7 +163,6 @@ const STOP_JOIN_PATTERNS: RegExp[] = [
   /group.*unavailable/i,
 ];
 
-// These mean the ACCOUNT itself is at risk — stop everything now
 const STOP_ALL_PATTERNS: RegExp[] = [
   /account.*block/i,
   /account.*suspend/i,
@@ -130,130 +172,151 @@ const STOP_ALL_PATTERNS: RegExp[] = [
   /your.*account.*restrict/i,
   /action.*block/i,
   /spam.*detect/i,
-  /401/,
   /account.*locked/i,
 ];
 
 // ── Main classifier ────────────────────────────────────────────────────────────
 
 export function classifyWAError(
-  err: unknown,
-  consecutiveFailures: number = 0
+  err:                unknown,
+  consecutiveFailures = 0,
 ): WAErrorResult {
-  const raw = (err as any)?.message ?? String(err);
-  const msg = raw.toLowerCase();
-  const statusCode = (err as any)?.output?.statusCode ??
+  const raw        = (err as any)?.message ?? String(err);
+  const msg        = raw.toLowerCase();
+  const statusCode =
+    (err as any)?.output?.statusCode ??
     (err as any)?.statusCode ??
     parseInt(raw.match(/\b(\d{3})\b/)?.[1] ?? "0", 10);
 
-  // ── NETWORK ERROR — transient, retry after delay ────────────────────────────
-  if (NETWORK_ERROR_PATTERNS.some((p) => p.test(raw))) {
-    return {
-      action: "retry",
-      reason: `خطأ شبكي مؤقت — سيُعاد المحاولة: ${raw}`,
-      critical: false,
-    };
-  }
-
-  // ── STOP ALL — account threatening ─────────────────────────────────────────
-  // Only explicit account-threat signals. High consecutive failures go to stop_join, NOT stop_all.
+  // ── 1. PENDING APPROVAL (406 not-acceptable) ─────────────────────────────────
+  // Must be checked BEFORE rate-limit and before the network-error fallback,
+  // because these errors arrive as WhatsApp application errors (not OS errors)
+  // and should NEVER be retried — doing so just spams the group admin.
   if (
-    STOP_ALL_PATTERNS.some((p) => p.test(msg)) ||
-    statusCode === 401
+    PENDING_APPROVAL_PATTERNS.some((p) => p.test(msg)) ||
+    statusCode === 406
   ) {
     return {
-      action: "stop_all",
-      reason: `⚠️ حساب تحت التهديد: ${raw}`,
-      critical: true,
-    };
-  }
-
-  // ── STOP JOIN — WA is blocking joining specifically ─────────────────────────
-  if (STOP_JOIN_PATTERNS.some((p) => p.test(msg)) || statusCode === 421) {
-    const waitMs = 15 * 60 * 1000; // 15 minutes
-    return {
-      action: "stop_join",
-      reason: `⛔ WhatsApp يمنع الانضمام: ${raw}`,
-      waitMs,
-      critical: true,
-    };
-  }
-
-  // ── RATE LIMIT ──────────────────────────────────────────────────────────────
-  if (RATE_LIMIT_PATTERNS.some((p) => p.test(msg)) || statusCode === 429) {
-    // Exponential backoff: 1min → 2min → 4min → 8min → 15min
-    const waitMs = Math.min(15 * 60_000, 60_000 * Math.pow(2, Math.max(0, consecutiveFailures - 1)));
-    return {
-      action: "wait_and_retry",
-      reason: `⏳ تجاوز حد المعدل — انتظار ${Math.round(waitMs / 1000)}ث`,
-      waitMs,
+      action:   "pending_approval",
+      reason:   "طلب الانضمام مُرسَل مسبقاً وينتظر موافقة المشرف",
       critical: false,
     };
   }
 
-  // ── ALREADY MEMBER ──────────────────────────────────────────────────────────
+  // ── 2. ACCOUNT THREAT — stop everything now ──────────────────────────────────
+  if (STOP_ALL_PATTERNS.some((p) => p.test(msg)) || statusCode === 401 && !KICKED_PATTERNS.some(p => p.test(msg))) {
+    return {
+      action:   "stop_all",
+      reason:   `⚠️ حساب تحت التهديد: ${raw}`,
+      critical: true,
+    };
+  }
+
+  // ── 3. ALREADY MEMBER (409 conflict) ─────────────────────────────────────────
   if (ALREADY_MEMBER_PATTERNS.some((p) => p.test(msg)) || statusCode === 409) {
     return {
-      action: "already_member",
-      reason: "أنت بالفعل عضو في هذه المجموعة",
+      action:   "already_member",
+      reason:   "أنت بالفعل عضو في هذه المجموعة",
       critical: false,
     };
   }
 
-  // ── COMMUNITY ──────────────────────────────────────────────────────────────
-  if (COMMUNITY_PATTERNS.some((p) => p.test(msg))) {
-    return {
-      action: "community",
-      reason: "هذا مجتمع وليس مجموعة عادية",
-      critical: false,
-    };
-  }
-
-  // ── KICKED — account removed/banned from THIS group; the link itself is valid ─
-  // This MUST be checked before SKIP_PATTERNS because "not-authorized" was
-  // previously (wrongly) in SKIP_PATTERNS, which permanently lost valid links.
+  // ── 4. KICKED (401 not-authorized) — account removed from THIS group ─────────
+  // Checked AFTER stop_all to avoid misclassifying account-ban as kick.
   if (KICKED_PATTERNS.some((p) => p.test(msg))) {
     return {
-      action: "kicked",
-      reason: `تمت إزالة الحساب من المجموعة: ${raw}`,
+      action:   "kicked",
+      reason:   `تمت إزالة الحساب من المجموعة: ${raw}`,
       critical: false,
     };
   }
 
-  // ── SKIP — dead/revoked link ────────────────────────────────────────────────
-  if (SKIP_PATTERNS.some((p) => p.test(msg)) || statusCode === 403 || statusCode === 404 || statusCode === 410) {
+  // ── 5. STOP JOIN — WA blocking join action specifically ──────────────────────
+  if (STOP_JOIN_PATTERNS.some((p) => p.test(msg)) || statusCode === 421) {
     return {
-      action: "skip",
-      reason: `رابط منتهٍ أو غير صالح: ${raw}`,
-      critical: false,
-    };
-  }
-
-  // ── RETRY — transient / unknown ─────────────────────────────────────────────
-  if (statusCode === 408 || statusCode === 500 || statusCode === 503 || msg.includes("timeout") || msg.includes("timed out")) {
-    return {
-      action: "retry",
-      reason: `خطأ مؤقت — إعادة المحاولة: ${raw}`,
-      critical: false,
-    };
-  }
-
-  // ── HIGH CONSECUTIVE FAILURES — temporary join stop (NOT account threat) ────
-  if (consecutiveFailures >= 8) {
-    return {
-      action: "stop_join",
-      reason: `${consecutiveFailures} أخطاء متتالية — توقف مؤقت للحماية`,
-      waitMs: 10 * 60_000,
+      action:   "stop_join",
+      reason:   `⛔ WhatsApp يمنع الانضمام: ${raw}`,
+      waitMs:   15 * 60_000,
       critical: true,
     };
   }
 
-  // ── DEFAULT — unknown error. Retry first; do NOT silently drop the link. ────
-  // Returning "skip" here permanently loses the link. Use "retry" so the
-  // link stays in the queue (max 3 retries then network_failed → kept Pending).
+  // ── 6. RATE LIMIT (429 rate-overlimit) ───────────────────────────────────────
+  // Exponential backoff: 1min → 2min → 4min → 8min → 15min
+  if (RATE_LIMIT_PATTERNS.some((p) => p.test(msg)) || statusCode === 429) {
+    const waitMs = Math.min(
+      15 * 60_000,
+      60_000 * Math.pow(2, Math.max(0, consecutiveFailures - 1)),
+    );
+    return {
+      action:   "wait_and_retry",
+      reason:   `⏳ تجاوز حد المعدل — انتظار ${Math.round(waitMs / 1000)}ث`,
+      waitMs,
+      critical: false,
+    };
+  }
+
+  // ── 7. COMMUNITY invite ──────────────────────────────────────────────────────
+  if (COMMUNITY_PATTERNS.some((p) => p.test(msg))) {
+    return {
+      action:   "community",
+      reason:   "هذا مجتمع وليس مجموعة عادية",
+      critical: false,
+    };
+  }
+
+  // ── 8. SKIP — dead / revoked / permanently invalid link ──────────────────────
+  if (
+    SKIP_PATTERNS.some((p) => p.test(msg)) ||
+    statusCode === 400 ||
+    statusCode === 403 ||
+    statusCode === 404 ||
+    statusCode === 405 ||
+    statusCode === 410
+  ) {
+    return {
+      action:   "skip",
+      reason:   `رابط منتهٍ أو غير صالح: ${raw}`,
+      critical: false,
+    };
+  }
+
+  // ── 9. TRUE NETWORK / OS ERROR — transient, safe to retry ───────────────────
+  // Only real TCP/OS errors reach this branch. WhatsApp app errors are handled above.
+  if (NETWORK_ERROR_PATTERNS.some((p) => p.test(raw))) {
+    return {
+      action:   "retry",
+      reason:   `خطأ شبكي حقيقي (OS/TCP) — سيُعاد المحاولة: ${raw}`,
+      critical: false,
+    };
+  }
+
+  // ── 10. TRANSIENT SERVER ERRORS (408 / 500 / 503 / timeout) ─────────────────
+  if (
+    statusCode === 408 || statusCode === 500 || statusCode === 503 ||
+    msg.includes("timeout") || msg.includes("timed out")
+  ) {
+    return {
+      action:   "retry",
+      reason:   `خطأ مؤقت في الخادم — إعادة المحاولة: ${raw}`,
+      critical: false,
+    };
+  }
+
+  // ── 11. HIGH CONSECUTIVE FAILURES — protective stop (not account threat) ─────
+  if (consecutiveFailures >= 8) {
+    return {
+      action:   "stop_join",
+      reason:   `${consecutiveFailures} أخطاء متتالية — توقف مؤقت للحماية`,
+      waitMs:   10 * 60_000,
+      critical: true,
+    };
+  }
+
+  // ── 12. UNKNOWN — retry once; link stays Pending, never silently dropped ─────
   return {
-    action: "retry",
-    reason: `خطأ مؤقت غير معروف — إعادة المحاولة: ${raw}`,
+    action:   "retry",
+    reason:   `خطأ غير معروف — إعادة المحاولة: ${raw}`,
     critical: false,
   };
 }
