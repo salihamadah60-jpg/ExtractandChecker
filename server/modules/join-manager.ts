@@ -368,7 +368,76 @@ async function joinOne(
 
       case "retry": {
         // True OS/TCP network error — safe to retry up to 3 times.
-        // These are the ONLY errors that warrant "Network hiccup" messaging.
+        // BUT first: check if the error is actually a disguised admin-approval case.
+        //
+        // When a group requires admin approval, WhatsApp ACCEPTS the join request
+        // (visible in app as "pending") then immediately drops/resets the connection
+        // instead of returning a clean JID. Baileys sees this as ETIMEDOUT/ECONNRESET.
+        // Retrying without checking would spam the group admin with duplicate requests.
+        //
+        // Detection: after the error, fetch invite info to get the JID, then check
+        // groupMetadata.pendingParticipants — if the bot appears there, the request
+        // was already submitted successfully and this is pending_approval, not a retry.
+        try {
+          const sockState = baileysManager.getActiveStateForWorkspace(wid);
+          if (sockState?.sock) {
+            // Give WhatsApp ~1.5s to update group state after the connection drop
+            await new Promise(r => setTimeout(r, 1_500));
+            const invInfo = await Promise.race([
+              sockState.sock.groupGetInviteInfo(inviteCode),
+              new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 5_000)),
+            ]) as any;
+
+            if (invInfo?.id) {
+              const groupJidCandidate: string = invInfo.id;
+              const meta = await baileysManager.getGroupMetadataForWorkspace(groupJidCandidate, wid);
+              if (meta) {
+                const botJid = sockState.sock?.user?.id;
+                const botId  = botJid ? botJid.split(":")[0] + "@s.whatsapp.net" : null;
+                if (botId) {
+                  const normalize = (p: any) =>
+                    (typeof p === "string" ? p : p?.id ?? "").split(":")[0] + "@s.whatsapp.net";
+                  const isInPending = (meta.pendingParticipants ?? []).some((p: any) => normalize(p) === botId);
+                  const isNowMember = (meta.participants        ?? []).some((p: any) => normalize(p) === botId);
+
+                  if (isNowMember) {
+                    // Race: got accepted instantly between the error and our check
+                    await linksRepository.setStatus(wid, record.url, "Joined", currentPhone);
+                    console.log(`[JoinManager:${wid}] ✓ Joined (race-detect after network drop): ${record.url}`);
+                    s.joiningCache.delete(inviteCode);
+                    return { result: "joined" };
+                  }
+
+                  if (isInPending) {
+                    // Join request WAS submitted — WhatsApp just dropped the conn after accepting it.
+                    // Mark as pending_approval; do NOT retry.
+                    console.log(
+                      `[JoinManager:${wid}] ⏳ طلب الانضمام أُرسل بنجاح لكن الاتصال انقطع — ينتظر موافقة المشرف: ${record.url}`
+                    );
+                    await linksRepository.setStatus(wid, record.url, "Ignored");
+                    try {
+                      const _paDb = await (await import("../mongo-auth-state.js")).getDb();
+                      await _paDb.collection("Links_Repository").updateOne(
+                        { workspaceId: wid, url: record.url },
+                        { $set: {
+                            pendingAdminApproval: true,
+                            pendingApprovalSince: new Date(),
+                            groupJid: groupJidCandidate,
+                            updatedAt: new Date(),
+                        }}
+                      );
+                    } catch { /* non-fatal */ }
+                    s.joiningCache.delete(inviteCode);
+                    return { result: "pending_approval" };
+                  }
+                }
+              }
+            }
+          }
+        } catch {
+          /* non-fatal — fall through to normal retry logic */
+        }
+
         const MAX_NET_RETRIES = 3;
         if (retryCount < MAX_NET_RETRIES) {
           const delayMs = Math.min(15_000 * (retryCount + 1), 60_000);
