@@ -1,0 +1,129 @@
+6-06-17 00:59:31.85
+37a247ca
+User
+at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:236:19)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:40)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+Failed to decrypt message with any known session...
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+Session error:MessageCounterError: Key used already or never filled MessageCounterError: Key used already or never filled
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at 173482671382704_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:39)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:236:19)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:40)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+2026-06-17 00:59:31.85
+37a247ca
+User
+Failed to decrypt message with any known session...
+
+2026-06-17 00:59:33.85
+37a247ca
+User
+Session error:MessageCounterError: Key used already or never filled MessageCounterError: Key used already or never filled
+
+2026-06-17 00:59:33.85
+37a247ca
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+2026-06-17 00:59:33.85
+37a247ca
+User
+at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+
+2026-06-17 00:59:33.85
+37a247ca
+User
+at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:236:19)
+
+2026-06-17 00:59:33.85
+37a247ca
+User
+Failed to decrypt message with any known session...
+
+2026-06-17 00:59:33.85
+37a247ca
+User
+at 173482671382704_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:39)
+
+2026-06-17 00:59:33.85
+37a247ca
+User
+at SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:40)
+
+2026-06-17 00:59:53.45
+37a247ca
+User
+at 173482671382704_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:39)
+
+2026-06-17 00:59:53.45
+37a247ca
+User
+at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:236:19)
+
+2026-06-17 00:59:53.45
+37a247ca
+User
+at SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:40)
+
+2026-06-17 00:59:53.45
+37a247ca
+User
+Session error:MessageCounterError: Key used already or never filled MessageCounterError: Key used already or never filled
+
+2026-06-17 00:59:53.45
+37a247ca
+User
+at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+
+2026-06-17 00:59:53.45
+37a247ca
+User
+Failed to decrypt message with any known session...
+
+2026-06-17 00:59:53.45
+37a247ca
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)

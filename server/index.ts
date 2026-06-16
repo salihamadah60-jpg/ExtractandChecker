@@ -1,3 +1,23 @@
+// ── Suppress known-harmless libsignal Signal Protocol noise ───────────────────
+// libsignal (used by Baileys internally) calls console.error() directly,
+// bypassing Baileys' pino logger. These messages are NOT actionable:
+//   - MessageCounterError  → stale message key after reconnection (auto-skipped)
+//   - Bad MAC              → mismatched encryption state after reconnection
+//   - Failed to decrypt    → libsignal outer catch when all sessions fail
+// Baileys already handles these gracefully (skips the message and continues).
+const _origConsoleError = console.error.bind(console);
+console.error = (...args: any[]) => {
+  const s = args.map(a => (typeof a === "string" ? a : String(a ?? ""))).join(" ");
+  if (
+    s.includes("Failed to decrypt message") ||
+    s.includes("Session error:")             ||
+    s.includes("MessageCounterError")        ||
+    s.includes("Bad MAC")                    ||
+    s.includes("Key used already or never")
+  ) return;
+  _origConsoleError(...args);
+};
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
