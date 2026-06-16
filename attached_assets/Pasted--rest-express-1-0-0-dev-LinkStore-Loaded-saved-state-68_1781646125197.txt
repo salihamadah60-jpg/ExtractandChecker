@@ -1,0 +1,221 @@
+
+> rest-express@1.0.0 dev
+[LinkStore] Loaded saved state — 681/681 links already checked
+[LinkStore] Loaded saved state — 681/681 links already checked
+[WorkspaceStore] ✅ مساحة افتراضية جديدة | مفتاح الوصول: 4cf9e863-c5fa-46ac-9b2a-ce82648e24b7
+[WorkspaceStore] Ready
+[LinksRepository] Indexes ready
+[AdminStore] Default admin already exists | key: 02bb3f7b-22eb-427e-9b61-e7190857fef2
+[AdminStore] Ready
+[CentralLinksStore] Ready
+[SystemState] Ready (workspace: main)
+[LeaveManager:main] LeavingQueue ready
+[PublishScheduler] Ready
+[MongoDB] Connected and ready
+9:33:43 PM [express] serving on port 5000
+[Sessions] Auto-connecting: +967736187958 (858ebf95-1feb-4275-877f-65c24b9d06a4)
+[Sessions] Auto-connecting: +967772951869 (0e43e7e6-92dc-4de4-a7a9-1f2ed64aebdf)
+[Sessions] Auto-connecting: +967780082128 (bfc94cdb-683b-4ac5-aed9-d7e2a7795c0e)
+Browserslist: browsers data (caniuse-lite) is 8 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+[Sessions] Auto-connecting: +966562159258 (3bdec8b2-a594-4f78-a7d5-6d10747fa252)
+
+A PostCSS plugin did not pass the `from` option to `postcss.parse`. This may cause imported assets to be incorrectly transformed. If you've recently added a PostCSS plugin that raised this warning, please contact the package author to fix the issue.
+[Sessions] Auto-connecting: +967736187958 (3eb4f495-f5e7-4bc5-8125-f5d0f43ed81d)
+[Sessions] 858ebf95-1feb-4275-877f-65c24b9d06a4 closed, code: 401
+[Sessions] 0e43e7e6-92dc-4de4-a7a9-1f2ed64aebdf connected!
+[Sessions] bfc94cdb-683b-4ac5-aed9-d7e2a7795c0e closed, code: 401
+[Sessions] 3bdec8b2-a594-4f78-a7d5-6d10747fa252 closed, code: 401
+[Sessions] 3eb4f495-f5e7-4bc5-8125-f5d0f43ed81d connected!
+[Coordinator] Started "reading"
+9:33:56 PM [express] POST /api/workspaces/login 200 in 154ms
+[MessageReader:af789061-0b49-4524-b4eb-5d4182b8dd17] Started — continuous mode — checkpoint: A533CB95311B7A0AD4D99CD43BC482BC
+[MessageReader:af789061-0b49-4524-b4eb-5d4182b8dd17] Auto-started on WhatsApp connect
+9:33:57 PM [express] GET /api/join/config 200 in 153ms
+9:33:58 PM [express] GET /api/leave/queue 200 in 311ms
+9:33:58 PM [express] GET /api/join/phone-stats 200 in 462ms
+9:33:58 PM [express] GET /api/publisher/ads 200 in 311ms
+9:33:58 PM [express] GET /api/settings/sleep 200 in 166ms
+9:33:58 PM [express] GET /api/telemetry 200 in 158ms
+[Coordinator] Started "reading"
+[MessageReader:978dff95-1bc8-4a96-9444-72b766e33cbe] Started — continuous mode — checkpoint: AC3F9CEF373FF589C4C0687171E91B07
+[MessageReader:978dff95-1bc8-4a96-9444-72b766e33cbe] Auto-started on WhatsApp connect
+[Coordinator] ⏸ Preempting "reading" to allow "joining" to start
+[MessageReader:af789061-0b49-4524-b4eb-5d4182b8dd17] Preempted — stopping to yield coordinator
+[Coordinator] Released "reading" (ran for 10s)
+9:34:06 PM [express] POST /api/join/start 200 in 853ms
+[Coordinator] Started "reading"
+[MessageReader:af789061-0b49-4524-b4eb-5d4182b8dd17] Started — continuous mode — checkpoint: A533CB95311B7A0AD4D99CD43BC482BC
+[MessageReader:af789061-0b49-4524-b4eb-5d4182b8dd17] Auto-resumed after coordinator released
+[Coordinator] Started "joining"
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🚀 Starting — phone: 967772951869, maxLinks: all
+[Sessions] Fetching all participating groups for workspace: af789061-0b49-4524-b4eb-5d4182b8dd17
+[Sessions] Found 324 groups from WhatsApp for workspace: af789061-0b49-4524-b4eb-5d4182b8dd17
+[LinksRepository] bulkWrite — matched:322 modified:322 upserted:2
+[LinksRepository] WA sync (wid: af789061-0b49-4524-b4eb-5d4182b8dd17) — total:324 (existing:322 new:2), markedLeft:0
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔄 Pre-sync: 324 synced, 0 marked Left
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] Queue: 93 links
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🪟 Window 1 (5 slots): s0@+18s, s1@+188s, s2@+280s, s3@+432s, s4@+538s — queue[0/93]
+[Coordinator] 🔒 Join window OPEN — all other functions blocked
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ⏱ نافذة 1 — فتحة 1/5 — 18s
+9:34:22 PM [express] GET /api/telemetry 200 in 148ms
+9:34:23 PM [express] GET /api/join/phone-stats 200 in 458ms
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ▶ [W1] Slot 0: https://chat.whatsapp.com/Ct1k30GiyOALT2mMaI4Zvt
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✓ Joined (1042ms) [967772951869]: https://chat.whatsapp.com/Ct1k30GiyOALT2mMaI4Zvt
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ⏱ نافذة 1 — فتحة 2/5 — 168s
+9:34:43 PM [express] GET /api/telemetry 200 in 153ms
+9:34:46 PM [express] GET /api/join/phone-stats 200 in 456ms
+Failed to decrypt message with any known session...
+Session error:MessageCounterError: Key used already or never filled MessageCounterError: Key used already or never filled
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:236:19)
+    at SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:40)
+    at 173482671382704_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+[MessageReader:978dff95-1bc8-4a96-9444-72b766e33cbe] 📩 Real msg #1 (total: 601) from group 617400
+[MessageReader:978dff95-1bc8-4a96-9444-72b766e33cbe] 📩 Real msg #11 (total: 611) from group 617400
+Failed to decrypt message with any known session...
+Session error:MessageCounterError: Key used already or never filled MessageCounterError: Key used already or never filled
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:236:19)
+    at SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:40)
+    at 173482671382704_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+[Pipeline:978dff95-1bc8-4a96-9444-72b766e33cbe] Starting — 1 buffered links
+[Coordinator] Released "reading" (ran for 201s)
+[Pipeline:978dff95-1bc8-4a96-9444-72b766e33cbe] Reader paused
+[PipelineCheck:978dff95-1bc8-4a96-9444-72b766e33cbe] VALID | https://chat.whatsapp.com/LcHvBNv96q27UDH850ZhQR
+[Pipeline:978dff95-1bc8-4a96-9444-72b766e33cbe] No valid groups — 1 ad-links discarded, skipping join
+[Coordinator] Started "reading"
+[Pipeline:978dff95-1bc8-4a96-9444-72b766e33cbe] Reader resumed
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ▶ [W1] Slot 1: https://chat.whatsapp.com/K1t5f8fVoaEJQFxrULyzRl
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ رابط منتهٍ: رابط منتهٍ أو غير صالح: bad-request | https://chat.whatsapp.com/K1t5f8fVoaEJQFxrULyzRl
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ⏱ نافذة 1 — فتحة 3/5 — 91s
+9:37:32 PM [express] GET /api/telemetry 200 in 152ms
+9:37:33 PM [express] GET /api/join/phone-stats 200 in 461ms
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ▶ [W1] Slot 2: https://chat.whatsapp.com/FSO1S5PlBJ59pezOUQMC6o
+9:39:01 PM [express] GET /api/telemetry 200 in 153ms
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/FSO1S5PlBJ59pezOUQMC6o
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 2/3) — انتظار 30ث: https://chat.whatsapp.com/FSO1S5PlBJ59pezOUQMC6o
+Failed to decrypt message with any known session...
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Failed to decrypt message with any known session...
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Failed to decrypt message with any known session...
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Failed to decrypt message with any known session...
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+Session error:Error: Bad MAC Error: Bad MAC
+    at Object.verifyMAC (/home/runner/workspace/node_modules/libsignal/src/crypto.js:87:15)
+    at SessionCipher.doDecryptWhisperMessage (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:250:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SessionCipher.decryptWithSessions (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:147:29)
+    at async 42945931645093_1.0 [as awaitable] (/home/runner/workspace/node_modules/libsignal/src/session_cipher.js:171:28)
+    at async _asyncQueueExecutor (/home/runner/workspace/node_modules/libsignal/src/queue_job.js:20:29)
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/FSO1S5PlBJ59pezOUQMC6o
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/FSO1S5PlBJ59pezOUQMC6o
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ⏱ نافذة 1 — فتحة 4/5 — 59s
+9:41:08 PM [express] GET /api/telemetry 200 in 150ms
+[MessageReader:978dff95-1bc8-4a96-9444-72b766e33cbe] 📩 Real msg #21 (total: 621) from group 613539
