@@ -30,6 +30,7 @@ interface DashboardStats {
   joinProgress: {
     status: string; total: number; processed: number;
     joined: number; ignored: number; failed: number; skipped_ads: number;
+    pendingApproval?: number;
     startedAt: string; completedAt?: string;
     windowNumber: number; currentLink?: string; stopReason?: string;
     nextJoinAt?: string; sleepUntil?: string; cooldownUntil?: string;
@@ -408,22 +409,26 @@ export default function Dashboard() {
                   {data.joinProgress ? (
                     <div className="space-y-3">
                       {/* Stats grid */}
-                      <div className="grid grid-cols-4 gap-1.5 text-sm">
+                      <div className="grid grid-cols-5 gap-1 text-sm">
                         <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2 text-center">
-                          <p className="text-base font-bold text-green-600">{data.joinProgress.joined}</p>
-                          <p className="text-[10px] text-muted-foreground">انضم</p>
+                          <p className="text-sm font-bold text-green-600">{data.joinProgress.joined}</p>
+                          <p className="text-[9px] text-muted-foreground">انضم</p>
+                        </div>
+                        <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-2 text-center">
+                          <p className="text-sm font-bold text-blue-600">{data.joinProgress.pendingApproval ?? 0}</p>
+                          <p className="text-[9px] text-muted-foreground">انتظار</p>
                         </div>
                         <div className="bg-muted/50 rounded-lg p-2 text-center">
-                          <p className="text-base font-bold text-muted-foreground">{data.joinProgress.ignored}</p>
-                          <p className="text-[10px] text-muted-foreground">تجاهل</p>
+                          <p className="text-sm font-bold text-muted-foreground">{data.joinProgress.ignored}</p>
+                          <p className="text-[9px] text-muted-foreground">منتهٍ</p>
                         </div>
                         <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2 text-center">
-                          <p className="text-base font-bold text-red-600">{data.joinProgress.failed}</p>
-                          <p className="text-[10px] text-muted-foreground">فشل</p>
+                          <p className="text-sm font-bold text-red-600">{data.joinProgress.failed}</p>
+                          <p className="text-[9px] text-muted-foreground">شبكة</p>
                         </div>
                         <div className="bg-orange-50 dark:bg-orange-900/20 rounded-lg p-2 text-center">
-                          <p className="text-base font-bold text-orange-500">{data.joinProgress.skipped_ads}</p>
-                          <p className="text-[10px] text-muted-foreground">إعلان</p>
+                          <p className="text-sm font-bold text-orange-500">{data.joinProgress.skipped_ads}</p>
+                          <p className="text-[9px] text-muted-foreground">إعلان</p>
                         </div>
                       </div>
 

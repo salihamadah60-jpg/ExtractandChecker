@@ -22,12 +22,13 @@ import { isSleepTime, msUntilWakeUp } from "./sleep-scheduler.js";
 
 export interface JoinProgress {
   status: "running" | "waiting" | "sleeping" | "cooldown" | "paused" | "done" | "stopped" | "error";
-  total:       number;
-  processed:   number;
-  joined:      number;
-  ignored:     number;
-  failed:      number;
-  skipped_ads: number;
+  total:           number;
+  processed:       number;
+  joined:          number;
+  ignored:         number;
+  failed:          number;
+  skipped_ads:     number;
+  pendingApproval: number;   // joins submitted but awaiting admin acceptance
   currentLink?: string;
   stopReason?:  string;
   startedAt:    string;
@@ -131,7 +132,7 @@ async function joinOne(
   consecutiveFailures: number,
   currentPhone?: string,
   retryCount = 0
-): Promise<{ result: "joined" | "ignored" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean }> {
+): Promise<{ result: "joined" | "ignored" | "pending_approval" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean }> {
   const s   = _st(wid);
   const tel = getTelemetryFor(wid);
 
@@ -228,14 +229,23 @@ async function joinOne(
               `[JoinManager:${wid}] ⏳ Admin-approval required` +
               ` (inPending=${isInPending}, isMember=false) — ${record.url}`
             );
+            // Keep status as "Ignored" so findPendingForJoin skips it (avoids re-join attempt).
+            // The group-participants.update watcher will auto-update to "Joined" once approved.
             await linksRepository.setStatus(wid, record.url, "Ignored");
             const _db2 = await (await import("../mongo-auth-state.js")).getDb();
             await _db2.collection("Links_Repository").updateOne(
               { workspaceId: wid, url: record.url },
-              { $set: { pendingAdminApproval: true, groupJid: groupJid ?? undefined, updatedAt: new Date() } }
+              { $set: {
+                  pendingAdminApproval: true,
+                  pendingApprovalSince: new Date(),
+                  groupJid: groupJid ?? undefined,
+                  updatedAt: new Date(),
+              }}
             );
             s.joiningCache.delete(inviteCode);
-            return { result: "ignored" };
+            // Return "pending_approval" (not "ignored") so the UI shows it as awaiting approval,
+            // and consecutiveFailures is NOT incremented for this result.
+            return { result: "pending_approval" };
           }
         }
         // meta is null after retries → can't verify; assume joined (log warning)
@@ -343,9 +353,12 @@ async function joinOne(
       }
 
       default:
+        // "skip" action = confirmed dead link (revoked / expired / group deleted).
+        // Mark Ignored and return "ignored" — NOT "failed", so consecutiveFailures
+        // is not inflated by dead links.
         await linksRepository.setStatus(wid, record.url, "Ignored");
-        console.warn(`[JoinManager:${wid}] ✗ ${classified.reason} | ${record.url}`);
-        return { result: "failed" };
+        console.warn(`[JoinManager:${wid}] ✗ رابط منتهٍ: ${classified.reason} | ${record.url}`);
+        return { result: "ignored" };
     }
   } finally {
     s.joiningCache.delete(inviteCode);
@@ -452,6 +465,16 @@ function _createManager(wid: string) {
         const currentPhone = baileysManager.getConnectedPhoneForWorkspace(wid) ?? undefined;
         console.log(`[JoinManager:${wid}] 🚀 Starting — phone: ${currentPhone ?? "unknown"}, maxLinks: ${maxLinks ?? "all"}`);
 
+        // Pre-join sync: fetch all currently-joined WA groups and update DB.
+        // This marks already-joined links as "Joined" so they don't waste join slots,
+        // and resolves any pending-approval links that were accepted since last run.
+        try {
+          const syncResult = await baileysManager.syncGroupsForWorkspace(wid);
+          console.log(`[JoinManager:${wid}] 🔄 Pre-sync: ${syncResult.synced} synced, ${syncResult.markedLeft} marked Left`);
+        } catch (syncErr) {
+          console.warn(`[JoinManager:${wid}] ⚠ Pre-sync skipped (non-fatal):`, (syncErr as Error).message);
+        }
+
         const pendingLinks = await linksRepository.findPendingForJoin(wid, currentPhone);
         if (!pendingLinks.length) {
           throw new Error("لا توجد روابط معلقة في المستودع للانضمام إليها.");
@@ -463,15 +486,16 @@ function _createManager(wid: string) {
         console.log(`[JoinManager:${wid}] Queue: ${queue.length} links`);
 
         s.progress = {
-          status:       "waiting",
-          total:        queue.length,
-          processed:    0,
-          joined:       0,
-          ignored:      0,
-          failed:       0,
-          skipped_ads:  0,
-          startedAt:    new Date().toISOString(),
-          windowNumber: 0,
+          status:          "waiting",
+          total:           queue.length,
+          processed:       0,
+          joined:          0,
+          ignored:         0,
+          failed:          0,
+          skipped_ads:     0,
+          pendingApproval: 0,
+          startedAt:       new Date().toISOString(),
+          windowNumber:    0,
         };
 
         await systemState.setExtra(wid, { joinProgress: s.progress });
@@ -597,10 +621,11 @@ function _createManager(wid: string) {
               break;
             }
 
-            if (r.result === "joined")             { consecutiveFailures = 0; if (s.progress) { s.progress.joined++; if (r.isAd) s.progress.skipped_ads++; } }
-            else if (r.result === "ignored")        { if (s.progress) s.progress.ignored++; }
-            else if (r.result === "network_failed") { if (s.progress) s.progress.failed++; /* no consecutiveFailures++ — network issue, not account */ }
-            else                                    { consecutiveFailures++; if (s.progress) s.progress.failed++; }
+            if (r.result === "joined")               { consecutiveFailures = 0; if (s.progress) { s.progress.joined++; if (r.isAd) s.progress.skipped_ads++; } }
+            else if (r.result === "pending_approval"){ if (s.progress) s.progress.pendingApproval++; /* NOT a failure — awaiting admin acceptance */ }
+            else if (r.result === "ignored")         { if (s.progress) s.progress.ignored++; /* dead link — NOT a failure */ }
+            else if (r.result === "network_failed")  { if (s.progress) s.progress.failed++; /* network — no consecutiveFailures++ */ }
+            else                                     { consecutiveFailures++; if (s.progress) s.progress.failed++; }
 
             queueIdx++;
             if (s.progress) { s.progress.processed++; s.progress.currentLink = undefined; }

@@ -149,10 +149,10 @@ export function classifyWAError(
   }
 
   // ── STOP ALL — account threatening ─────────────────────────────────────────
+  // Only explicit account-threat signals. High consecutive failures go to stop_join, NOT stop_all.
   if (
     STOP_ALL_PATTERNS.some((p) => p.test(msg)) ||
-    statusCode === 401 ||
-    consecutiveFailures >= 10  // 10+ consecutive failures = something is very wrong
+    statusCode === 401
   ) {
     return {
       action: "stop_all",
@@ -220,19 +220,22 @@ export function classifyWAError(
     };
   }
 
-  // ── DEFAULT — skip unknown errors after enough failures ────────────────────
-  if (consecutiveFailures >= 5) {
+  // ── HIGH CONSECUTIVE FAILURES — temporary join stop (NOT account threat) ────
+  if (consecutiveFailures >= 8) {
     return {
       action: "stop_join",
-      reason: `${consecutiveFailures} فشل متتالي — إيقاف مؤقت: ${raw}`,
-      waitMs: 5 * 60_000,
+      reason: `${consecutiveFailures} أخطاء متتالية — توقف مؤقت للحماية`,
+      waitMs: 10 * 60_000,
       critical: true,
     };
   }
 
+  // ── DEFAULT — unknown error. Retry first; do NOT silently drop the link. ────
+  // Returning "skip" here permanently loses the link. Use "retry" so the
+  // link stays in the queue (max 3 retries then network_failed → kept Pending).
   return {
-    action: "skip",
-    reason: `خطأ غير معروف — تخطي: ${raw}`,
+    action: "retry",
+    reason: `خطأ مؤقت غير معروف — إعادة المحاولة: ${raw}`,
     critical: false,
   };
 }
