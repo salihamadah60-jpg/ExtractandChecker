@@ -24,10 +24,31 @@ async function col() {
   return db.collection<WorkspaceDoc>(COL);
 }
 
+const DEFAULT_WORKSPACE_ID   = "main";
+const DEFAULT_WORKSPACE_NAME = "المساحة الرئيسية";
+
 export const workspaceStore = {
   async init(): Promise<void> {
     const c = await col();
     await c.createIndex({ accessKey: 1 }, { unique: true, background: true } as any);
+
+    // Auto-seed the default workspace on first run (identical pattern to adminStore).
+    // If the "main" workspace already exists, just log its access key so the admin
+    // can always find it in the server logs without touching the DB manually.
+    const existing = await c.findOne({ _id: DEFAULT_WORKSPACE_ID as any });
+    if (!existing) {
+      const doc: WorkspaceDoc = {
+        _id:       DEFAULT_WORKSPACE_ID,
+        name:      DEFAULT_WORKSPACE_NAME,
+        accessKey: randomUUID(),
+        createdAt: new Date(),
+      };
+      await (c.insertOne as any)(doc);
+      console.log(`[WorkspaceStore] ✅ مساحة افتراضية جديدة | مفتاح الوصول: ${doc.accessKey}`);
+    } else {
+      console.log(`[WorkspaceStore] ✅ المساحة الرئيسية موجودة | مفتاح الوصول: ${existing.accessKey}`);
+    }
+
     console.log("[WorkspaceStore] Ready");
   },
 
