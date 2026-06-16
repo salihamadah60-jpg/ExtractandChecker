@@ -136,8 +136,12 @@ async function _runPipeline(wid: string): Promise<void> {
   s.pipelineDebounce = null;
   if (s.pipelineLock || s.pipelineBuffer.size === 0 || !s.running) return;
 
-  if (coord.isRunning()) {
-    console.log(`[Pipeline:${wid}] Coordinator busy (${coord.getActive()}) — deferred`);
+  // Only defer if a genuinely incompatible function is running (joining/leaving/publishing).
+  // "reading" is not a blocker — the pipeline's step 1 pauses the reader itself.
+  // Previously this blocked the pipeline indefinitely whenever the message reader was active.
+  const activeFunc = coord.getActive();
+  if (coord.isRunning() && activeFunc !== "reading") {
+    console.log(`[Pipeline:${wid}] Coordinator busy (${activeFunc}) — deferred`);
     if (s.stats) s.stats.pipelineSkipped = (s.stats.pipelineSkipped ?? 0) + 1;
     s.pipelineDebounce = setTimeout(() => _runPipeline(wid), 5 * 60_000);
     return;

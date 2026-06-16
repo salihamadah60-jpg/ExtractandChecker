@@ -31,6 +31,7 @@ interface DashboardStats {
     status: string; total: number; processed: number;
     joined: number; ignored: number; failed: number; skipped_ads: number;
     pendingApproval?: number;
+    kicked?: number;
     startedAt: string; completedAt?: string;
     windowNumber: number; currentLink?: string; stopReason?: string;
     nextJoinAt?: string; sleepUntil?: string; cooldownUntil?: string;
@@ -417,6 +418,10 @@ export default function Dashboard() {
                         <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-2 text-center">
                           <p className="text-sm font-bold text-blue-600">{data.joinProgress.pendingApproval ?? 0}</p>
                           <p className="text-[9px] text-muted-foreground">انتظار</p>
+                        </div>
+                        <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-2 text-center">
+                          <p className="text-sm font-bold text-purple-600">{data.joinProgress.kicked ?? 0}</p>
+                          <p className="text-[9px] text-muted-foreground">مطرود</p>
                         </div>
                         <div className="bg-muted/50 rounded-lg p-2 text-center">
                           <p className="text-sm font-bold text-muted-foreground">{data.joinProgress.ignored}</p>

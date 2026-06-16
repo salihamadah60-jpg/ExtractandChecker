@@ -16,6 +16,7 @@
 
 export type WAErrorAction =
   | "skip"
+  | "kicked"         // account was removed/banned from this specific group; link is still valid
   | "already_member"
   | "community"
   | "wait_and_retry"
@@ -54,6 +55,14 @@ const NETWORK_ERROR_PATTERNS: RegExp[] = [
   /websocket.*close/i,
 ];
 
+// "not-authorized" = the account was kicked/banned from this specific group.
+// The invite link is still valid — treat separately, NOT as a dead link.
+const KICKED_PATTERNS: RegExp[] = [
+  /not-authorized/i,
+  /not authorized/i,
+  /not_authorized/i,
+];
+
 const SKIP_PATTERNS: RegExp[] = [
   /item-not-found/i,
   /not-found/i,
@@ -63,8 +72,6 @@ const SKIP_PATTERNS: RegExp[] = [
   /invalid/i,
   /expired/i,
   /forbidden/i,
-  /not-authorized/i,
-  /not authorized/i,
   /link.*(revoked|expired|invalid)/i,
   /group.*(deleted|closed|not exist)/i,
   /invite.*invalid/i,
@@ -198,6 +205,17 @@ export function classifyWAError(
     return {
       action: "community",
       reason: "هذا مجتمع وليس مجموعة عادية",
+      critical: false,
+    };
+  }
+
+  // ── KICKED — account removed/banned from THIS group; the link itself is valid ─
+  // This MUST be checked before SKIP_PATTERNS because "not-authorized" was
+  // previously (wrongly) in SKIP_PATTERNS, which permanently lost valid links.
+  if (KICKED_PATTERNS.some((p) => p.test(msg))) {
+    return {
+      action: "kicked",
+      reason: `تمت إزالة الحساب من المجموعة: ${raw}`,
       critical: false,
     };
   }

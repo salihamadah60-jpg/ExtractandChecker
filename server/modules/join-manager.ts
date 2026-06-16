@@ -29,6 +29,7 @@ export interface JoinProgress {
   failed:          number;
   skipped_ads:     number;
   pendingApproval: number;   // joins submitted but awaiting admin acceptance
+  kicked:          number;   // account was removed/banned from the group; link still valid
   currentLink?: string;
   stopReason?:  string;
   startedAt:    string;
@@ -132,7 +133,7 @@ async function joinOne(
   consecutiveFailures: number,
   currentPhone?: string,
   retryCount = 0
-): Promise<{ result: "joined" | "ignored" | "pending_approval" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean }> {
+): Promise<{ result: "joined" | "ignored" | "pending_approval" | "kicked" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean }> {
   const s   = _st(wid);
   const tel = getTelemetryFor(wid);
 
@@ -292,6 +293,21 @@ async function joinOne(
       case "stop_join":
         tel.triggerEmergency(classified.reason, classified.waitMs ?? 15 * 60_000);
         return { result: "stop_join", waitMs: classified.waitMs };
+
+      case "kicked":
+        // Account was removed/banned from this specific group.
+        // The invite link is still valid — mark as Ignored with kickedFromGroup flag
+        // so it doesn't waste slots in future runs. NOT a consecutive failure.
+        await linksRepository.setStatus(wid, record.url, "Ignored");
+        try {
+          const _kickDb = await (await import("../mongo-auth-state.js")).getDb();
+          await _kickDb.collection("Links_Repository").updateOne(
+            { workspaceId: wid, url: record.url },
+            { $set: { kickedFromGroup: true, kickedAt: new Date(), updatedAt: new Date() } }
+          );
+        } catch {}
+        console.warn(`[JoinManager:${wid}] 🚫 مطرود من المجموعة: ${record.url}`);
+        return { result: "kicked" };
 
       case "already_member":
         await linksRepository.setStatus(wid, record.url, "Joined", currentPhone);
@@ -494,6 +510,7 @@ function _createManager(wid: string) {
           failed:          0,
           skipped_ads:     0,
           pendingApproval: 0,
+          kicked:          0,
           startedAt:       new Date().toISOString(),
           windowNumber:    0,
         };
@@ -623,6 +640,7 @@ function _createManager(wid: string) {
 
             if (r.result === "joined")               { consecutiveFailures = 0; if (s.progress) { s.progress.joined++; if (r.isAd) s.progress.skipped_ads++; } }
             else if (r.result === "pending_approval"){ if (s.progress) s.progress.pendingApproval++; /* NOT a failure — awaiting admin acceptance */ }
+            else if (r.result === "kicked")          { if (s.progress) s.progress.kicked++; /* removed from group — NOT a consecutive failure */ }
             else if (r.result === "ignored")         { if (s.progress) s.progress.ignored++; /* dead link — NOT a failure */ }
             else if (r.result === "network_failed")  { if (s.progress) s.progress.failed++; /* network — no consecutiveFailures++ */ }
             else                                     { consecutiveFailures++; if (s.progress) s.progress.failed++; }
