@@ -18,6 +18,7 @@ export interface SystemStateDoc {
   reader_total_messages?: number;
   reader_total_links_found?: number;
   reader_total_links_new?: number;
+  reader_total_pipeline_runs?: number;
   last_updated: Date;
   extra?: Record<string, unknown>;
 }
@@ -131,6 +132,40 @@ export const systemState = {
           reader_total_links_new:   delta.linksNew,
         },
         $set: { last_updated: new Date() },
+      },
+      { upsert: true }
+    );
+  },
+
+  /** Increment the total pipeline-runs counter by 1 (persists across restarts). */
+  async incrementPipelineRuns(workspaceId = "main"): Promise<void> {
+    const c = await col();
+    await c.updateOne(
+      { _id: workspaceId as any },
+      { $inc: { reader_total_pipeline_runs: 1 }, $set: { last_updated: new Date() } },
+      { upsert: true }
+    );
+  },
+
+  /** Load total pipeline-runs count from MongoDB. */
+  async getPipelineRunsTotal(workspaceId = "main"): Promise<number> {
+    const state = await systemState.get(workspaceId);
+    return state.reader_total_pipeline_runs ?? 0;
+  },
+
+  /** Reset all cumulative reader counters to 0 (user-triggered reset). */
+  async resetReaderCounters(workspaceId = "main"): Promise<void> {
+    const c = await col();
+    await c.updateOne(
+      { _id: workspaceId as any },
+      {
+        $set: {
+          reader_total_messages:      0,
+          reader_total_links_found:   0,
+          reader_total_links_new:     0,
+          reader_total_pipeline_runs: 0,
+          last_updated:               new Date(),
+        },
       },
       { upsert: true }
     );

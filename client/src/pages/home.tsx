@@ -16,7 +16,7 @@ import {
   ChevronUp, UserPlus, Clock, CheckCheck, Trash2,
   Pause, Play, Square, Menu, X, MessageCircle, Send, LayoutDashboard,
   TrendingUp, Activity, Zap, BarChart2, AlertTriangle, Ban, Moon,
-  CalendarClock, Timer, Plus,
+  CalendarClock, Timer, Plus, Search,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -162,7 +162,12 @@ interface ReaderStats {
   status: "running" | "stopped" | "paused" | "error";
   messagesReceived: number; messagesFromAds: number; linksFound: number; linksNew: number;
   startedAt: string; stoppedAt?: string; pausedAt?: string;
-  totalMessages?: number; totalLinksFound?: number; totalLinksNew?: number;
+  pipelineRuns?: number; pipelineSkipped?: number; bufferSize?: number;
+  lastPipelineAt?: string; lastPipelineChecked?: number; lastPipelineGroups?: number; lastPipelineAds?: number;
+  totalMessages?: number; totalLinksFound?: number; totalLinksNew?: number; totalPipelineRuns?: number;
+}
+interface KeywordDoc {
+  _id: string; workspaceId: string; category: "ad_only" | "banned"; keyword: string; addedAt: string;
 }
 interface ExcludedGroup { _id?: string; url: string; name?: string; addedAt: string; }
 interface SleepConfig { startHour: number; startMin: number; durationHours: number; }
@@ -273,6 +278,9 @@ export default function Home() {
   const manualUploadRef = useRef<HTMLInputElement>(null);
   const [showExcludedPanel, setShowExcludedPanel] = useState(false);
   const [showPendingApprovalPanel, setShowPendingApprovalPanel] = useState(false);
+  const [showKeywordPanel, setShowKeywordPanel] = useState(false);
+  const [newKeyword, setNewKeyword] = useState("");
+  const [newKeywordCategory, setNewKeywordCategory] = useState<"ad_only" | "banned">("ad_only");
   const [newExcludedUrl, setNewExcludedUrl] = useState("");
   const [sleepStartTime, setSleepStartTime] = useState("01:30");
   const [sleepConfigSaved, setSleepConfigSaved] = useState(false);
@@ -890,6 +898,47 @@ export default function Home() {
   const stopPublishMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/publisher/stop", {}),
     onSuccess: () => toast({ title: "جاري إيقاف النشر..." }),
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  // ── Keywords ────────────────────────────────────────────────────────────────
+  const { data: keywordsData, refetch: refetchKeywords } = useQuery<{ keywords: KeywordDoc[] }>({
+    queryKey: ["/api/keywords"],
+    enabled: showKeywordPanel,
+    refetchInterval: false,
+  });
+  const addKeywordMutation = useMutation({
+    mutationFn: (body: { keyword: string; category: string }) =>
+      apiRequest("POST", "/api/keywords", body),
+    onSuccess: () => {
+      setNewKeyword(""); void refetchKeywords();
+      toast({ title: "تمت إضافة الكلمة المفتاحية" });
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const deleteKeywordMutation = useMutation({
+    mutationFn: (id: string) => fetch(`/api/keywords/${id}`, { method: "DELETE", headers: wkHeaders() }).then(r => r.json()),
+    onSuccess: () => { void refetchKeywords(); toast({ title: "تم حذف الكلمة" }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  // ── Pipeline manual trigger ─────────────────────────────────────────────────
+  const triggerPipelineMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/reader/pipeline", {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/reader/stats"] });
+      toast({ title: "تم تشغيل Pipeline يدوياً" });
+    },
+    onError: (err: any) => toast({ title: "لم يُشغَّل Pipeline", description: err.message, variant: "destructive" }),
+  });
+
+  // ── Reset cumulative reader counters ────────────────────────────────────────
+  const resetReaderCountersMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/reader/reset-counters", {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/reader/stats"] });
+      toast({ title: "تم تصفير عدادات القراءة التراكمية" });
+    },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
@@ -1819,16 +1868,44 @@ export default function Home() {
                 <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
                   {readerStats && (
                     <div className="space-y-1.5">
+                      {/* ─ الجلسة الحالية ─ */}
                       <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold">الجلسة الحالية</p>
                       <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
                         <div className="bg-background rounded p-1.5 border"><p className="font-bold text-sm">{readerStats.messagesReceived}</p><p className="text-muted-foreground">رسالة</p></div>
                         <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-1.5"><p className="font-bold text-sm text-orange-600">{readerStats.messagesFromAds}</p><p className="text-muted-foreground">إعلانات</p></div>
                         <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p><p className="text-muted-foreground">جديدة</p></div>
                       </div>
+                      {/* ─ Pipeline الجلسة ─ */}
+                      {(readerStats.pipelineRuns !== undefined) && (
+                        <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
+                          <div className="bg-violet-50 dark:bg-violet-900/20 rounded p-1.5">
+                            <p className="font-bold text-sm text-violet-600">{readerStats.pipelineRuns ?? 0}</p>
+                            <p className="text-muted-foreground">Pipeline</p>
+                          </div>
+                          <div className="bg-background rounded p-1.5 border">
+                            <p className="font-bold text-sm">{readerStats.bufferSize ?? 0}</p>
+                            <p className="text-muted-foreground">مؤقت</p>
+                          </div>
+                          <div className="bg-background rounded p-1.5 border">
+                            <p className="font-bold text-sm">{readerStats.lastPipelineGroups ?? 0}</p>
+                            <p className="text-muted-foreground">مجموعة</p>
+                          </div>
+                        </div>
+                      )}
+                      {/* ─ الإجمالي التراكمي ─ */}
                       {(readerStats.totalMessages !== undefined) && (
                         <>
-                          <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold pt-0.5">الإجمالي التراكمي</p>
-                          <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
+                          <div className="flex items-center justify-between pt-0.5">
+                            <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold">الإجمالي التراكمي</p>
+                            <button
+                              className="text-[9px] text-destructive/70 hover:text-destructive underline leading-none"
+                              onClick={() => { if (confirm("تصفير العدادات التراكمية؟")) resetReaderCountersMutation.mutate(); }}
+                              disabled={resetReaderCountersMutation.isPending}
+                              data-testid="button-reset-reader-counters">
+                              {resetReaderCountersMutation.isPending ? "..." : "تصفير"}
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1 text-center text-[10px]">
                             <div className="bg-blue-50/60 dark:bg-blue-900/10 rounded p-1.5 border border-blue-200/60 dark:border-blue-800/40">
                               <p className="font-bold text-sm text-blue-700 dark:text-blue-400">{(readerStats.totalMessages ?? 0) + readerStats.messagesReceived}</p>
                               <p className="text-muted-foreground">رسالة</p>
@@ -1840,6 +1917,10 @@ export default function Home() {
                             <div className="bg-blue-50/60 dark:bg-blue-900/10 rounded p-1.5 border border-blue-200/60 dark:border-blue-800/40">
                               <p className="font-bold text-sm text-blue-700 dark:text-blue-400">{(readerStats.totalLinksNew ?? 0) + readerStats.linksNew}</p>
                               <p className="text-muted-foreground">جديدة</p>
+                            </div>
+                            <div className="bg-violet-50/60 dark:bg-violet-900/10 rounded p-1.5 border border-violet-200/60 dark:border-violet-800/40">
+                              <p className="font-bold text-sm text-violet-700 dark:text-violet-400">{(readerStats.totalPipelineRuns ?? 0) + (readerStats.pipelineRuns ?? 0)}</p>
+                              <p className="text-muted-foreground">Pipeline</p>
                             </div>
                           </div>
                         </>
@@ -1854,18 +1935,31 @@ export default function Home() {
                     </div>
                   )}
                   {isReaderRunning ? (
-                    <div className="flex gap-1.5">
-                      {readerStatsData?.isPaused ? (
-                        <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-primary/50 text-primary" onClick={() => resumeReaderMutation.mutate()} disabled={resumeReaderMutation.isPending} data-testid="button-resume-reader">
-                          <Play className="w-3 h-3 ml-1" />استئناف
+                    <div className="space-y-1.5">
+                      <div className="flex gap-1.5">
+                        {readerStatsData?.isPaused ? (
+                          <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-primary/50 text-primary" onClick={() => resumeReaderMutation.mutate()} disabled={resumeReaderMutation.isPending} data-testid="button-resume-reader">
+                            <Play className="w-3 h-3 ml-1" />استئناف
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-amber-500/50 text-amber-600 hover:bg-amber-50" onClick={() => pauseReaderMutation.mutate()} disabled={pauseReaderMutation.isPending} data-testid="button-pause-reader">
+                            <Pause className="w-3 h-3 ml-1" />تعليق
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopReaderMutation.mutate()} disabled={stopReaderMutation.isPending} data-testid="sidebar-stop-reader">
+                          <Square className="w-3 h-3 ml-1" />إيقاف
                         </Button>
-                      ) : (
-                        <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-amber-500/50 text-amber-600 hover:bg-amber-50" onClick={() => pauseReaderMutation.mutate()} disabled={pauseReaderMutation.isPending} data-testid="button-pause-reader">
-                          <Pause className="w-3 h-3 ml-1" />تعليق
-                        </Button>
-                      )}
-                      <Button size="sm" variant="outline" className="flex-1 text-xs h-8 border-destructive/50 text-destructive" onClick={() => stopReaderMutation.mutate()} disabled={stopReaderMutation.isPending} data-testid="sidebar-stop-reader">
-                        <Square className="w-3 h-3 ml-1" />إيقاف
+                      </div>
+                      {/* ─ Pipeline يدوي ─ */}
+                      <Button size="sm" variant="outline"
+                        className="w-full text-xs h-8 border-violet-400/60 text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                        onClick={() => triggerPipelineMutation.mutate()}
+                        disabled={triggerPipelineMutation.isPending}
+                        data-testid="button-trigger-pipeline">
+                        {triggerPipelineMutation.isPending
+                          ? <Loader2 className="w-3 h-3 ml-1 animate-spin" />
+                          : <Play className="w-3 h-3 ml-1" />}
+                        تشغيل Pipeline الآن
                       </Button>
                     </div>
                   ) : (
@@ -1878,6 +1972,79 @@ export default function Home() {
                     </Button>
                   )}
                   <p className="text-[10px] text-muted-foreground">تقرأ الرسائل الجديدة فور وصولها وتستخرج الروابط تلقائياً</p>
+                </div>
+              )}
+
+              {/* ── كلمات مفتاحية (Pipeline Filter) ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showKeywordPanel ? "border-violet-400 bg-violet-50 dark:bg-violet-900/10" : ""}`}
+                onClick={() => { setShowKeywordPanel(o => !o); if (!keywordsData) void refetchKeywords(); }}
+                data-testid="sidebar-keywords">
+                <Search className="w-4 h-4 text-violet-500 flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">كلمات مفتاحية Pipeline</span>
+                {keywordsData && <Badge variant="secondary" className="text-[10px]">{keywordsData.keywords.length}</Badge>}
+                {showKeywordPanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showKeywordPanel && (
+                <div className="border border-violet-200 dark:border-violet-800 rounded-lg p-3 space-y-2.5 bg-violet-50/50 dark:bg-violet-900/10">
+                  <p className="text-[10px] text-muted-foreground">
+                    <span className="font-semibold text-violet-700 dark:text-violet-400">إعلانات فقط:</span> المجموعات التي تحتوي هذه الكلمات تُعتبر مجموعات إعلانات فقط.
+                    <br /><span className="font-semibold text-destructive">محظورة:</span> يتم تجاهل الرسائل من المجموعات التي تحتوي هذه الكلمات.
+                  </p>
+                  {/* List */}
+                  {keywordsData && keywordsData.keywords.length > 0 && (
+                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {(["ad_only", "banned"] as const).map(cat => {
+                        const items = keywordsData.keywords.filter(k => k.category === cat);
+                        if (!items.length) return null;
+                        return (
+                          <div key={cat}>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide mb-0.5 px-0.5"
+                              style={{ color: cat === "ad_only" ? "#7c3aed" : "#dc2626" }}>
+                              {cat === "ad_only" ? "إعلانات فقط" : "محظورة"}
+                            </p>
+                            {items.map(kw => (
+                              <div key={kw._id} className="flex items-center gap-1.5 bg-background rounded p-1.5 border text-[10px] mb-0.5">
+                                <span className="flex-1 font-medium">{kw.keyword}</span>
+                                <Button size="sm" variant="ghost" className="h-5 w-5 p-0 flex-shrink-0"
+                                  onClick={() => deleteKeywordMutation.mutate(kw._id)}
+                                  disabled={deleteKeywordMutation.isPending}
+                                  data-testid={`button-del-keyword-${kw._id}`}>
+                                  <Trash2 className="w-3 h-3 text-destructive" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Add form */}
+                  <div className="space-y-1.5">
+                    <div className="flex gap-1.5">
+                      <select
+                        value={newKeywordCategory}
+                        onChange={e => setNewKeywordCategory(e.target.value as "ad_only" | "banned")}
+                        className="h-8 text-xs rounded border border-input bg-background px-2 flex-shrink-0"
+                        data-testid="select-keyword-category">
+                        <option value="ad_only">إعلانات فقط</option>
+                        <option value="banned">محظورة</option>
+                      </select>
+                      <Input
+                        placeholder="كلمة أو عبارة..."
+                        value={newKeyword}
+                        onChange={e => setNewKeyword(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter" && newKeyword.trim()) addKeywordMutation.mutate({ keyword: newKeyword.trim(), category: newKeywordCategory }); }}
+                        className="flex-1 h-8 text-xs"
+                        data-testid="input-new-keyword"
+                      />
+                      <Button size="sm" className="h-8 px-2 bg-violet-600 hover:bg-violet-700"
+                        onClick={() => addKeywordMutation.mutate({ keyword: newKeyword.trim(), category: newKeywordCategory })}
+                        disabled={addKeywordMutation.isPending || !newKeyword.trim()}
+                        data-testid="button-add-keyword">
+                        {addKeywordMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               )}
 

@@ -14,6 +14,7 @@ import { linksRepository }   from "./links-repository.js";
 import { classifyMessage }   from "./nlp-classifier.js";
 import { extractGroupLinks } from "./link-filter.js";
 import { isAdOnlyMedicalGroup } from "../link-store.js";
+import { keywordFilter } from "./keyword-filter.js";
 
 export interface ReaderStats {
   status: "running" | "stopped" | "paused" | "error";
@@ -39,6 +40,7 @@ export interface ReaderStats {
   totalMessages:        number;
   totalLinksFound:      number;
   totalLinksNew:        number;
+  totalPipelineRuns:    number;
 }
 
 // ── Per-workspace state ────────────────────────────────────────────────────────
@@ -196,13 +198,25 @@ async function _runPipeline(wid: string): Promise<void> {
 
     // 3c. NLP-based classification
     //     • isAdOnlyMedicalGroup (name/description keyword match) → ad
+    //     • custom "ad_only" keyword match (keywordFilter)        → ad
     //     • came from an ad message (NLP flagged)                → ad
     //     • everything else with members > 10                    → group
+    const _isAdByKeyword = (name: string | undefined, desc: string | undefined): boolean => {
+      const text = `${name ?? ""} ${desc ?? ""}`;
+      return keywordFilter.isAdOnlySync(wid, text);
+    };
+    const _isBannedByKeyword = (name: string | undefined, desc: string | undefined): boolean => {
+      const text = `${name ?? ""} ${desc ?? ""}`;
+      return keywordFilter.isBannedSync(wid, text);
+    };
+
     const groups = validGroups
       .filter((r) => {
         const m = r.members ?? 0;
         if (m <= 10) return false;
+        if (_isBannedByKeyword(r.name, r.description)) return false;
         if (isAdOnlyMedicalGroup(r.name, r.description)) return false;
+        if (_isAdByKeyword(r.name, r.description)) return false;
         const entry = entries.find(e => _cleanLink(e.url) === _cleanLink(r.url));
         if (entry?.isAdMessage) return false;
         return true;
@@ -213,7 +227,9 @@ async function _runPipeline(wid: string): Promise<void> {
       .filter((r) => {
         const m = r.members ?? 0;
         if (m <= 10) return false;
+        if (_isBannedByKeyword(r.name, r.description)) return false;
         if (isAdOnlyMedicalGroup(r.name, r.description)) return true;
+        if (_isAdByKeyword(r.name, r.description)) return true;
         const entry = entries.find(e => _cleanLink(e.url) === _cleanLink(r.url));
         return entry?.isAdMessage === true;
       })
@@ -236,7 +252,12 @@ async function _runPipeline(wid: string): Promise<void> {
       console.log(`[Pipeline:${wid}] No valid groups — ${ads.length} ad-links discarded`);
     }
 
-    if (s.stats) s.stats.pipelineRuns = (s.stats.pipelineRuns ?? 0) + 1;
+    if (s.stats) {
+      s.stats.pipelineRuns = (s.stats.pipelineRuns ?? 0) + 1;
+      s.stats.totalPipelineRuns = (s.stats.totalPipelineRuns ?? 0) + 1;
+    }
+    // Persist totalPipelineRuns to MongoDB (non-blocking)
+    systemState.incrementPipelineRuns(wid).catch(() => {});
 
   } catch (err) {
     console.error(`[Pipeline:${wid}] Error:`, (err as Error).message);
@@ -296,9 +317,10 @@ function _createManager(wid: string) {
       s.handlerErrors   = 0;
       s.pendingDelta    = { messages: 0, linksFound: 0, linksNew: 0 };
 
-      const [state, totals] = await Promise.all([
+      const [state, totals, totalPipelineRuns] = await Promise.all([
         systemState.get(wid),
         systemState.getReaderTotals(wid),
+        systemState.getPipelineRunsTotal(wid),
       ]);
       const lastId = state.last_read_message_id;
 
@@ -317,6 +339,7 @@ function _createManager(wid: string) {
         totalMessages:    totals.messages,
         totalLinksFound:  totals.linksFound,
         totalLinksNew:    totals.linksNew,
+        totalPipelineRuns,
       };
 
       await systemState.setActiveFunction(wid, "reading");
@@ -507,4 +530,36 @@ export function getMessageReaderFor(workspaceId: string): ReturnType<typeof _cre
     _managerCache.set(workspaceId, _createManager(workspaceId));
   }
   return _managerCache.get(workspaceId)!;
+}
+
+/**
+ * Manually trigger the pipeline for a workspace, bypassing the debounce timer.
+ * Useful for the "Run Pipeline Now" button in the UI.
+ * Returns { ok: true } if triggered, or { ok: false, reason } if skipped.
+ */
+export async function triggerPipelineFor(workspaceId: string): Promise<{ ok: boolean; reason?: string }> {
+  const s = _st(workspaceId);
+
+  if (!s.running) {
+    return { ok: false, reason: "القارئ متوقف — شغّل القراءة أولاً" };
+  }
+  if (s.pipelineLock) {
+    return { ok: false, reason: "Pipeline يعمل حالياً — انتظر اكتماله" };
+  }
+  if (s.pipelineBuffer.size === 0) {
+    return { ok: false, reason: "لا توجد روابط في المخزن المؤقت حالياً" };
+  }
+
+  // Cancel any pending debounce and run immediately
+  if (s.pipelineDebounce) {
+    clearTimeout(s.pipelineDebounce);
+    s.pipelineDebounce = null;
+  }
+
+  // Run async — don't block the HTTP response
+  _runPipeline(workspaceId).catch(err => {
+    console.warn(`[Pipeline:${workspaceId}] Manual trigger error:`, (err as Error).message);
+  });
+
+  return { ok: true };
 }

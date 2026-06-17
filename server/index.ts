@@ -35,6 +35,7 @@ import { excludedGroups } from "./modules/excluded-groups";
 import { getSleepConfig, updateSleepConfigSync } from "./modules/sleep-config";
 import { getJoinConfig, updateJoinConfigSync } from "./modules/join-config";
 import { publishScheduler } from "./modules/publish-scheduler";
+import { keywordFilter } from "./modules/keyword-filter";
 
 const app = express();
 const httpServer = createServer(app);
@@ -132,6 +133,7 @@ const initServer = async () => {
       await adminStore.init();
       await centralLinksStore.init();
       await excludedGroups.init();
+      await keywordFilter.init();
       await systemState.init("main");
       await getLeaveManagerFor("main").init();
       // Load sleep config from DB and update in-memory sync cache

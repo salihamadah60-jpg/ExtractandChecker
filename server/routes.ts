@@ -12,12 +12,14 @@ import { getJoinManagerFor } from "./modules/join-manager.js";
 import { telemetry, getTelemetryFor } from "./modules/telemetry.js";
 import { getLeaveManagerFor } from "./modules/leave-manager.js";
 import { getPublisherFor } from "./modules/publisher.js";
-import { getMessageReaderFor } from "./modules/message-reader.js";
+import { getMessageReaderFor, triggerPipelineFor } from "./modules/message-reader.js";
+import { keywordFilter } from "./modules/keyword-filter.js";
 import { workspaceStore } from "./modules/workspace.js";
 import { adminStore } from "./modules/admin.js";
 import { centralLinksStore } from "./modules/central-links.js";
 import { adminAuth } from "./middleware/admin-auth.js";
 import { getJoinConfig, setJoinConfig } from "./modules/join-config.js";
+import { systemState } from "./modules/system-state.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1529,6 +1531,33 @@ export async function registerRoutes(
     res.json({ stats: mr.getStats(), isRunning: mr.isRunning(), isPaused: mr.isPaused() });
   });
 
+  // ── Manually trigger the pipeline (flush buffered links now) ────────────────
+  app.post("/api/reader/pipeline", async (req: any, res) => {
+    try {
+      const result = await triggerPipelineFor(req.workspaceId ?? "main");
+      if (!result.ok) return res.status(400).json({ error: result.reason });
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── Reset cumulative reader counters to 0 ───────────────────────────────────
+  app.post("/api/reader/reset-counters", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId ?? "main";
+      await systemState.resetReaderCounters(wid);
+      // Update in-memory stats immediately so UI reflects the reset without restart
+      const mr = getMessageReaderFor(wid);
+      const stats = mr.getStats();
+      if (stats) {
+        stats.totalMessages       = 0;
+        stats.totalLinksFound     = 0;
+        stats.totalLinksNew       = 0;
+        stats.totalPipelineRuns   = 0;
+      }
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── Leave manager pause/resume ──────────────────────────────────────────────
   app.post("/api/leave/pause", (req: any, res) => {
     getLeaveManagerFor(req.workspaceId ?? "main").requestPause();
@@ -1602,6 +1631,34 @@ export async function registerRoutes(
     try {
       const { excludedGroups } = await import("./modules/excluded-groups.js");
       await excludedGroups.remove(req.workspaceId ?? "main", url.trim());
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── Keyword Filter Management ───────────────────────────────────────────────
+  app.get("/api/keywords", async (req: any, res) => {
+    try {
+      const list = await keywordFilter.list(req.workspaceId ?? "main");
+      res.json({ keywords: list });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/keywords", async (req: any, res) => {
+    const { keyword, category } = req.body ?? {};
+    if (!keyword?.trim()) return res.status(400).json({ error: "الكلمة مطلوبة" });
+    if (!["ad_only", "banned"].includes(category)) return res.status(400).json({ error: "التصنيف يجب أن يكون ad_only أو banned" });
+    try {
+      const result = await keywordFilter.add(req.workspaceId ?? "main", keyword.trim(), category);
+      if (!result.ok) return res.status(400).json({ error: result.error });
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/keywords/:id", async (req: any, res) => {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: "المعرّف مطلوب" });
+    try {
+      await keywordFilter.remove(req.workspaceId ?? "main", id);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
