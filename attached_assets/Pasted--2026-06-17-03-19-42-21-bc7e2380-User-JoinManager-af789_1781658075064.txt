@@ -1,0 +1,156 @@
+
+2026-06-17 03:19:42.21
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/KgG82H9eE7FFa65WBrGSTJ
+
+2026-06-17 03:20:30.41
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/KgG82H9eE7FFa65WBrGSTJ
+
+2026-06-17 03:26:56.51
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🚫 مطرود من المجموعة: https://chat.whatsapp.com/BzBaSytiWpYA5StnivL6Zm
+
+2026-06-17 03:29:34.24
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/JSSNbTgLHRZ6bkamL161kJ
+
+2026-06-17 03:29:52.19
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 2/3) — انتظار 30ث: https://chat.whatsapp.com/JSSNbTgLHRZ6bkamL161kJ
+
+2026-06-17 03:30:25.08
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/JSSNbTgLHRZ6bkamL161kJ
+
+2026-06-17 03:31:12.78
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/JSSNbTgLHRZ6bkamL161kJ
+
+2026-06-17 03:31:15.84
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/CscXnEk1FlN5TOiAPSComf
+
+2026-06-17 03:31:34.03
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 2/3) — انتظار 30ث: https://chat.whatsapp.com/CscXnEk1FlN5TOiAPSComf
+
+2026-06-17 03:32:07.78
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/CscXnEk1FlN5TOiAPSComf
+
+2026-06-17 03:32:56.21
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/CscXnEk1FlN5TOiAPSComf
+
+2026-06-17 03:33:06.85
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/EEWwYs47axb8xfbTGWxbQA
+
+2026-06-17 03:33:24.99
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 2/3) — انتظار 30ث: https://chat.whatsapp.com/EEWwYs47axb8xfbTGWxbQA
+
+2026-06-17 03:33:58.19
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/EEWwYs47axb8xfbTGWxbQA
+
+2026-06-17 03:34:46.21
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/EEWwYs47axb8xfbTGWxbQA
+
+2026-06-17 03:42:19.93
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🚫 مطرود من المجموعة: https://chat.whatsapp.com/GdijBK76HgmHPdhVD0aSo3
+
+2026-06-17 03:45:04.01
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/JdTSeXEnohn7RWRQm41V4f
+
+2026-06-17 03:45:21.72
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 2/3) — انتظار 30ث: https://chat.whatsapp.com/JdTSeXEnohn7RWRQm41V4f
+
+2026-06-17 03:45:54.31
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/JdTSeXEnohn7RWRQm41V4f
+
+2026-06-17 03:45:55.11
+bc7e2380
+User
+[Coordinator] ⛔ Cannot start "reading" — join window is active. WhatsApp sees all outgoing requests; parallel calls are forbidden.
+
+2026-06-17 03:46:06.84
+bc7e2380
+User
+[Coordinator] ⛔ Cannot start "reading" — join window is active. WhatsApp sees all outgoing requests; parallel calls are forbidden.
+
+2026-06-17 03:46:42.12
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/JdTSeXEnohn7RWRQm41V4f
+
+2026-06-17 03:46:45.11
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/G3XARHBeaEe1h8qq5ubuhv
+
+2026-06-17 03:47:02.81
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 2/3) — انتظار 30ث: https://chat.whatsapp.com/G3XARHBeaEe1h8qq5ubuhv
+
+2026-06-17 03:47:35.61
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/G3XARHBeaEe1h8qq5ubuhv
+
+2026-06-17 03:48:23.33
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/G3XARHBeaEe1h8qq5ubuhv
+
+2026-06-17 03:48:26.05
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/FLl6LQ8oIT9KKYFkXK6H6l
+
+2026-06-17 03:48:44.04
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 2/3) — انتظار 30ث: https://chat.whatsapp.com/FLl6LQ8oIT9KKYFkXK6H6l
+
+2026-06-17 03:49:16.70
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 3/3) — انتظار 45ث: https://chat.whatsapp.com/FLl6LQ8oIT9KKYFkXK6H6l
+
+
+2026-06-17 03:50:06.31
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] ✗ فشل الاتصال بعد 3 محاولات — الرابط يبقى معلقاً: https://chat.whatsapp.com/FLl6LQ8oIT9KKYFkXK6H6l
+
+2026-06-17 03:50:09.35
+bc7e2380
+User
+[JoinManager:af789061-0b49-4524-b4eb-5d4182b8dd17] 🔌 خطأ شبكي حقيقي (محاولة 1/3) — انتظار 15ث: https://chat.whatsapp.com/Kbca2sjhLiKHaNlZaTeR66

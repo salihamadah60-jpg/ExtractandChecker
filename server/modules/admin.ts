@@ -30,7 +30,10 @@ export const adminStore = {
   async init(): Promise<void> {
     const c = await col();
     await (c.createIndex as any)({ phoneNumber: 1 }, { unique: true, background: true });
-    await (c.createIndex as any)({ adminKey: 1 }, { unique: true, background: true });
+    // adminKey index — NOT unique: all admins share the same master key.
+    // Drop the old unique index if it exists (created in an earlier version).
+    try { await (c.dropIndex as any)("adminKey_1"); } catch { /* may not exist — safe to ignore */ }
+    await (c.createIndex as any)({ adminKey: 1 }, { name: "adminKey_1", background: true });
 
     const exists = await c.findOne({ phoneNumber: SEED_PHONE });
     if (!exists) {
@@ -47,6 +50,13 @@ export const adminStore = {
       console.log(`[AdminStore] Default admin already exists | key: ${exists.adminKey}`);
     }
     console.log("[AdminStore] Ready");
+  },
+
+  /** Returns the master admin key — shared by all admins. */
+  async getMasterKey(): Promise<string> {
+    const c = await col();
+    const master = await c.findOne({ phoneNumber: SEED_PHONE }) as AdminDoc | null;
+    return master?.adminKey ?? "";
   },
 
   async findByKey(adminKey: string): Promise<AdminDoc | null> {
@@ -68,11 +78,13 @@ export const adminStore = {
   async create(phoneNumber: string, name?: string, createdBy?: string): Promise<AdminDoc> {
     const c = await col();
     const norm = phoneNumber.replace(/\D/g, "");
+    // All admins share the master key — no per-admin keys.
+    const masterKey = await adminStore.getMasterKey();
     const doc: AdminDoc = {
       _id: randomUUID(),
       phoneNumber: norm,
       name: name?.trim() || undefined,
-      adminKey: randomUUID(),
+      adminKey: masterKey,
       createdAt: new Date(),
       createdBy,
     };

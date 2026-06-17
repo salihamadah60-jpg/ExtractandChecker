@@ -135,7 +135,8 @@ async function joinOne(
   record: { url: string },
   consecutiveFailures: number,
   currentPhone?: string,
-  retryCount = 0
+  retryCount = 0,
+  requiresAdminApproval = false   // pre-computed flag; passed through recursive retries
 ): Promise<{ result: "joined" | "ignored" | "pending_approval" | "kicked" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean }> {
   const s   = _st(wid);
   const tel = getTelemetryFor(wid);
@@ -188,6 +189,34 @@ async function joinOne(
       return { result: "joined" };
     }
   } catch { /* non-fatal */ }
+
+  // ── Pre-check: does this group require admin approval? ────────────────────────
+  // On the FIRST attempt, call groupGetInviteInfo to inspect joinApprovalMode BEFORE
+  // calling groupAcceptInvite. Groups with joinApprovalMode=true submit a join REQUEST;
+  // WhatsApp then drops the WS connection instead of returning a clean JID, which Baileys
+  // reports as a network error. We must NOT retry — we should mark as pending_approval.
+  if (retryCount === 0) {
+    try {
+      const sockState = baileysManager.getActiveStateForWorkspace(wid);
+      if (sockState?.sock) {
+        const invInfo = await Promise.race([
+          sockState.sock.groupGetInviteInfo(inviteCode),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 8_000)),
+        ]) as any;
+
+        if (invInfo?.joinApprovalMode === true) {
+          requiresAdminApproval = true;
+          console.log(`[JoinManager:${wid}] ⚠ مجموعة تشترط موافقة المشرف: ${record.url}`);
+        }
+
+        // Update progress with group name if we got it from invite info
+        const preCheckName: string | undefined = invInfo?.subject || invInfo?.name || undefined;
+        if (preCheckName && s.progress) {
+          s.progress.currentLink = `${preCheckName} — ${record.url}`;
+        }
+      }
+    } catch { /* non-fatal: proceed without pre-check */ }
+  }
 
   const t0 = Date.now();
 
@@ -367,17 +396,29 @@ async function joinOne(
       }
 
       case "retry": {
-        // True OS/TCP network error — safe to retry up to 3 times.
-        // BUT first: check if the error is actually a disguised admin-approval case.
-        //
-        // When a group requires admin approval, WhatsApp ACCEPTS the join request
-        // (visible in app as "pending") then immediately drops/resets the connection
-        // instead of returning a clean JID. Baileys sees this as ETIMEDOUT/ECONNRESET.
-        // Retrying without checking would spam the group admin with duplicate requests.
-        //
-        // Detection: after the error, fetch invite info to get the JID, then check
-        // groupMetadata.pendingParticipants — if the bot appears there, the request
-        // was already submitted successfully and this is pending_approval, not a retry.
+        // ── Admin-approval fast-path ──────────────────────────────────────────────
+        // If we confirmed BEFORE joining that the group requires admin approval, the
+        // join REQUEST was submitted but WhatsApp dropped the WS connection instead of
+        // returning a clean JID (this is WhatsApp's expected behaviour for approval groups).
+        // Do NOT retry — that would spam the admin. Mark as pending immediately.
+        if (requiresAdminApproval) {
+          console.log(
+            `[JoinManager:${wid}] ⏳ مجموعة تشترط موافقة المشرف — الطلب أُرسل ولن تُعاد المحاولة: ${record.url}`
+          );
+          await linksRepository.setStatus(wid, record.url, "Ignored");
+          try {
+            const _paDb = await (await import("../mongo-auth-state.js")).getDb();
+            await _paDb.collection("Links_Repository").updateOne(
+              { workspaceId: wid, url: record.url },
+              { $set: { pendingAdminApproval: true, pendingApprovalSince: new Date(), updatedAt: new Date() } }
+            );
+          } catch { /* non-fatal */ }
+          s.joiningCache.delete(inviteCode);
+          return { result: "pending_approval" };
+        }
+
+        // ── True network error — retry up to 3 times ─────────────────────────────
+        // Legacy post-error check (kept as secondary detection for unknown approval groups):
         try {
           const sockState = baileysManager.getActiveStateForWorkspace(wid);
           if (sockState?.sock) {
@@ -459,9 +500,12 @@ async function joinOne(
               return { result: "network_failed" };
             }
           }
-          return joinOne(wid, record, consecutiveFailures, currentPhone, retryCount + 1);
+          return joinOne(wid, record, consecutiveFailures, currentPhone, retryCount + 1, requiresAdminApproval);
         }
-        console.warn(`[JoinManager:${wid}] ✗ فشل الاتصال بعد ${MAX_NET_RETRIES} محاولات — الرابط يبقى معلقاً: ${record.url}`);
+        // After 3 retries, permanently ignore the link so it's not re-queued on next start.
+        // These links are likely: already-joined (kicked), or truly dead network endpoints.
+        console.warn(`[JoinManager:${wid}] ✗ فشل الاتصال بعد ${MAX_NET_RETRIES} محاولات — تم تجاهل الرابط: ${record.url}`);
+        await linksRepository.setStatus(wid, record.url, "Ignored").catch(() => {});
         return { result: "network_failed" };
       }
 

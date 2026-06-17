@@ -176,14 +176,7 @@ async function _runPipeline(wid: string): Promise<void> {
   console.log(`[Pipeline:${wid}] Starting — ${linksToCheck.length} buffered links`);
 
   try {
-    // 1. Pause reader
-    s.running = false;
-    baileysManager.clearMessageHandlerForWorkspace(wid);
-    coord.release();
-    await systemState.setActiveFunction(wid, null);
-    if (s.stats) { s.stats.status = "stopped"; s.stats.stoppedAt = new Date().toISOString(); s.stats.pausedAt = new Date().toISOString(); }
-    console.log(`[Pipeline:${wid}] Reader paused`);
-
+    // Reading continues in the background — pipeline runs concurrently (safe: read-only API calls).
     s.lastPipelineRun = Date.now();
 
     // 2. Check links
@@ -237,20 +230,10 @@ async function _runPipeline(wid: string): Promise<void> {
 
     if (groups.length > 0) {
       await linksRepository.saveFilteredLinks(wid, groups, []);
-      console.log(`[Pipeline:${wid}] ✓ ${groups.length} groups saved | ${ads.length} ad-links discarded (not polluting DB)`);
-
-      if (!coord.isRunning()) {
-        try {
-          const { getJoinManagerFor } = await import("./join-manager.js");
-          getJoinManagerFor(wid).start().catch((err: Error) =>
-            console.warn(`[Pipeline:${wid}] Join deferred:`, err.message)
-          );
-        } catch (err) {
-          console.warn(`[Pipeline:${wid}] Join skip:`, (err as Error).message);
-        }
-      }
+      console.log(`[Pipeline:${wid}] ✓ ${groups.length} groups saved | ${ads.length} ad-links discarded`);
+      // NOTE: Join does NOT auto-start — user must trigger it manually (prevents unexpected auto-resume).
     } else {
-      console.log(`[Pipeline:${wid}] No valid groups — ${ads.length} ad-links discarded, skipping join`);
+      console.log(`[Pipeline:${wid}] No valid groups — ${ads.length} ad-links discarded`);
     }
 
     if (s.stats) s.stats.pipelineRuns = (s.stats.pipelineRuns ?? 0) + 1;
@@ -258,32 +241,7 @@ async function _runPipeline(wid: string): Promise<void> {
   } catch (err) {
     console.error(`[Pipeline:${wid}] Error:`, (err as Error).message);
   } finally {
-    // 5. Resume reader if still wanted
-    if (s.shouldBeRunning && baileysManager.isConnectedForWorkspace(wid) && !coord.isRunning()) {
-      try {
-        const acquired = await coord.acquire("reading");
-        if (acquired) {
-          await systemState.setActiveFunction(wid, "reading");
-          s.running = true;
-          s.paused  = false;
-          if (s.stats) { s.stats.status = "running"; s.stats.stoppedAt = undefined; s.stats.pausedAt = undefined; }
-          s.handlerErrors = 0;
-
-          const self = getMessageReaderFor(wid);
-          baileysManager.setMessageHandlerForWorkspace(wid, async (msgs: any[]) => {
-            for (const msg of msgs) {
-              if (!s.running) break;
-              await self._handleMessage(msg);
-            }
-          });
-          console.log(`[Pipeline:${wid}] Reader resumed`);
-        } else {
-          console.warn(`[Pipeline:${wid}] Cannot re-acquire coordinator — reader stays paused`);
-        }
-      } catch (err) {
-        console.warn(`[Pipeline:${wid}] Resume error:`, (err as Error).message);
-      }
-    }
+    // Reading was never paused — nothing to resume.
     s.pipelineLock = false;
   }
 }
@@ -298,35 +256,8 @@ function _createManager(wid: string) {
     _listenerRegistered.add(wid);
     const coord = getCoordinatorFor(wid);
 
-    // Auto-resume after any other function finishes
-    coord.on("released", () => {
-      const s = _st(wid);
-      if (!s.shouldBeRunning || s.running || s.starting || s.pipelineLock) return;
-      setTimeout(async () => {
-        const s2 = _st(wid);
-        if (!s2.shouldBeRunning || s2.running || s2.starting || s2.pipelineLock) return;
-        if (!baileysManager.isConnectedForWorkspace(wid)) return;
-        try {
-          await getMessageReaderFor(wid).start();
-          console.log(`[MessageReader:${wid}] Auto-resumed after coordinator released`);
-        } catch { /* coordinator may have been re-acquired already */ }
-      }, 3_000);
-    });
-
-    // Gracefully stop when a higher-priority function wants the coordinator
-    coord.on("preempted", () => {
-      const s = _st(wid);
-      if (!s.running) return;
-      console.log(`[MessageReader:${wid}] Preempted — stopping to yield coordinator`);
-      // Keep shouldBeRunning=true so we auto-resume after the other function finishes
-      s.running = false;
-      baileysManager.clearMessageHandlerForWorkspace(wid);
-      if (s.pipelineDebounce) { clearTimeout(s.pipelineDebounce); s.pipelineDebounce = null; }
-      if (s.stats) { s.stats.status = "stopped"; s.stats.stoppedAt = new Date().toISOString(); }
-      // Release so the preempting function can acquire
-      coord.release();
-      systemState.setActiveFunction(wid, null).catch(() => {});
-    });
+    // Reading runs on its own independent track — it is NEVER preempted and NEVER
+    // auto-resumes based on coordinator events (it runs continuously on its own).
   }
 
   return {
