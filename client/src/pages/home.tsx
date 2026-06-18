@@ -276,6 +276,11 @@ export default function Home() {
   const [manualUploadResult, setManualUploadResult] = useState<{ total: number; added: number; duplicates: number } | null>(null);
   const [isManualUploading, setIsManualUploading] = useState(false);
   const manualUploadRef = useRef<HTMLInputElement>(null);
+
+  const [showDirectImport, setShowDirectImport] = useState(false);
+  const [directImportResult, setDirectImportResult] = useState<{ total: number; added: number; reset: number; skipped: number } | null>(null);
+  const [isDirectImporting, setIsDirectImporting] = useState(false);
+  const directImportRef = useRef<HTMLInputElement>(null);
   const [showExcludedPanel, setShowExcludedPanel] = useState(false);
   const [showPendingApprovalPanel, setShowPendingApprovalPanel] = useState(false);
   const [showKeywordPanel, setShowKeywordPanel] = useState(false);
@@ -1889,6 +1894,82 @@ export default function Home() {
                       إضافة (<span className="font-bold">{extractBulkLinks(bulkPasteText).length}</span>)
                     </Button>
                   </div>
+                </div>
+              )}
+
+              {/* ── رفع روابط جاهزة (بدون فلترة) ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showDirectImport ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" : "border-emerald-300 dark:border-emerald-700"}`}
+                onClick={() => { setShowDirectImport(o => !o); setDirectImportResult(null); }}
+                data-testid="sidebar-direct-import">
+                <Upload className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                <span className="flex-1 text-right text-sm font-medium text-emerald-700 dark:text-emerald-400">رفع روابط جاهزة (بدون فلترة)</span>
+                {showDirectImport ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showDirectImport && (
+                <div className="border border-emerald-400/40 rounded-lg p-3 space-y-2 bg-emerald-50/50 dark:bg-emerald-900/10">
+                  <div className="flex items-start gap-2 rounded-md bg-emerald-100/70 dark:bg-emerald-900/30 border border-emerald-300/50 p-2">
+                    <span className="text-emerald-600 text-sm mt-0.5">✅</span>
+                    <p className="text-[10px] text-emerald-800 dark:text-emerald-300 leading-relaxed">
+                      هذه الروابط <strong>جاهزة ومفلترة مسبقاً</strong> — ستُضاف مباشرةً إلى قائمة المعلقة <strong>دون أي فحص أو فلترة</strong>. الروابط الجديدة تُضاف، والروابط التي كانت "محجوبة" أو "مغادرة" تُعاد تفعيلها.
+                    </p>
+                  </div>
+                  <input
+                    ref={directImportRef}
+                    type="file"
+                    accept=".docx,.doc"
+                    className="hidden"
+                    data-testid="input-direct-import"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setIsDirectImporting(true);
+                      setDirectImportResult(null);
+                      try {
+                        const fd = new FormData();
+                        fd.append("file", file);
+                        const resp = await fetch("/api/links-repository/direct-import", { method: "POST", body: fd, headers: wkHeaders() });
+                        const data = await resp.json();
+                        if (!resp.ok) throw new Error(data.error || "خطأ في الرفع");
+                        setDirectImportResult(data);
+                        void refetchRepoCounts();
+                        toast({ title: "✅ تم الاستيراد", description: `أُضيف ${data.added} رابط جديد، أُعيد تفعيل ${data.reset} رابط` });
+                      } catch (err: any) {
+                        toast({ title: "خطأ في الاستيراد", description: err.message, variant: "destructive" });
+                      } finally {
+                        setIsDirectImporting(false);
+                        if (directImportRef.current) directImportRef.current.value = "";
+                      }
+                    }}
+                  />
+                  <Button size="sm"
+                    className="w-full h-9 text-sm gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+                    disabled={isDirectImporting}
+                    onClick={() => directImportRef.current?.click()}
+                    data-testid="button-direct-import-pick">
+                    {isDirectImporting
+                      ? <><Loader2 className="w-4 h-4 animate-spin" />جاري الإضافة...</>
+                      : <><Upload className="w-4 h-4" />اختيار ملف DOCX جاهز</>}
+                  </Button>
+                  {directImportResult && (
+                    <div className="grid grid-cols-4 gap-1 text-[10px] text-center mt-1">
+                      <div className="bg-background rounded p-1.5 border">
+                        <p className="font-bold text-sm">{directImportResult.total}</p>
+                        <p className="text-muted-foreground">إجمالي</p>
+                      </div>
+                      <div className="bg-emerald-50 dark:bg-emerald-900/20 rounded p-1.5 border border-emerald-200">
+                        <p className="font-bold text-sm text-emerald-600">{directImportResult.added}</p>
+                        <p className="text-muted-foreground">جديد</p>
+                      </div>
+                      <div className="bg-blue-50 dark:bg-blue-900/20 rounded p-1.5 border border-blue-200">
+                        <p className="font-bold text-sm text-blue-600">{directImportResult.reset}</p>
+                        <p className="text-muted-foreground">أُعيد</p>
+                      </div>
+                      <div className="bg-muted rounded p-1.5">
+                        <p className="font-bold text-sm text-muted-foreground">{directImportResult.skipped}</p>
+                        <p className="text-muted-foreground">موجود</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

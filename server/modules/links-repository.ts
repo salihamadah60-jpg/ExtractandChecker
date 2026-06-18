@@ -74,6 +74,48 @@ export const linksRepository = {
     }
   },
 
+  /**
+   * Bulk direct-import pre-filtered links — no WhatsApp API check, no NLP filter.
+   * - NEW links → inserted as "Pending"
+   * - Existing "Ignored" or "Left" links → reset to "Pending"
+   * - Existing "Pending" or "Joined" links → untouched
+   * Returns counts: { added, reset, skipped }
+   */
+  async directImport(
+    workspaceId: string,
+    urls: string[]
+  ): Promise<{ added: number; reset: number; skipped: number }> {
+    if (!urls.length) return { added: 0, reset: 0, skipped: 0 };
+    const c = await col();
+    const now = new Date();
+
+    // Upsert all: $setOnInsert handles new links, existing ones only get updatedAt
+    const upsertOps = urls.map(url => ({
+      updateOne: {
+        filter: { workspaceId, url },
+        update: {
+          $setOnInsert: { workspaceId, url, type: "Group" as LinkType, status: "Pending" as LinkStatus, source: "manual" as LinkSource, addedAt: now, checkCount: 0 },
+          $set: { updatedAt: now },
+        },
+        upsert: true,
+      },
+    }));
+
+    const upsertResult = await c.bulkWrite(upsertOps, { ordered: false });
+    const added = upsertResult.upsertedCount;
+
+    // Reset Ignored/Left → Pending (these were skipped by $setOnInsert above)
+    const resetResult = await c.updateMany(
+      { workspaceId, url: { $in: urls }, status: { $in: ["Ignored", "Left"] } },
+      { $set: { status: "Pending" as LinkStatus, updatedAt: now } }
+    );
+    const reset = resetResult.modifiedCount;
+    const skipped = urls.length - added - reset;
+
+    console.log(`[LinksRepository] directImport (wid: ${workspaceId}) — added: ${added}, reset: ${reset}, skipped: ${skipped}`);
+    return { added, reset, skipped };
+  },
+
   async upsert(
     workspaceId: string,
     url: string,

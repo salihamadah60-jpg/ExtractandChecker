@@ -1169,6 +1169,40 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * Direct import of pre-filtered ready links — NO WhatsApp API check, NO NLP filter.
+   * Accepts a DOCX file and adds all WhatsApp links directly as "Pending".
+   * - NEW links → inserted as Pending
+   * - Ignored/Left links → reset to Pending
+   * - Pending/Joined links → untouched (not counted as duplicates for Pending, skipped for Joined)
+   */
+  app.post("/api/links-repository/direct-import", upload.single("file"), async (req: any, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "لم يتم رفع ملف" });
+      const wid = req.workspaceId ?? "main";
+
+      const [textResult, htmlResult] = await Promise.all([
+        mammoth.extractRawText({ buffer: req.file.buffer }),
+        mammoth.convertToHtml({ buffer: req.file.buffer }),
+      ]);
+      const combined = textResult.value + " " + htmlResult.value;
+
+      const waRegex = /https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+/g;
+      const rawLinks = [...combined.matchAll(waRegex)].map((m) =>
+        m[0].replace(/[.,;)>\]'"»«]+$/, "").trim()
+      );
+      const uniqueLinks = [...new Set(rawLinks.filter(Boolean))];
+
+      if (!uniqueLinks.length) return res.status(400).json({ error: "لم يتم العثور على روابط واتساب في الملف" });
+
+      const counts = await linksRepository.directImport(wid, uniqueLinks);
+      console.log(`[DirectImport:${wid}] total: ${uniqueLinks.length} — added: ${counts.added}, reset: ${counts.reset}, skipped: ${counts.skipped}`);
+      res.json({ total: uniqueLinks.length, ...counts });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Join Manager ───────────────────────────────────────────────────────────
   app.post("/api/join/start", async (req: any, res) => {
     try {
