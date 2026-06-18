@@ -15,6 +15,7 @@ import { classifyWAError }           from "./wa-error-handler.js";
 import { WINDOW_DURATION_MS, SLOTS_PER_WINDOW, computeSlotOffsets, shuffle } from "./human-mimicry.js";
 import { getJoinConfigSync } from "./join-config.js";
 import { isAdOnlyMedicalGroup }     from "../link-store.js";
+import { keywordFilter }            from "./keyword-filter.js";
 import { getLeaveManagerFor }       from "./leave-manager.js";
 import { isSleepTime, msUntilWakeUp } from "./sleep-scheduler.js";
 
@@ -298,15 +299,27 @@ async function joinOne(
       await c.updateOne({ workspaceId: wid, url: record.url }, { $set: { groupJid, updatedAt: new Date() } });
     }
 
-    // Ad-group detection: add to leave queue if the group is ad-only
+    // Ad-group / banned keyword detection: add to leave queue
     let isAdDetected = false;
-    if (capturedMeta && isAdOnlyMedicalGroup(capturedMeta.subject ?? "", capturedMeta.desc ?? "")) {
-      isAdDetected = true;
-      try {
-        await getLeaveManagerFor(wid).enqueue(record.url, "اكتشاف تلقائي — مجموعة إعلانية");
-        console.log(`[JoinManager:${wid}] 📤 مجموعة إعلانية → قائمة المغادرة: ${record.url}`);
-      } catch (e) {
-        console.warn(`[JoinManager:${wid}] ⚠ تعذّر إضافة الإعلانات لقائمة المغادرة:`, (e as Error).message);
+    if (capturedMeta) {
+      const combinedText = `${capturedMeta.subject ?? ""} ${capturedMeta.desc ?? ""}`;
+      const isAdByMedical = isAdOnlyMedicalGroup(capturedMeta.subject ?? "", capturedMeta.desc ?? "");
+      const isAdByKw      = keywordFilter.isAdOnlySync(wid, combinedText);
+      const isBannedByKw  = keywordFilter.isBannedSync(wid, combinedText);
+
+      if (isAdByMedical || isAdByKw || isBannedByKw) {
+        isAdDetected = true;
+        const reason = isBannedByKw
+          ? "اكتشاف تلقائي — مجموعة محظورة (كلمة مفتاحية)"
+          : isAdByKw
+            ? "اكتشاف تلقائي — مجموعة إعلانية (كلمة مفتاحية)"
+            : "اكتشاف تلقائي — مجموعة إعلانية";
+        try {
+          await getLeaveManagerFor(wid).enqueue(record.url, reason);
+          console.log(`[JoinManager:${wid}] 📤 ${reason} → قائمة المغادرة: ${record.url}`);
+        } catch (e) {
+          console.warn(`[JoinManager:${wid}] ⚠ تعذّر الإضافة لقائمة المغادرة:`, (e as Error).message);
+        }
       }
     }
 

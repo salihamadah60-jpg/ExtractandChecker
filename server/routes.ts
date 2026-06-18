@@ -1084,6 +1084,16 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/links-repository/ignore-all-pending", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId ?? "main";
+      const count = await linksRepository.ignoreAllPending(wid);
+      res.json({ success: true, count });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/links-repository/retry-approval-all", async (req: any, res) => {
     try {
       const wid = req.workspaceId ?? "main";
@@ -1661,6 +1671,25 @@ export async function registerRoutes(
       await keywordFilter.remove(req.workspaceId ?? "main", id);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/keywords/bulk", async (req: any, res) => {
+    const { keywords, category } = req.body ?? {};
+    if (!["ad_only", "banned"].includes(category)) return res.status(400).json({ error: "التصنيف يجب أن يكون ad_only أو banned" });
+    const raw: string = Array.isArray(keywords) ? keywords.join("\n") : (keywords ?? "");
+    const items = raw.split(/[\n,،]+/).map((s: string) => s.trim()).filter(Boolean);
+    if (items.length === 0) return res.status(400).json({ error: "لا توجد كلمات للإضافة" });
+    const wid = req.workspaceId ?? "main";
+    let added = 0;
+    const errors: string[] = [];
+    for (const kw of items) {
+      try {
+        const result = await keywordFilter.add(wid, kw, category);
+        if (result.ok) added++;
+        else errors.push(kw);
+      } catch { errors.push(kw); }
+    }
+    res.json({ success: true, added, skipped: errors.length });
   });
 
   // ══════════════════════════════════════════════════════════════════════════

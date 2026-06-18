@@ -379,7 +379,8 @@ function _createManager(wid: string) {
       s.running = false;
       baileysManager.clearMessageHandlerForWorkspace(wid);
       if (s.stats) { s.stats.status = "stopped"; s.stats.continuous = false; s.stats.stoppedAt = new Date().toISOString(); }
-      getCoordinatorFor(wid).release();
+      // Explicitly release the reading track (not the heavy track) even when joining is active
+      getCoordinatorFor(wid).release("reading");
       await Promise.all([
         systemState.setActiveFunction(wid, null),
         systemState.setReaderContinuous(wid, false),
@@ -392,8 +393,9 @@ function _createManager(wid: string) {
       try {
         const enabled = await systemState.getReaderContinuous(wid);
         const s       = _st(wid);
-        const coord   = getCoordinatorFor(wid);
-        if (!enabled || s.running || coord.isRunning()) return;
+        // NOTE: coord.isRunning() check intentionally removed — reading is fully independent
+        // and must auto-resume even when joining/publishing/leaving is active.
+        if (!enabled || s.running) return;
         await getMessageReaderFor(wid).start();
         console.log(`[MessageReader:${wid}] Auto-started on WhatsApp connect`);
       } catch (err) {

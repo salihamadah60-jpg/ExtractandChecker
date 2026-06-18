@@ -511,6 +511,15 @@ export const linksRepository = {
     }
   },
 
+  async ignoreAllPending(workspaceId: string): Promise<number> {
+    const c = await col();
+    const result = await c.updateMany(
+      { workspaceId, status: "Pending" },
+      { $set: { status: "Ignored" as LinkStatus, updatedAt: new Date() } }
+    );
+    return result.modifiedCount;
+  },
+
   // ── Backward-compat helpers (no workspaceId, used by legacy link-store flow) ──
 
   /** @deprecated use countByStatus(workspaceId) */

@@ -281,6 +281,10 @@ export default function Home() {
   const [showKeywordPanel, setShowKeywordPanel] = useState(false);
   const [newKeyword, setNewKeyword] = useState("");
   const [newKeywordCategory, setNewKeywordCategory] = useState<"ad_only" | "banned">("ad_only");
+  const [showBulkKeywords, setShowBulkKeywords] = useState(false);
+  const [bulkKeywordsText, setBulkKeywordsText] = useState("");
+  const [bulkKeywordsCategory, setBulkKeywordsCategory] = useState<"ad_only" | "banned">("ad_only");
+  const [showTelemetryInJoin, setShowTelemetryInJoin] = useState(false);
   const [newExcludedUrl, setNewExcludedUrl] = useState("");
   const [sleepStartTime, setSleepStartTime] = useState("01:30");
   const [sleepConfigSaved, setSleepConfigSaved] = useState(false);
@@ -394,7 +398,7 @@ export default function Home() {
 
   const { data: telemetryData } = useQuery<TelemetryRes>({
     queryKey: ["/api/telemetry"],
-    refetchInterval: showTelemetryPanel || coordinatorData?.active === "joining" ? 3000 : 30000,
+    refetchInterval: (showTelemetryInJoin && showJoinSidePanel) || coordinatorData?.active === "joining" ? 3000 : 30000,
   });
 
   // Restore check session state on page refresh — runs once when data arrives
@@ -919,6 +923,28 @@ export default function Home() {
   const deleteKeywordMutation = useMutation({
     mutationFn: (id: string) => fetch(`/api/keywords/${id}`, { method: "DELETE", headers: wkHeaders() }).then(r => r.json()),
     onSuccess: () => { void refetchKeywords(); toast({ title: "تم حذف الكلمة" }); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const bulkKeywordsMutation = useMutation({
+    mutationFn: (body: { keywords: string; category: string }) =>
+      apiRequest("POST", "/api/keywords/bulk", body).then(r => r.json()),
+    onSuccess: (data: any) => {
+      setBulkKeywordsText("");
+      setShowBulkKeywords(false);
+      void refetchKeywords();
+      toast({ title: `تمت إضافة ${data?.added ?? 0} كلمة` + (data?.skipped > 0 ? ` (${data.skipped} مكررة)` : "") });
+    },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const ignoreAllPendingMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/links-repository/ignore-all-pending", {}).then(r => r.json()),
+    onSuccess: (data: any) => {
+      void refetchRepoCounts();
+      void refetchJoinProgress2();
+      toast({ title: `تم تجاهل ${data?.count ?? 0} رابط معلق` });
+    },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
@@ -1502,7 +1528,7 @@ export default function Home() {
                       </div>
                       {/* Time distribution — always visible */}
                       {(() => {
-                        const count = parseInt(joinMaxLinks) > 0 ? parseInt(joinMaxLinks) : (repoCounts?.pending ?? 0);
+                        const count = parseInt(joinMaxLinks) > 0 ? parseInt(joinMaxLinks) : (repoCounts?.Pending ?? 0);
                         const hasExplicit = joinMaxLinks && parseInt(joinMaxLinks) > 0;
                         const { windows, label } = joinTimeEstimate(count, joinSlotsPerWindow);
                         return (
@@ -1665,6 +1691,87 @@ export default function Home() {
                       ))}
                     </div>
                   )}
+                  {/* ── تجاهل جميع الروابط المعلقة ── */}
+                  {(repoCounts?.Pending ?? 0) > 0 && coordinatorData?.active !== "joining" && (
+                    <div className="flex items-start gap-2 pt-1.5 border-t border-border">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] text-muted-foreground leading-relaxed">
+                          <span className="font-semibold text-foreground">{repoCounts?.Pending}</span> رابط معلق من جلسة سابقة — تجاهلها لبدء جلسة جديدة نظيفة
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" className="h-7 text-[10px] border-destructive/50 text-destructive hover:bg-destructive/10 flex-shrink-0"
+                        onClick={() => { if (confirm(`تجاهل ${repoCounts?.Pending} رابط معلق؟ لا يمكن التراجع عن هذا.`)) ignoreAllPendingMutation.mutate(); }}
+                        disabled={ignoreAllPendingMutation.isPending}
+                        data-testid="button-ignore-all-pending">
+                        {ignoreAllPendingMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                        تجاهل الكل
+                      </Button>
+                    </div>
+                  )}
+                  {/* ── التلميترى والنوافذ (مدمج في قسم الانضمام) ── */}
+                  <div className="border-t border-border pt-2">
+                    <button className="w-full flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setShowTelemetryInJoin(o => !o)}
+                      data-testid="button-telemetry-in-join">
+                      <Activity className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                      <span className="flex-1 text-right font-medium text-[11px]">التلميترى والنوافذ</span>
+                      {telemetryData?.report.cooldownActive && <Badge className="text-[10px] bg-orange-500 h-4 px-1.5">تبريد</Badge>}
+                      {showTelemetryInJoin ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                    {showTelemetryInJoin && (
+                      <div className="mt-2 space-y-3">
+                        <div className="grid grid-cols-2 gap-1 text-[10px] text-center">
+                          <div className="bg-background rounded p-1.5 border">
+                            <p className="font-bold text-sm">{telemetryData?.report.avgLatencyMs ?? 0} <span className="text-[10px] font-normal">ms</span></p>
+                            <p className="text-muted-foreground">متوسط التأخير</p>
+                          </div>
+                          <div className="bg-background rounded p-1.5 border">
+                            <p className="font-bold text-sm">{telemetryData?.report.lastLatencyMs ?? 0} <span className="text-[10px] font-normal">ms</span></p>
+                            <p className="text-muted-foreground">آخر قياس</p>
+                          </div>
+                        </div>
+                        {telemetryData?.report.cooldownActive && (
+                          <div className="flex items-center gap-1.5 text-[10px] bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 rounded p-2 border border-orange-200 dark:border-orange-800">
+                            <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                            <span>تبريد نشط حتى {telemetryData.report.cooldownUntil ? new Date(telemetryData.report.cooldownUntil).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+                          </div>
+                        )}
+                        {telemetryData?.report.warning && !telemetryData.report.cooldownActive && (
+                          <p className="text-[10px] text-amber-600 bg-amber-50 rounded p-1.5">{telemetryData.report.warning}</p>
+                        )}
+                        {telemetryData?.windowHistory && telemetryData.windowHistory.length > 0 ? (
+                          <div>
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                              <BarChart2 className="w-3 h-3" />آخر {Math.min(telemetryData.windowHistory.length, 10)} نوافذ
+                            </p>
+                            <div className="space-y-1">
+                              {[...telemetryData.windowHistory].reverse().slice(0, 10).map((w) => (
+                                <div key={w.windowNumber} className={`flex items-center gap-1.5 rounded p-1.5 text-[10px] border ${w.hadCooldown ? "bg-orange-50 dark:bg-orange-900/10 border-orange-200 dark:border-orange-800" : "bg-background border-border"}`}>
+                                  <span className="font-bold text-muted-foreground w-5 text-center">#{w.windowNumber}</span>
+                                  <div className="flex-1 grid grid-cols-3 gap-1 text-center">
+                                    <span className="text-green-600 font-bold">✓ {w.joined}</span>
+                                    <span className="text-destructive font-bold">✗ {w.failed}</span>
+                                    <span className="text-muted-foreground">{w.slotsExecuted} فتحات</span>
+                                  </div>
+                                  <span className="text-muted-foreground text-[9px] whitespace-nowrap">{Math.round(w.durationMs / 1000)}ث</span>
+                                  {w.hadCooldown && <AlertTriangle className="w-2.5 h-2.5 text-orange-500 flex-shrink-0" />}
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-1.5 flex gap-2 text-[9px] text-muted-foreground border-t pt-1.5">
+                              <span>إجمالي: <b>{telemetryData.windowHistory.length}</b> نافذة</span>
+                              <span>·</span>
+                              <span>انضم: <b className="text-green-600">{telemetryData.windowHistory.reduce((a, w) => a + w.joined, 0)}</b></span>
+                              <span>·</span>
+                              <span>فشل: <b className="text-destructive">{telemetryData.windowHistory.reduce((a, w) => a + w.failed, 0)}</b></span>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-[10px] text-muted-foreground text-center py-2">لم تنتهِ أي نافذة بعد — ابدأ الانضمام لرؤية البيانات</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1697,76 +1804,6 @@ export default function Home() {
                 <p className="text-[10px] text-muted-foreground">يتوقف الانضمام يومياً من الوقت المحدد لمدة 6 ساعات</p>
               </div>
 
-              {/* ── لوحة التلميترى ── */}
-              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showTelemetryPanel ? "border-primary bg-primary/5" : ""}`}
-                onClick={() => setShowTelemetryPanel(o => !o)}
-                data-testid="sidebar-telemetry">
-                <Activity className="w-4 h-4 text-primary flex-shrink-0" />
-                <span className="flex-1 text-right text-sm">التلميترى والنوافذ</span>
-                {telemetryData?.report.cooldownActive && <Badge className="text-[10px] bg-orange-500">تبريد</Badge>}
-                {showTelemetryPanel ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
-              </Button>
-              {showTelemetryPanel && (
-                <div className="border border-primary/20 rounded-lg p-3 space-y-3 bg-primary/5">
-                  {/* ── Current latency / cooldown ── */}
-                  <div>
-                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
-                      <Zap className="w-3 h-3" />زمن الاستجابة
-                    </p>
-                    <div className="grid grid-cols-2 gap-1 text-[10px] text-center">
-                      <div className="bg-background rounded p-1.5 border">
-                        <p className="font-bold text-sm">{telemetryData?.report.avgLatencyMs ?? 0} <span className="text-[10px] font-normal">ms</span></p>
-                        <p className="text-muted-foreground">متوسط</p>
-                      </div>
-                      <div className="bg-background rounded p-1.5 border">
-                        <p className="font-bold text-sm">{telemetryData?.report.lastLatencyMs ?? 0} <span className="text-[10px] font-normal">ms</span></p>
-                        <p className="text-muted-foreground">آخر قياس</p>
-                      </div>
-                    </div>
-                    {telemetryData?.report.cooldownActive && (
-                      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 rounded p-2 border border-orange-200 dark:border-orange-800">
-                        <AlertTriangle className="w-3 h-3 flex-shrink-0" />
-                        <span>تبريد نشط حتى {telemetryData.report.cooldownUntil ? new Date(telemetryData.report.cooldownUntil).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
-                      </div>
-                    )}
-                    {telemetryData?.report.warning && !telemetryData.report.cooldownActive && (
-                      <p className="text-[10px] text-amber-600 mt-1 bg-amber-50 rounded p-1.5">{telemetryData.report.warning}</p>
-                    )}
-                  </div>
-
-                  {/* ── Window history ── */}
-                  {telemetryData?.windowHistory && telemetryData.windowHistory.length > 0 ? (
-                    <div>
-                      <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
-                        <BarChart2 className="w-3 h-3" />آخر {Math.min(telemetryData.windowHistory.length, 10)} نوافذ
-                      </p>
-                      <div className="space-y-1">
-                        {[...telemetryData.windowHistory].reverse().slice(0, 10).map((w) => (
-                          <div key={w.windowNumber} className={`flex items-center gap-1.5 rounded p-1.5 text-[10px] border ${w.hadCooldown ? "bg-orange-50 dark:bg-orange-900/10 border-orange-200 dark:border-orange-800" : "bg-background border-border"}`}>
-                            <span className="font-bold text-muted-foreground w-5 text-center">#{w.windowNumber}</span>
-                            <div className="flex-1 grid grid-cols-3 gap-1 text-center">
-                              <span className="text-green-600 font-bold">✓ {w.joined}</span>
-                              <span className="text-destructive font-bold">✗ {w.failed}</span>
-                              <span className="text-muted-foreground">{w.slotsExecuted} فتحات</span>
-                            </div>
-                            <span className="text-muted-foreground text-[9px] whitespace-nowrap">{Math.round(w.durationMs / 1000)}ث</span>
-                            {w.hadCooldown && <AlertTriangle className="w-2.5 h-2.5 text-orange-500 flex-shrink-0" />}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-1.5 flex gap-2 text-[9px] text-muted-foreground border-t pt-1.5">
-                        <span>إجمالي النوافذ: <b>{telemetryData.windowHistory.length}</b></span>
-                        <span>·</span>
-                        <span>إجمالي الانضمام: <b className="text-green-600">{telemetryData.windowHistory.reduce((a, w) => a + w.joined, 0)}</b></span>
-                        <span>·</span>
-                        <span>فشل: <b className="text-destructive">{telemetryData.windowHistory.reduce((a, w) => a + w.failed, 0)}</b></span>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-muted-foreground text-center py-2">لم تنتهِ أي نافذة بعد — ابدأ الانضمام لرؤية البيانات</p>
-                  )}
-                </div>
-              )}
 
               {/* ── رفع روابط يدوي → MongoDB ── */}
               <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showManualUpload ? "border-primary bg-primary/5" : ""}`}
@@ -1871,24 +1908,39 @@ export default function Home() {
                       {/* ─ الجلسة الحالية ─ */}
                       <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold">الجلسة الحالية</p>
                       <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
-                        <div className="bg-background rounded p-1.5 border"><p className="font-bold text-sm">{readerStats.messagesReceived}</p><p className="text-muted-foreground">رسالة</p></div>
-                        <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-1.5"><p className="font-bold text-sm text-orange-600">{readerStats.messagesFromAds}</p><p className="text-muted-foreground">إعلانات</p></div>
-                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5"><p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p><p className="text-muted-foreground">جديدة</p></div>
+                        <div className="bg-background rounded p-1.5 border" title="رسائل واتساب المستلمة في هذه الجلسة">
+                          <p className="font-bold text-sm">{readerStats.messagesReceived}</p>
+                          <p className="text-muted-foreground">رسالة</p>
+                          <p className="text-[8px] text-muted-foreground/70 leading-none mt-0.5">مستلمة</p>
+                        </div>
+                        <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-1.5" title="رسائل من مجموعات إعلانات فقط (تُشغّل Pipeline)">
+                          <p className="font-bold text-sm text-orange-600">{readerStats.messagesFromAds}</p>
+                          <p className="text-muted-foreground">إعلانات</p>
+                          <p className="text-[8px] text-muted-foreground/70 leading-none mt-0.5">تُشغّل Pipeline</p>
+                        </div>
+                        <div className="bg-green-50 dark:bg-green-900/20 rounded p-1.5" title="روابط جديدة أُضيفت لقاعدة البيانات بعد فلترة Pipeline">
+                          <p className="font-bold text-sm text-green-600">{readerStats.linksNew}</p>
+                          <p className="text-muted-foreground">جديدة</p>
+                          <p className="text-[8px] text-muted-foreground/70 leading-none mt-0.5">أُضيفت للـDB</p>
+                        </div>
                       </div>
                       {/* ─ Pipeline الجلسة ─ */}
                       {(readerStats.pipelineRuns !== undefined) && (
                         <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
-                          <div className="bg-violet-50 dark:bg-violet-900/20 rounded p-1.5">
+                          <div className="bg-violet-50 dark:bg-violet-900/20 rounded p-1.5" title="عدد مرات تشغيل مرشح الكلمات المفتاحية — يعمل كل 10 ثوانٍ أو يُشغَّل يدوياً">
                             <p className="font-bold text-sm text-violet-600">{readerStats.pipelineRuns ?? 0}</p>
                             <p className="text-muted-foreground">Pipeline</p>
+                            <p className="text-[8px] text-muted-foreground/70 leading-none mt-0.5">تشغيلات</p>
                           </div>
-                          <div className="bg-background rounded p-1.5 border">
+                          <div className="bg-background rounded p-1.5 border" title="روابط في المخزن المؤقت تنتظر المعالجة في Pipeline القادم">
                             <p className="font-bold text-sm">{readerStats.bufferSize ?? 0}</p>
                             <p className="text-muted-foreground">مؤقت</p>
+                            <p className="text-[8px] text-muted-foreground/70 leading-none mt-0.5">ينتظر</p>
                           </div>
-                          <div className="bg-background rounded p-1.5 border">
+                          <div className="bg-background rounded p-1.5 border" title="مجموعات إعلانات اكتُشفت في آخر تشغيل Pipeline">
                             <p className="font-bold text-sm">{readerStats.lastPipelineGroups ?? 0}</p>
                             <p className="text-muted-foreground">مجموعة</p>
+                            <p className="text-[8px] text-muted-foreground/70 leading-none mt-0.5">آخر Pipeline</p>
                           </div>
                         </div>
                       )}
@@ -2018,7 +2070,7 @@ export default function Home() {
                       })}
                     </div>
                   )}
-                  {/* Add form */}
+                  {/* Add form — single */}
                   <div className="space-y-1.5">
                     <div className="flex gap-1.5">
                       <select
@@ -2044,6 +2096,42 @@ export default function Home() {
                         {addKeywordMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
                       </Button>
                     </div>
+                  </div>
+                  {/* Bulk import */}
+                  <div className="border-t border-violet-200 dark:border-violet-800 pt-2 space-y-1.5">
+                    <button className="w-full flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setShowBulkKeywords(o => !o)}
+                      data-testid="button-toggle-bulk-keywords">
+                      <PlusCircle className="w-3 h-3 flex-shrink-0" />
+                      <span className="flex-1 text-right">إضافة جماعية</span>
+                      {showBulkKeywords ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                    {showBulkKeywords && (
+                      <div className="space-y-1.5">
+                        <select
+                          value={bulkKeywordsCategory}
+                          onChange={e => setBulkKeywordsCategory(e.target.value as "ad_only" | "banned")}
+                          className="w-full h-8 text-xs rounded border border-input bg-background px-2"
+                          data-testid="select-bulk-keyword-category">
+                          <option value="ad_only">إعلانات فقط</option>
+                          <option value="banned">محظورة</option>
+                        </select>
+                        <textarea
+                          value={bulkKeywordsText}
+                          onChange={e => setBulkKeywordsText(e.target.value)}
+                          placeholder={"كلمة واحدة في كل سطر\nأو مفصولة بفاصلة"}
+                          className="w-full h-24 text-xs rounded border border-input bg-background px-2 py-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-violet-400"
+                          data-testid="textarea-bulk-keywords"
+                        />
+                        <Button size="sm" className="w-full h-8 text-xs bg-violet-600 hover:bg-violet-700"
+                          onClick={() => bulkKeywordsMutation.mutate({ keywords: bulkKeywordsText, category: bulkKeywordsCategory })}
+                          disabled={bulkKeywordsMutation.isPending || !bulkKeywordsText.trim()}
+                          data-testid="button-submit-bulk-keywords">
+                          {bulkKeywordsMutation.isPending ? <Loader2 className="w-3 h-3 ml-1 animate-spin" /> : <PlusCircle className="w-3 h-3 ml-1" />}
+                          إضافة الجميع
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
