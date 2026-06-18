@@ -132,6 +132,16 @@ export const linksRepository = {
     return !!(await c.findOne({ workspaceId, url }, { projection: { _id: 1 } }));
   },
 
+  /**
+   * Returns the current status of a link, or null if it doesn't exist.
+   * Used by the message reader to decide whether to re-buffer a link.
+   */
+  async getStatusOnly(workspaceId: string, url: string): Promise<string | null> {
+    const c = await col();
+    const doc = await c.findOne({ workspaceId, url }, { projection: { status: 1 } });
+    return doc?.status ?? null;
+  },
+
   async findByStatus(workspaceId: string, status: LinkStatus): Promise<LinkRecord[]> {
     const c = await col();
     return c.find({ workspaceId, status }).toArray();
@@ -327,6 +337,24 @@ export const linksRepository = {
     if (!allOps.length) return { newGroups: 0, newAds: 0, newDescLinks: 0 };
 
     const result = await c.bulkWrite(allOps, { ordered: false });
+
+    // Reset links that were "Ignored" or "Left" back to "Pending" when the pipeline
+    // has now validated them as legitimate groups. Do NOT touch "Joined" links.
+    const allUrls = [
+      ...groups.map(g => g.link),
+      ...ads.map(a => a.link),
+      ...(descLinks ?? []).filter(u => u.includes("chat.whatsapp.com")),
+    ];
+    if (allUrls.length > 0) {
+      const resetResult = await c.updateMany(
+        { workspaceId, url: { $in: allUrls }, status: { $in: ["Ignored", "Left"] } },
+        { $set: { status: "Pending" as LinkStatus, updatedAt: now } }
+      );
+      if (resetResult.modifiedCount > 0) {
+        console.log(`[LinksRepository] Reset ${resetResult.modifiedCount} Ignored/Left → Pending (wid: ${workspaceId})`);
+      }
+    }
+
     const newGroups    = Math.min(result.upsertedCount, groups.length);
     const newAds       = Math.max(0, result.upsertedCount - newGroups);
     const newDescLinks = result.upsertedCount - newGroups - newAds;

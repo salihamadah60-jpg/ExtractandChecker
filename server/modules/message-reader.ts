@@ -484,22 +484,27 @@ function _createManager(wid: string) {
           // Only buffer — do NOT write to DB yet.
           // Links are saved to DB only after pipeline validation (checkLinks + NLP filter).
           // This prevents expired/invalid links from polluting the Links_Repository.
-          const alreadyInDb     = await linksRepository.exists(wid, cleanUrl);
           const alreadyInBuffer = s.pipelineBuffer.has(cleanUrl);
 
-          if (!alreadyInDb && !alreadyInBuffer) {
-            if (s.stats) { s.stats.linksNew++; s.stats.bufferSize = s.pipelineBuffer.size + 1; }
-            s.pendingDelta.linksNew++;
-            s.pipelineBuffer.set(cleanUrl, { url: cleanUrl, isAdMessage: cls.isAd });
-            _schedulePipeline(wid);
-          } else if (alreadyInBuffer) {
+          if (alreadyInBuffer) {
             // Non-ad message wins over ad classification for same buffered URL
             const existing = s.pipelineBuffer.get(cleanUrl);
             if (existing && existing.isAdMessage && !cls.isAd) {
               s.pipelineBuffer.set(cleanUrl, { url: cleanUrl, isAdMessage: false });
             }
+          } else {
+            // Check DB status: only skip links that are "Pending" or "Joined".
+            // "Ignored" and "Left" links are allowed back — they may be valid again.
+            const dbStatus = await linksRepository.getStatusOnly(wid, cleanUrl);
+            const shouldBuffer = !dbStatus || dbStatus === "Ignored" || dbStatus === "Left";
+
+            if (shouldBuffer) {
+              if (s.stats) { s.stats.linksNew++; s.stats.bufferSize = s.pipelineBuffer.size + 1; }
+              s.pendingDelta.linksNew++;
+              s.pipelineBuffer.set(cleanUrl, { url: cleanUrl, isAdMessage: cls.isAd });
+              _schedulePipeline(wid);
+            }
           }
-        }
 
         // Flush delta to MongoDB every FLUSH_EVERY messages (non-blocking)
         if (s.stats && s.stats.messagesReceived % FLUSH_EVERY === 0) {
