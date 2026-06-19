@@ -715,8 +715,8 @@ function _createManager(wid: string) {
             continue;
           }
 
-          // User-activity guard
-          if (baileysManager.isUserActive(90_000)) {
+          // User-activity guard — scoped to THIS workspace's phone only
+          if (baileysManager.isUserActiveForWorkspace(wid, 90_000)) {
             console.log(`[JoinManager:${wid}] 👤 User is active — pausing 3 min`);
             if (s.progress) s.progress.status = "waiting";
             const outcome = await interruptibleSleep(wid, 3 * 60_000, "المستخدم نشط — انتظار", "waiting");
@@ -780,7 +780,7 @@ function _createManager(wid: string) {
             if ((await pauseGate(wid)) === "stopped") { windowBroken = true; break; }
             if (s.stopRequested) { windowBroken = true; break; }
             if (!baileysManager.isConnectedForWorkspace(wid)) break;
-            if (baileysManager.isUserActive(60_000)) {
+            if (baileysManager.isUserActiveForWorkspace(wid, 60_000)) {
               console.log(`[JoinManager:${wid}] 👤 User active before slot ${slotIdx} — skipping`);
               continue;
             }

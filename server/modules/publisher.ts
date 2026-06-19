@@ -238,7 +238,7 @@ function _createManager(wid: string) {
             s.progress.status = "stopped"; break;
           }
 
-          if (baileysManager.isUserActive(90_000)) {
+          if (baileysManager.isUserActiveForWorkspace(wid, 90_000)) {
             console.log(`[Publisher:${wid}] 👤 User active — pausing 2 min`);
             if (s.progress) s.progress.status = "cooldown";
             const outcome = await interruptibleSleep(wid, 2 * 60_000);

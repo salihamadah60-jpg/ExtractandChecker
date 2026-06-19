@@ -72,8 +72,10 @@ class SessionsManager extends EventEmitter {
   // ── User-activity detection ────────────────────────────────────────────────
   /** IDs of messages sent BY the bot — used to distinguish bot vs user activity. */
   private _botSentIds   = new Set<string>();
-  /** Timestamp of last detected MANUAL user action on WhatsApp (0 = none). */
+  /** Timestamp of last detected MANUAL user action on WhatsApp (0 = none). Global fallback. */
   private _lastUserActivity = 0;
+  /** Per-workspace last activity — the authoritative source used by join/publish managers. */
+  private _lastUserActivityByWorkspace = new Map<string, number>();
 
   // ── Pending-approval acceptance notifications ───────────────────────────────
   /** Per-workspace queue of recently-approved groups, cleared when read by API. */
@@ -143,11 +145,25 @@ class SessionsManager extends EventEmitter {
 
   /**
    * Returns true if the user sent a manual WhatsApp message within the last `withinMs` ms.
-   * Used by join / publish / read managers to pause when the user is active.
+   * Uses GLOBAL tracking — legacy fallback, prefer isUserActiveForWorkspace.
    */
   isUserActive(withinMs = 2 * 60_000): boolean {
     if (this._lastUserActivity === 0) return false;
     return Date.now() - this._lastUserActivity < withinMs;
+  }
+
+  /**
+   * Returns true if the WhatsApp account belonging to `workspaceId` had recent
+   * real user activity (sent a text/media message) within `withinMs` ms.
+   *
+   * This is the correct check for join / publish managers — it is scoped to the
+   * specific workspace so that activity on one phone does NOT pause another
+   * workspace's operations.
+   */
+  isUserActiveForWorkspace(workspaceId: string, withinMs = 2 * 60_000): boolean {
+    const ts = this._lastUserActivityByWorkspace.get(workspaceId) ?? 0;
+    if (ts === 0) return false;
+    return Date.now() - ts < withinMs;
   }
 
   /** Mark the bot is about to send — so incoming fromMe echoes are ignored. */
@@ -163,34 +179,69 @@ class SessionsManager extends EventEmitter {
   }
 
   private _onMessagesFromSession(sessionId: string, messages: any[]): void {
+    // Resolve workspace once per batch for per-workspace activity tracking
+    const workspaceId: string | null = sessionId
+      ? (this._workspaceIdBySessionId.get(sessionId) ?? null)
+      : null;
+
     for (const msg of messages) {
       if (msg.key?.fromMe && msg.key?.id && !this._botSentIds.has(msg.key.id as string)) {
-        // Only count as real user activity for 1:1 chats with actual content.
-        // Exclude: group messages (@g.us), broadcasts, status updates, and system stubs
-        // (e.g. join-request confirmations, group-admin notifications).
+        // ── Guard 1: exclude group / broadcast / status JIDs ──────────────────
         const remoteJid: string = msg.key?.remoteJid ?? "";
         const isGroupOrBroadcast =
           remoteJid.endsWith("@g.us") ||
           remoteJid.endsWith("@broadcast") ||
           remoteJid === "status@broadcast";
+
+        // ── Guard 2: exclude system stubs (group-join confirmations etc.) ─────
         const isSystemStub = msg.messageStubType != null;
-        if (!isGroupOrBroadcast && !isSystemStub) {
-          this._lastUserActivity = Date.now();
-          console.log(`[Sessions] 👤 User activity detected (msgId: ${msg.key.id})`);
+
+        // ── Guard 3: require actual visible content ────────────────────────────
+        // Reactions, protocol messages (delete/ephemeral), senderKeyDistribution,
+        // and similar meta-messages all have fromMe:true but are NOT user activity.
+        const c = msg.message ?? {};
+        const hasRealContent = !!(
+          c.conversation            ||
+          c.extendedTextMessage     ||
+          c.imageMessage            ||
+          c.videoMessage            ||
+          c.audioMessage            ||
+          c.documentMessage         ||
+          c.stickerMessage          ||
+          c.contactMessage          ||
+          c.locationMessage         ||
+          c.liveLocationMessage     ||
+          c.pollCreationMessage     ||
+          c.listMessage             ||
+          c.buttonsMessage          ||
+          c.templateMessage         ||
+          c.interactiveMessage      ||
+          c.contactsArrayMessage
+        );
+
+        if (!isGroupOrBroadcast && !isSystemStub && hasRealContent) {
+          const now = Date.now();
+          this._lastUserActivity = now;                          // global (legacy)
+          if (workspaceId) {
+            this._lastUserActivityByWorkspace.set(workspaceId, now); // per-workspace
+          }
+          console.log(`[Sessions] 👤 User activity detected (wid:${workspaceId ?? "?"} msgId: ${msg.key.id})`);
         }
       }
     }
     // Route to workspace-specific handler if session has a workspace.
     // Fall back to "main" workspace handler for sessions without a workspace mapping
     // so messages are never silently dropped.
-    let workspaceId = sessionId ? this._workspaceIdBySessionId.get(sessionId) : undefined;
+    // NOTE: routeWid is separate from the `workspaceId` used for activity tracking above
+    // because the self-healing block may reassign it, and `const` can't be reassigned.
+    let routeWid: string | undefined = workspaceId ?? undefined;
 
     // Self-healing: if no mapping found by sessionId, check if this session is the active
     // session for any workspace that has a registered handler — and fix the missing mapping.
-    if (!workspaceId && sessionId) {
+    if (!routeWid && sessionId) {
       for (const [wid] of this._messageHandlersByWorkspace) {
         if (this._activeSessionByWorkspace.get(wid) === sessionId) {
-          workspaceId = wid;
+          routeWid = wid;
           this._workspaceIdBySessionId.set(sessionId, wid); // fix missing mapping
           console.log(`[Sessions] 🔧 Auto-mapped session ${sessionId.slice(0,8)} → workspace ${wid.slice(0,8)}`);
           break;
@@ -198,8 +249,8 @@ class SessionsManager extends EventEmitter {
       }
     }
 
-    if (workspaceId) {
-      const wsHandler = this._messageHandlersByWorkspace.get(workspaceId);
+    if (routeWid) {
+      const wsHandler = this._messageHandlersByWorkspace.get(routeWid);
       if (wsHandler) {
         wsHandler(messages);
       } else {
