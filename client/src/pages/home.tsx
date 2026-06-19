@@ -733,8 +733,9 @@ export default function Home() {
   }, [session?.rateLimitInfo]);
 
   // Next-slot countdown timer (ticks every second)
+  // Uses joinProgress2Data directly to avoid referencing joinProgress2 before it is derived below.
   useEffect(() => {
-    const target = joinProgress2?.nextJoinAt;
+    const target = joinProgress2Data?.progress?.nextJoinAt;
     if (!target) { setNextSlotCountdown(""); return; }
     const format = () => {
       const diff = Math.max(0, new Date(target).getTime() - Date.now());
@@ -746,7 +747,7 @@ export default function Home() {
     setNextSlotCountdown(format());
     const timer = setInterval(() => setNextSlotCountdown(format()), 1000);
     return () => clearInterval(timer);
-  }, [joinProgress2?.nextJoinAt]);
+  }, [joinProgress2Data?.progress?.nextJoinAt]);
 
   const handleFiles = useCallback((fileList: FileList | File[]) => {
     const arr = Array.from(fileList);
