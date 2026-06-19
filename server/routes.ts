@@ -1347,6 +1347,25 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * POST /api/join/sync-with-whatsapp
+   * Compare every Pending link in the DB against the groups the current WhatsApp
+   * session is actually in, and mark matching ones as Joined.
+   * This is the correct implementation of "مزامنة مع هذا الحساب".
+   */
+  app.post("/api/join/sync-with-whatsapp", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId ?? "main";
+      if (!baileysManager.isConnectedForWorkspace(wid)) {
+        return res.status(400).json({ error: "واتساب غير متصل لهذه المساحة." });
+      }
+      const result = await baileysManager.syncPendingLinksWithWhatsApp(wid);
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Leave Manager ──────────────────────────────────────────────────────────
   app.get("/api/leave/queue", async (req: any, res) => {
     try {

@@ -254,6 +254,7 @@ export default function Home() {
   }, [phone]);
 
   const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
+  const [nextSlotCountdown, setNextSlotCountdown] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
   const [isNewRoundDragging, setIsNewRoundDragging] = useState(false);
   const [isFreshDragging, setIsFreshDragging] = useState(false);
@@ -731,6 +732,22 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [session?.rateLimitInfo]);
 
+  // Next-slot countdown timer (ticks every second)
+  useEffect(() => {
+    const target = joinProgress2?.nextJoinAt;
+    if (!target) { setNextSlotCountdown(""); return; }
+    const format = () => {
+      const diff = Math.max(0, new Date(target).getTime() - Date.now());
+      if (diff === 0) return "";
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      return m > 0 ? `${m}د ${s.toString().padStart(2, "0")}ث` : `${s}ث`;
+    };
+    setNextSlotCountdown(format());
+    const timer = setInterval(() => setNextSlotCountdown(format()), 1000);
+    return () => clearInterval(timer);
+  }, [joinProgress2?.nextJoinAt]);
+
   const handleFiles = useCallback((fileList: FileList | File[]) => {
     const arr = Array.from(fileList);
     const valid = arr.filter((f) => f.name.match(/\.docx?$/i));
@@ -807,6 +824,27 @@ export default function Home() {
       void refetchJoinProgress2();
     },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+
+  const syncWithWhatsAppMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/join/sync-with-whatsapp", {}).then(r => r.json()),
+    onSuccess: (data: any) => {
+      const matched = data?.matched ?? 0;
+      const byJid  = data?.byJid   ?? 0;
+      const byCode = data?.byCode  ?? 0;
+      const parts: string[] = [];
+      if (byJid  > 0) parts.push(`${byJid} بمعرف المجموعة`);
+      if (byCode > 0) parts.push(`${byCode} برمز الدعوة`);
+      toast({
+        title: matched > 0
+          ? `✅ مزامنة ناجحة — ${matched} رابط انتقل إلى "منضم"`
+          : "لا توجد روابط معلقة موجودة في واتساب حالياً",
+        description: parts.length ? parts.join(" — ") : undefined,
+      });
+      void refetchRepoCounts();
+      void refetchJoinProgress2();
+    },
+    onError: (err: any) => toast({ title: "خطأ في المزامنة", description: err.message, variant: "destructive" }),
   });
 
   const setJoinConfigMutation = useMutation({
@@ -1472,11 +1510,18 @@ export default function Home() {
                         </p>
                       )}
 
-                      {/* Next join time */}
+                      {/* Next join time + live countdown */}
                       {joinProgress2.nextJoinAt && joinProgress2.status !== "running" && (
-                        <div className="flex items-center gap-1.5 text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1.5">
-                          <Clock className="w-3 h-3 flex-shrink-0" />
-                          <span>الانضمام القادم: {new Date(joinProgress2.nextJoinAt).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                        <div className="flex items-center justify-between gap-1.5 text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <Clock className="w-3 h-3 flex-shrink-0" />
+                            <span>الانضمام القادم: {new Date(joinProgress2.nextJoinAt).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                          </div>
+                          {nextSlotCountdown && (
+                            <span className="font-mono font-bold text-amber-800 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 rounded px-1.5 py-0.5 tabular-nums">
+                              {nextSlotCountdown}
+                            </span>
+                          )}
                         </div>
                       )}
 
@@ -1630,21 +1675,23 @@ export default function Home() {
                     <span className="text-blue-700 dark:text-blue-400">ملاحظة: زر الإيقاف يوقف جلسة الانضمام فقط — اتصال واتساب يبقى نشطاً</span>
                   </div>
 
-                  {/* ── New account reset ── */}
+                  {/* ── Sync pending links with current WhatsApp account ── */}
                   <div className="border-t border-border pt-2 mt-1">
-                    <p className="text-[10px] text-muted-foreground mb-1.5">حساب واتساب جديد؟ أعد تعيين الروابط المنضم إليها بالحساب السابق:</p>
+                    <p className="text-[10px] text-muted-foreground mb-1.5">
+                      مزامنة الروابط المعلقة مع مجموعات واتساب الحالي — الروابط الموجودة بالفعل في واتساب ستنتقل تلقائياً إلى قائمة "منضم":
+                    </p>
                     <Button
                       size="sm"
                       variant="outline"
-                      className="w-full text-xs h-8 border-orange-400/60 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20"
-                      onClick={() => resetJoinForNewAccountMutation.mutate()}
-                      disabled={resetJoinForNewAccountMutation.isPending || waStatus !== "connected"}
-                      data-testid="button-reset-join-for-new-account"
+                      className="w-full text-xs h-8 border-green-500/60 text-green-700 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20"
+                      onClick={() => syncWithWhatsAppMutation.mutate()}
+                      disabled={syncWithWhatsAppMutation.isPending || waStatus !== "connected"}
+                      data-testid="button-sync-with-whatsapp"
                     >
-                      {resetJoinForNewAccountMutation.isPending
+                      {syncWithWhatsAppMutation.isPending
                         ? <Loader2 className="w-3 h-3 ml-1 animate-spin" />
                         : <RefreshCw className="w-3 h-3 ml-1" />}
-                      مزامنة مع الحساب الحالي
+                      {syncWithWhatsAppMutation.isPending ? "جاري المزامنة..." : "مزامنة مع هذا الحساب"}
                     </Button>
                   </div>
 

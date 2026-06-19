@@ -1324,6 +1324,77 @@ class SessionsManager extends EventEmitter {
   }
 
   /**
+   * Sync pending links with WhatsApp — the correct "مزامنة مع هذا الحساب" action.
+   *
+   * Algorithm:
+   *  1. Fetch all groups the current session is in (groupFetchAllParticipating).
+   *  2. Get every Pending link from the DB.
+   *  3. Fast path  — if the link already has a stored groupJid and it is in the active set → mark Joined.
+   *  4. Slow path  — for unmatched links whose URL contains an invite code, call
+   *                  groupGetInviteInfo(code) to resolve the JID, then check the active set.
+   *     (Rate-limited: 400 ms delay, max 50 lookups per call to avoid WA bans.)
+   */
+  async syncPendingLinksWithWhatsApp(workspaceId: string): Promise<{
+    matched: number; byJid: number; byCode: number; checked: number; skipped: number;
+  }> {
+    const s = this.getActiveStateForWorkspace(workspaceId);
+    if (!s?.sock) throw new Error("واتساب غير متصل لهذه المساحة");
+
+    const currentPhone = this.getConnectedPhoneForWorkspace(workspaceId) ?? this.getConnectedPhone() ?? undefined;
+
+    console.log(`[Sessions] syncPendingLinks — fetching WA groups for workspace: ${workspaceId}`);
+    const allGroups: Record<string, any> = await s.sock.groupFetchAllParticipating();
+    const activeJidSet = new Set(Object.keys(allGroups));
+    console.log(`[Sessions] syncPendingLinks — ${activeJidSet.size} active WA groups found`);
+
+    const { linksRepository } = await import("./modules/links-repository.js");
+    const pendingLinks = await linksRepository.getPendingLinks(workspaceId);
+    console.log(`[Sessions] syncPendingLinks — ${pendingLinks.length} pending links to check`);
+
+    let byJid   = 0;
+    let byCode  = 0;
+    let checked = 0;
+    const needCodeLookup: Array<{ url: string; code: string }> = [];
+
+    // ── Fast path: match by stored groupJid ───────────────────────────────────
+    for (const link of pendingLinks) {
+      if (link.groupJid && activeJidSet.has(link.groupJid)) {
+        await linksRepository.markJoinedBySync(workspaceId, link.url, link.groupJid, currentPhone);
+        byJid++;
+      } else {
+        // Extract invite code from URL for slow-path lookup
+        const m = (link.url ?? "").match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
+        if (m?.[1]) needCodeLookup.push({ url: link.url, code: m[1] });
+      }
+    }
+
+    // ── Slow path: resolve invite code → JID, then check active set ──────────
+    const MAX_LOOKUPS = 50;
+    const skipped = Math.max(0, needCodeLookup.length - MAX_LOOKUPS);
+    for (const { url, code } of needCodeLookup.slice(0, MAX_LOOKUPS)) {
+      checked++;
+      try {
+        await new Promise(r => setTimeout(r, 400)); // gentle rate-limit
+        const info = await (s.sock as any).groupGetInviteInfo(code);
+        const jid = info?.id ?? info?.gid;
+        if (jid && activeJidSet.has(jid)) {
+          await linksRepository.markJoinedBySync(workspaceId, url, jid, currentPhone);
+          byCode++;
+        }
+      } catch {
+        // Expired / invalid invite code — silently skip
+      }
+    }
+
+    const matched = byJid + byCode;
+    console.log(
+      `[Sessions] syncPendingLinks done — matched:${matched} (byJid:${byJid} byCode:${byCode}) ` +
+      `checked:${checked}/${needCodeLookup.length} skipped:${skipped}`
+    );
+    return { matched, byJid, byCode, checked, skipped };
+  }
+
+  /**
    * Fetch live group metadata (name, participants, announce flag, etc.).
    * Returns null on any error (e.g. not connected, JID not found).
    */

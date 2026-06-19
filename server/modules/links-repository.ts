@@ -296,6 +296,32 @@ export const linksRepository = {
     return this.resetMyJoinProgress(workspaceId, currentPhone);
   },
 
+  /** Return all Pending links for a workspace (url + groupJid only). */
+  async getPendingLinks(workspaceId: string): Promise<Array<{ url: string; groupJid?: string }>> {
+    const c = await col();
+    return c.find(
+      { workspaceId, status: "Pending" },
+      { projection: { url: 1, groupJid: 1 } }
+    ).toArray() as any;
+  },
+
+  /**
+   * Mark a Pending link as Joined after confirming it is already in WhatsApp.
+   * Called by the sync-with-whatsapp flow, NOT by the join-manager.
+   */
+  async markJoinedBySync(workspaceId: string, url: string, groupJid: string, phone?: string): Promise<void> {
+    const c = await col();
+    const now = new Date();
+    const update: any = {
+      $set: { status: "Joined" as LinkStatus, groupJid, updatedAt: now, joinedAt: now },
+    };
+    if (phone) {
+      update.$set.joinedByPhone = phone;
+      update.$addToSet = { joinedByPhones: phone };
+    }
+    await c.updateOne({ workspaceId, url }, update);
+  },
+
   async countByStatusForPhone(workspaceId: string, currentPhone?: string): Promise<Record<LinkStatus, number> & { PendingReal: number; PendingForMe: number }> {
     const c = await col();
     const all = await c.aggregate([
