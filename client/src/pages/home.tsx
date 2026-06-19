@@ -281,6 +281,8 @@ export default function Home() {
   const [directImportResult, setDirectImportResult] = useState<{ total: number; added: number; reset: number; skipped: number } | null>(null);
   const [isDirectImporting, setIsDirectImporting] = useState(false);
   const directImportRef = useRef<HTMLInputElement>(null);
+
+  const [showPipelineLog, setShowPipelineLog] = useState(false);
   const [showExcludedPanel, setShowExcludedPanel] = useState(false);
   const [showPendingApprovalPanel, setShowPendingApprovalPanel] = useState(false);
   const [showKeywordPanel, setShowKeywordPanel] = useState(false);
@@ -385,6 +387,13 @@ export default function Home() {
   const { data: readerStatsData } = useQuery<{ stats: ReaderStats | null; isRunning: boolean; isPaused: boolean }>({
     queryKey: ["/api/reader/stats"],
     refetchInterval: 5000,
+  });
+
+  type PipelineLogEntry = { ts: string; url: string; name?: string; members?: number; result: "group" | "ad" | "ignored" | "banned"; reason?: string };
+  const { data: pipelineLogData, refetch: refetchPipelineLog } = useQuery<{ log: PipelineLogEntry[] }>({
+    queryKey: ["/api/reader/pipeline-log"],
+    refetchInterval: showPipelineLog ? 8000 : false,
+    enabled: showPipelineLog,
   });
   const { data: excludedGroupsData, refetch: refetchExcludedGroups } = useQuery<{ groups: ExcludedGroup[] }>({
     queryKey: ["/api/excluded-groups"],
@@ -2105,6 +2114,70 @@ export default function Home() {
                     </Button>
                   )}
                   <p className="text-[10px] text-muted-foreground">تقرأ الرسائل الجديدة فور وصولها وتستخرج الروابط تلقائياً</p>
+                </div>
+              )}
+
+              {/* ── سجل Pipeline ── */}
+              <Button variant="outline" className={`w-full justify-start gap-2 h-10 ${showPipelineLog ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20" : ""}`}
+                onClick={() => { setShowPipelineLog(o => !o); if (!pipelineLogData) void refetchPipelineLog(); }}
+                data-testid="sidebar-pipeline-log">
+                <Activity className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                <span className="flex-1 text-right text-sm">سجل Pipeline</span>
+                {pipelineLogData?.log?.length ? <Badge variant="secondary" className="text-[10px]">{pipelineLogData.log.length}</Badge> : null}
+                {showPipelineLog ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </Button>
+              {showPipelineLog && (
+                <div className="border border-indigo-200 dark:border-indigo-800 rounded-lg p-3 space-y-2 bg-indigo-50/30 dark:bg-indigo-900/10">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] text-muted-foreground">آخر 200 نتيجة — يتحدث كل 8 ثوانٍ</p>
+                    <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2 text-indigo-600" onClick={() => void refetchPipelineLog()}>
+                      تحديث
+                    </Button>
+                  </div>
+                  {!pipelineLogData?.log?.length ? (
+                    <p className="text-[11px] text-center text-muted-foreground py-4">لا يوجد سجل بعد — ينتج بعد تشغيل Pipeline</p>
+                  ) : (
+                    <div className="space-y-0.5 max-h-72 overflow-y-auto">
+                      {pipelineLogData.log.map((entry, i) => {
+                        const resultColor = entry.result === "group"
+                          ? "text-green-700 bg-green-50 border-green-200"
+                          : entry.result === "ad"
+                          ? "text-amber-700 bg-amber-50 border-amber-200"
+                          : entry.result === "banned"
+                          ? "text-red-700 bg-red-50 border-red-200"
+                          : "text-gray-600 bg-gray-50 border-gray-200";
+                        const resultLabel = entry.result === "group" ? "✅ مجموعة"
+                          : entry.result === "ad" ? "📢 إعلان"
+                          : entry.result === "banned" ? "🚫 محظور"
+                          : "❌ منتهي";
+                        return (
+                          <div key={i} className={`flex items-center gap-1.5 rounded px-2 py-1 border text-[10px] ${resultColor}`}>
+                            <span className="font-semibold min-w-[52px]">{resultLabel}</span>
+                            <span className="flex-1 truncate font-mono opacity-70" title={entry.url}>
+                              {entry.url.replace("https://chat.whatsapp.com/", "")}
+                            </span>
+                            {entry.name && <span className="truncate max-w-[90px] opacity-80">{entry.name}</span>}
+                            {entry.members && <span className="opacity-60 min-w-[30px] text-right">{entry.members}👤</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {pipelineLogData?.log?.length ? (
+                    <div className="grid grid-cols-4 gap-1 text-[10px] text-center pt-1 border-t border-indigo-200/50">
+                      {(["group","ad","ignored","banned"] as const).map(r => {
+                        const count = pipelineLogData.log.filter(e => e.result === r).length;
+                        const color = r === "group" ? "text-green-600" : r === "ad" ? "text-amber-600" : r === "banned" ? "text-red-600" : "text-gray-500";
+                        const label = r === "group" ? "مجموعات" : r === "ad" ? "إعلانات" : r === "banned" ? "محظور" : "منتهية";
+                        return (
+                          <div key={r} className="bg-background rounded p-1 border">
+                            <p className={`font-bold text-sm ${color}`}>{count}</p>
+                            <p className="text-muted-foreground">{label}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                 </div>
               )}
 

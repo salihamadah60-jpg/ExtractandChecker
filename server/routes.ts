@@ -12,7 +12,7 @@ import { getJoinManagerFor } from "./modules/join-manager.js";
 import { telemetry, getTelemetryFor } from "./modules/telemetry.js";
 import { getLeaveManagerFor } from "./modules/leave-manager.js";
 import { getPublisherFor } from "./modules/publisher.js";
-import { getMessageReaderFor, triggerPipelineFor } from "./modules/message-reader.js";
+import { getMessageReaderFor, triggerPipelineFor, getPipelineLogFor } from "./modules/message-reader.js";
 import { keywordFilter } from "./modules/keyword-filter.js";
 import { workspaceStore } from "./modules/workspace.js";
 import { adminStore } from "./modules/admin.js";
@@ -994,6 +994,20 @@ export async function registerRoutes(
       const { name } = req.body ?? {};
       if (!name?.trim()) return res.status(400).json({ error: "اسم مساحة العمل مطلوب" });
       const ws = await workspaceStore.create(name.trim());
+
+      // Auto-populate new workspace with ALL CentralLinks as Pending (background, non-blocking)
+      (async () => {
+        try {
+          const allUrls = await centralLinksStore.getAllUrls();
+          if (allUrls.length > 0) {
+            const counts = await linksRepository.directImport(ws._id, allUrls);
+            console.log(`[WorkspaceCreate] Auto-populated "${name}" (${ws._id}) — added: ${counts.added}, reset: ${counts.reset}`);
+          }
+        } catch (e: any) {
+          console.warn(`[WorkspaceCreate] Auto-populate failed for "${name}":`, e.message);
+        }
+      })();
+
       res.json({ id: ws._id, name: ws.name, accessKey: ws.accessKey });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1581,6 +1595,14 @@ export async function registerRoutes(
       const result = await triggerPipelineFor(req.workspaceId ?? "main");
       if (!result.ok) return res.status(400).json({ error: result.reason });
       res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── Pipeline log ─────────────────────────────────────────────────────────────
+  app.get("/api/reader/pipeline-log", (req: any, res) => {
+    try {
+      const log = getPipelineLogFor(req.workspaceId ?? "main");
+      res.json({ log });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 

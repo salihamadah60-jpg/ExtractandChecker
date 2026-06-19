@@ -58,6 +58,17 @@ interface BufferDelta { messages: number; linksFound: number; linksNew: number; 
 
 interface AdGroupStats { ads: number; total: number; enqueued: boolean; }
 
+export interface PipelineLogEntry {
+  ts:      string;   // ISO timestamp
+  url:     string;
+  name?:   string;
+  members?: number;
+  result:  "group" | "ad" | "ignored" | "banned";
+  reason?: string;
+}
+
+const PIPELINE_LOG_CAP = 200;
+
 interface WState {
   stats:              ReaderStats | null;
   running:            boolean;
@@ -72,6 +83,7 @@ interface WState {
   handlerErrors:      number;
   pendingDelta:       BufferDelta;  // unflushed increment waiting to be written to MongoDB
   adRatioByGroup:     Map<string, AdGroupStats>; // tracks ad-message ratio per group JID
+  pipelineLog:        PipelineLogEntry[];        // last N pipeline validation results
 }
 
 const _stateByWid = new Map<string, WState>();
@@ -91,6 +103,7 @@ function _st(wid: string): WState {
       handlerErrors:    0,
       pendingDelta:     { messages: 0, linksFound: 0, linksNew: 0 },
       adRatioByGroup:   new Map(),
+      pipelineLog:      [],
     });
   }
   return _stateByWid.get(wid)!;
@@ -189,12 +202,15 @@ async function _runPipeline(wid: string): Promise<void> {
       (r) => r.status === "valid" && r.url.includes("chat.whatsapp.com")
     );
 
-    // 3b. Mark invalid as Ignored
+    // 3b. Mark invalid as Ignored + log
+    const ts = new Date().toISOString();
     for (const r of checkResults) {
       if (r.status !== "valid") {
         await linksRepository.setStatus(wid, _cleanLink(r.url), "Ignored").catch(() => {});
+        s.pipelineLog.unshift({ ts, url: _cleanLink(r.url), result: "ignored", reason: r.status });
       }
     }
+    if (s.pipelineLog.length > PIPELINE_LOG_CAP) s.pipelineLog.length = PIPELINE_LOG_CAP;
 
     // 3c. NLP-based classification
     //     • isAdOnlyMedicalGroup (name/description keyword match) → ad
@@ -243,6 +259,21 @@ async function _runPipeline(wid: string): Promise<void> {
       s.stats.lastPipelineGroups  = groups.length;
       s.stats.lastPipelineAds     = ads.length;
     }
+
+    // 4b. Build pipeline log entries for groups, ads, banned
+    for (const r of validGroups) {
+      const url = _cleanLink(r.url);
+      const entry = entries.find(e => _cleanLink(e.url) === url);
+      const isBanned = _isBannedByKeyword(r.name, r.description);
+      if (isBanned) {
+        s.pipelineLog.unshift({ ts, url, name: r.name, members: r.members, result: "banned", reason: "كلمة محجوبة" });
+      } else if (groups.some(g => g.link === url)) {
+        s.pipelineLog.unshift({ ts, url, name: r.name, members: r.members, result: "group" });
+      } else {
+        s.pipelineLog.unshift({ ts, url, name: r.name, members: r.members, result: "ad", reason: entry?.isAdMessage ? "رسالة إعلانية" : "كلمة إعلانية" });
+      }
+    }
+    if (s.pipelineLog.length > PIPELINE_LOG_CAP) s.pipelineLog.length = PIPELINE_LOG_CAP;
 
     if (groups.length > 0) {
       await linksRepository.saveFilteredLinks(wid, groups, []);
@@ -505,6 +536,7 @@ function _createManager(wid: string) {
               _schedulePipeline(wid);
             }
           }
+        } // end for (url of allLinks)
 
         // Flush delta to MongoDB every FLUSH_EVERY messages (non-blocking)
         if (s.stats && s.stats.messagesReceived % FLUSH_EVERY === 0) {
@@ -544,6 +576,10 @@ export function getMessageReaderFor(workspaceId: string): ReturnType<typeof _cre
  * Useful for the "Run Pipeline Now" button in the UI.
  * Returns { ok: true } if triggered, or { ok: false, reason } if skipped.
  */
+export function getPipelineLogFor(workspaceId: string): PipelineLogEntry[] {
+  return _st(workspaceId).pipelineLog;
+}
+
 export async function triggerPipelineFor(workspaceId: string): Promise<{ ok: boolean; reason?: string }> {
   const s = _st(workspaceId);
 
