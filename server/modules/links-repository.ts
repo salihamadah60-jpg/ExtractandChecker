@@ -27,6 +27,7 @@ export interface LinkRecord {
   leftAt?: Date;
   checkCount: number;
   lastCheckedAt?: Date;
+  expiresAt?: Date;            // TTL: set for non-admin workspaces; absent = never expires
   joinedByPhone?: string;      // legacy: last phone to join
   joinedByPhones?: string[];   // per-phone tracking: all phones that joined this link
   pendingAdminApproval?: boolean; // true if join was requested but awaiting admin acceptance
@@ -39,12 +40,29 @@ async function col() {
   return db.collection<LinkRecord>(COL);
 }
 
+/** Admin workspace IDs — links here never expire. Currently "main" is always admin. */
+const ADMIN_WORKSPACE_IDS = new Set(["main"]);
+
+/**
+ * Returns an expiry date 30 days from now for regular (non-admin) workspaces,
+ * or undefined for admin workspaces (meaning the TTL index ignores the document).
+ */
+function linkExpiresAt(workspaceId: string): Date | undefined {
+  if (ADMIN_WORKSPACE_IDS.has(workspaceId)) return undefined;
+  const d = new Date();
+  d.setDate(d.getDate() + 30);
+  return d;
+}
+
 export const linksRepository = {
   async init(): Promise<void> {
     const c = await col();
     // Compound unique index: same URL can exist in different workspaces
     await c.createIndex({ workspaceId: 1, url: 1 }, { unique: true, background: true } as any);
     await c.createIndex({ workspaceId: 1, status: 1, type: 1 }, { background: true } as any);
+    // TTL index: delete links when expiresAt <= current time.
+    // sparse:true → documents WITHOUT expiresAt (admin workspace) are never touched by TTL.
+    await (c as any).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, sparse: true, background: true });
     console.log("[LinksRepository] Indexes ready");
   },
 
@@ -89,12 +107,13 @@ export const linksRepository = {
     const c = await col();
     const now = new Date();
 
+    const expires = linkExpiresAt(workspaceId);
     // Upsert all: $setOnInsert handles new links, existing ones only get updatedAt
     const upsertOps = urls.map(url => ({
       updateOne: {
         filter: { workspaceId, url },
         update: {
-          $setOnInsert: { workspaceId, url, type: "Group" as LinkType, status: "Pending" as LinkStatus, source: "manual" as LinkSource, addedAt: now, checkCount: 0 },
+          $setOnInsert: { workspaceId, url, type: "Group" as LinkType, status: "Pending" as LinkStatus, source: "manual" as LinkSource, addedAt: now, checkCount: 0, ...(expires ? { expiresAt: expires } : {}) },
           $set: { updatedAt: now },
         },
         upsert: true,
@@ -382,12 +401,13 @@ export const linksRepository = {
   ): Promise<{ newGroups: number; newAds: number; newDescLinks: number }> {
     const c = await col();
     const now = new Date();
+    const expires = linkExpiresAt(workspaceId);
 
     const buildOp = (url: string, type: LinkType, source: LinkSource, extra: Partial<Pick<LinkRecord, "name" | "members" | "description">> = {}) => ({
       updateOne: {
         filter: { workspaceId, url },
         update: {
-          $setOnInsert: { workspaceId, url, type, status: "Pending" as LinkStatus, source, addedAt: now, checkCount: 0 },
+          $setOnInsert: { workspaceId, url, type, status: "Pending" as LinkStatus, source, addedAt: now, checkCount: 0, ...(expires ? { expiresAt: expires } : {}) },
           $set: { updatedAt: now, ...extra },
         },
         upsert: true,

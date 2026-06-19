@@ -918,6 +918,12 @@ export async function registerRoutes(
         centralLinksStore.addBatch(centralBatch)
           .then(r => console.log(`[CentralLinks] +${r.added} new, ${r.duplicates} dup`))
           .catch((err) => console.warn("[Routes] Failed to save to CentralLinks:", err.message));
+        // Push filtered GROUPS to admin workspace ("main") as Pending — only from non-admin workspaces
+        if (wid !== "main" && summary.groups.length > 0) {
+          linksRepository.saveFilteredLinks("main", summary.groups, [])
+            .then(r => console.log(`[AdminAggregation] +${r.newGroups} new groups pushed to admin (main) from wid:${wid}`))
+            .catch((err) => console.warn("[Routes] Failed to push groups to admin workspace:", err.message));
+        }
       }
       // Description links: check+filter them via pipeline BEFORE saving to DB
       const waDescLinks = summary.descriptionLinks.filter((l) => l.includes("chat.whatsapp.com"));
@@ -994,19 +1000,6 @@ export async function registerRoutes(
       const { name } = req.body ?? {};
       if (!name?.trim()) return res.status(400).json({ error: "اسم مساحة العمل مطلوب" });
       const ws = await workspaceStore.create(name.trim());
-
-      // Auto-populate new workspace with ALL CentralLinks as Pending (background, non-blocking)
-      (async () => {
-        try {
-          const allUrls = await centralLinksStore.getAllUrls();
-          if (allUrls.length > 0) {
-            const counts = await linksRepository.directImport(ws._id, allUrls);
-            console.log(`[WorkspaceCreate] Auto-populated "${name}" (${ws._id}) — added: ${counts.added}, reset: ${counts.reset}`);
-          }
-        } catch (e: any) {
-          console.warn(`[WorkspaceCreate] Auto-populate failed for "${name}":`, e.message);
-        }
-      })();
 
       res.json({ id: ws._id, name: ws.name, accessKey: ws.accessKey });
     } catch (err: any) {
