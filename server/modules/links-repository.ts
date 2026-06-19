@@ -388,8 +388,10 @@ export const linksRepository = {
       ...(descLinks ?? []).filter(u => u.includes("chat.whatsapp.com")),
     ];
     if (allUrls.length > 0) {
+      // Exclude links awaiting admin approval (pendingAdminApproval: true) — these must
+      // not be reset to Pending, as that removes them from the pending-approval list.
       const resetResult = await c.updateMany(
-        { workspaceId, url: { $in: allUrls }, status: { $in: ["Ignored", "Left"] } },
+        { workspaceId, url: { $in: allUrls }, status: { $in: ["Ignored", "Left"] }, pendingAdminApproval: { $ne: true } },
         { $set: { status: "Pending" as LinkStatus, updatedAt: now } }
       );
       if (resetResult.modifiedCount > 0) {

@@ -135,6 +135,7 @@ interface RepoCounts { Pending: number; Joined: number; Ignored: number; Left: n
 interface JoinProgress2 {
   status: "running" | "waiting" | "sleeping" | "cooldown" | "paused" | "done" | "stopped" | "error";
   total: number; processed: number; joined: number; ignored: number; failed: number; skipped_ads: number;
+  pendingApproval?: number; kicked?: number;
   currentLink?: string; stopReason?: string; startedAt?: string; completedAt?: string;
   windowNumber?: number;
   nextJoinAt?:   string;
@@ -404,6 +405,17 @@ export default function Home() {
     queryKey: ["/api/links-repository/pending-approval"],
     refetchInterval: showPendingApprovalPanel ? 30000 : false,
     enabled: showPendingApprovalPanel,
+  });
+
+  const { data: recentApprovalsData } = useQuery<Array<{ groupJid: string; url?: string; name?: string; approvedAt: string }>>({
+    queryKey: ["/api/links-repository/recent-approvals"],
+    queryFn: async () => {
+      const res = await fetch("/api/links-repository/recent-approvals", { headers: wkHeaders() });
+      if (!res.ok) throw new Error(`${res.status}`);
+      return res.json();
+    },
+    refetchInterval: showJoinSidePanel || showPendingApprovalPanel ? 15000 : false,
+    enabled: showJoinSidePanel || showPendingApprovalPanel,
   });
   const { data: sleepConfigData, refetch: refetchSleepConfig } = useQuery<SleepConfig & { durationHours: number }>({
     queryKey: ["/api/settings/sleep"],
@@ -1154,6 +1166,20 @@ export default function Home() {
     catch {}
   }
 
+  // Watch for pending-approval acceptances and notify user immediately
+  useEffect(() => {
+    if (!recentApprovalsData || recentApprovalsData.length === 0) return;
+    for (const item of recentApprovalsData) {
+      const label = item.name ?? item.url ?? item.groupJid;
+      toast({
+        title: "✅ تم قبول طلب الانضمام!",
+        description: `تمت الموافقة على انضمامك للمجموعة: ${label}`,
+        duration: 8000,
+      });
+    }
+    void refetchPendingApproval();
+  }, [recentApprovalsData]);
+
   // Watch join progress for notification triggers
   useEffect(() => {
     if (!joinProgress2) return;
@@ -1425,6 +1451,18 @@ export default function Home() {
                           <p className="font-bold">{joinProgress2.ignored}</p>
                           <p className="text-muted-foreground">متجاهل</p>
                         </div>
+                        <div className="bg-yellow-50 dark:bg-yellow-900/20 rounded p-1.5">
+                          <p className="font-bold text-yellow-600">{joinProgress2.pendingApproval ?? 0}</p>
+                          <p className="text-muted-foreground">قبول</p>
+                        </div>
+                        <div className="bg-purple-50 dark:bg-purple-900/20 rounded p-1.5">
+                          <p className="font-bold text-purple-600">{joinProgress2.kicked ?? 0}</p>
+                          <p className="text-muted-foreground">مطرود</p>
+                        </div>
+                        <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-1.5">
+                          <p className="font-bold text-orange-500">{joinProgress2.skipped_ads ?? 0}</p>
+                          <p className="text-muted-foreground">إعلان</p>
+                        </div>
                       </div>
 
                       {/* Current link */}
@@ -1494,10 +1532,13 @@ export default function Home() {
 
                   {/* ── Session ended ── */}
                   {(joinProgress2?.status === "done" || joinProgress2?.status === "stopped") && (
-                    <div className="flex items-center gap-1.5 text-xs bg-green-50 dark:bg-green-900/20 rounded p-2 border border-green-200 dark:border-green-800">
-                      <CheckCheck className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
-                      <span className="text-green-700 dark:text-green-400 font-medium">
+                    <div className="flex items-start gap-1.5 text-xs bg-green-50 dark:bg-green-900/20 rounded p-2 border border-green-200 dark:border-green-800">
+                      <CheckCheck className="w-3.5 h-3.5 text-green-600 flex-shrink-0 mt-0.5" />
+                      <span className="text-green-700 dark:text-green-400 font-medium leading-relaxed">
                         اكتمل — {joinProgress2.joined} ناجح، {joinProgress2.failed} فشل، {joinProgress2.ignored} متجاهل
+                        {(joinProgress2.pendingApproval ?? 0) > 0 && `، ${joinProgress2.pendingApproval} بانتظار القبول`}
+                        {(joinProgress2.kicked ?? 0) > 0 && `، ${joinProgress2.kicked} مطرود`}
+                        {(joinProgress2.skipped_ads ?? 0) > 0 && `، ${joinProgress2.skipped_ads} إعلان`}
                       </span>
                     </div>
                   )}

@@ -1086,6 +1086,16 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/links-repository/recent-approvals", async (req: any, res) => {
+    try {
+      const wid = req.workspaceId ?? "main";
+      const items = baileysManager.getAndClearRecentApprovals(wid);
+      res.json(items);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/links-repository/retry-approval", async (req: any, res) => {
     try {
       const wid = req.workspaceId ?? "main";

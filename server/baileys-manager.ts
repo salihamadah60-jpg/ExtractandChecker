@@ -75,6 +75,17 @@ class SessionsManager extends EventEmitter {
   /** Timestamp of last detected MANUAL user action on WhatsApp (0 = none). */
   private _lastUserActivity = 0;
 
+  // ── Pending-approval acceptance notifications ───────────────────────────────
+  /** Per-workspace queue of recently-approved groups, cleared when read by API. */
+  private _recentApprovals = new Map<string, Array<{ groupJid: string; url?: string; name?: string; approvedAt: string }>>();
+
+  /** Return and clear the pending-approval acceptance notifications for a workspace. */
+  getAndClearRecentApprovals(workspaceId: string): Array<{ groupJid: string; url?: string; name?: string; approvedAt: string }> {
+    const list = this._recentApprovals.get(workspaceId) ?? [];
+    this._recentApprovals.delete(workspaceId);
+    return list;
+  }
+
   pauseCheck(): void {
     this._checkPaused = true;
     if (linkStore.checkSession && linkStore.checkSession.status === "running") {
@@ -154,8 +165,19 @@ class SessionsManager extends EventEmitter {
   private _onMessagesFromSession(sessionId: string, messages: any[]): void {
     for (const msg of messages) {
       if (msg.key?.fromMe && msg.key?.id && !this._botSentIds.has(msg.key.id as string)) {
-        this._lastUserActivity = Date.now();
-        console.log(`[Sessions] 👤 User activity detected (msgId: ${msg.key.id})`);
+        // Only count as real user activity for 1:1 chats with actual content.
+        // Exclude: group messages (@g.us), broadcasts, status updates, and system stubs
+        // (e.g. join-request confirmations, group-admin notifications).
+        const remoteJid: string = msg.key?.remoteJid ?? "";
+        const isGroupOrBroadcast =
+          remoteJid.endsWith("@g.us") ||
+          remoteJid.endsWith("@broadcast") ||
+          remoteJid === "status@broadcast";
+        const isSystemStub = msg.messageStubType != null;
+        if (!isGroupOrBroadcast && !isSystemStub) {
+          this._lastUserActivity = Date.now();
+          console.log(`[Sessions] 👤 User activity detected (msgId: ${msg.key.id})`);
+        }
       }
     }
     // Route to workspace-specific handler if session has a workspace.
@@ -636,12 +658,22 @@ class SessionsManager extends EventEmitter {
           try {
             const db = await (await import("./mongo-auth-state.js")).getDb();
             const c = db.collection("Links_Repository");
-            const result = await c.updateOne(
+            const result = await c.findOneAndUpdate(
               { workspaceId: _wid, groupJid, status: { $in: ["Ignored", "Pending"] } },
-              { $set: { status: "Joined", joinedAt: new Date(), updatedAt: new Date() } }
+              { $set: { status: "Joined", joinedAt: new Date(), updatedAt: new Date() }, $unset: { pendingAdminApproval: "" } },
+              { returnDocument: "after" }
             );
-            if (result.modifiedCount > 0) {
+            if (result) {
               console.log(`[Sessions] ✅ Status updated to Joined for ${groupJid} (admin approved)`);
+              // Store approval notification for the workspace so the UI can alert the user
+              const existing = this._recentApprovals.get(_wid) ?? [];
+              existing.push({
+                groupJid,
+                url: (result as any).url,
+                name: (result as any).name,
+                approvedAt: new Date().toISOString(),
+              });
+              this._recentApprovals.set(_wid, existing);
             } else {
               // Group wasn't in DB yet — insert it now
               const { linksRepository } = await import("./modules/links-repository.js");
@@ -652,8 +684,12 @@ class SessionsManager extends EventEmitter {
               );
               await c.updateOne(
                 { workspaceId: _wid, url: `https://chat.whatsapp.com/wa-sync/${groupJid}` },
-                { $set: { status: "Joined", groupJid, joinedAt: new Date(), updatedAt: new Date() } }
+                { $set: { status: "Joined", groupJid, joinedAt: new Date(), updatedAt: new Date() }, $unset: { pendingAdminApproval: "" } }
               );
+              // Still notify
+              const existing2 = this._recentApprovals.get(_wid) ?? [];
+              existing2.push({ groupJid, approvedAt: new Date().toISOString() });
+              this._recentApprovals.set(_wid, existing2);
             }
           } catch (err) {
             console.warn("[Sessions] Failed to handle admin approval:", (err as Error).message);

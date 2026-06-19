@@ -1,0 +1,96 @@
+
+
+2026-06-19 15:24:17.34
+created: 1781427587333,
+
+2026-06-19 15:24:17.34
+lastRemoteEphemeralKey: <Buffer 05 4e aa 97 f5 38 b3 01 14 f8 bb a0 22 09 44 ac 90 eb 87 c5 a4 c5 21 30 30 2e 6d 2d 1e ae e4 6a 6f>,
+
+2026-06-19 15:24:17.34
+indexInfo: {
+
+2026-06-19 15:24:17.34
+Closing session: SessionEntry {
+
+2026-06-19 15:24:17.34
+previousCounter: 0,
+
+2026-06-19 15:24:22.54
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] ⏱ نافذة 2 — فتحة 4/5 — 141s
+
+2026-06-19 15:24:22.54
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] 👤 User active before slot 2 — skipping
+
+2026-06-19 15:24:24.49
+12:24:24 PM [express] GET /api/telemetry 200 in 102ms
+
+2026-06-19 15:24:25.88
+12:24:25 PM [express] GET /api/telemetry 200 in 102ms
+
+2026-06-19 15:26:32.75
+[Sessions] 👤 User activity detected (msgId: A502BFA4A274FE2B3FAB32C8D29053A1)
+
+2026-06-19 15:26:45.38
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] ⏱ نافذة 2 — فتحة 5/5 — 81s
+
+2026-06-19 15:26:45.38
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] 👤 User active before slot 3 — skipping
+
+2026-06-19 15:26:46.19
+12:26:46 PM [express] GET /api/telemetry 200 in 102ms
+
+2026-06-19 15:26:46.75
+12:26:46 PM [express] GET /api/telemetry 200 in 102ms
+
+2026-06-19 15:28:08.11
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] ▶ [W2] Slot 4: https://chat.whatsapp.com/ITRhqmYIhHbGCpmSMWDuS1
+
+2026-06-19 15:28:08.13
+12:28:08 PM [express] GET /api/telemetry 200 in 100ms
+
+2026-06-19 15:28:09.25
+12:28:09 PM [express] GET /api/telemetry 200 in 101ms
+
+2026-06-19 15:28:12.02
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] ⏳ Admin-approval required (inPending=false, isMember=false) — https://chat.whatsapp.com/ITRhqmYIhHbGCpmSMWDuS1
+
+2026-06-19 15:28:12.09
+12:28:12 PM [express] GET /api/telemetry 200 in 103ms
+
+2026-06-19 15:28:12.38
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] ⏱ نافذة 2 — انتظار نهاية النافذة — 41s
+
+2026-06-19 15:28:13.12
+12:28:13 PM [express] GET /api/telemetry 200 in 100ms
+
+2026-06-19 15:28:16.05
+12:28:16 PM [express] GET /api/join/phone-stats 200 in 302ms
+
+2026-06-19 15:28:16.06
+12:28:16 PM [express] GET /api/join/phone-stats 200 in 305ms
+
+2026-06-19 15:28:16.69
+12:28:16 PM [express] GET /api/telemetry 200 in 100ms
+
+2026-06-19 15:28:21.97
+12:28:21 PM [express] GET /api/links-repository/pending-approval 200 in 204ms
+
+2026-06-19 15:28:53.85
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] ⏱ نافذة 3 — فتحة 1/5 — 105s
+
+2026-06-19 15:28:53.85
+[Coordinator] 🔒 Join window OPEN — heavy functions blocked
+
+2026-06-19 15:28:53.85
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] 🪟 Window 3 (5 slots): s0@+105s, s1@+181s, s2@+246s, s3@+427s, s4@+520s — queue[6/1196]
+
+2026-06-19 15:28:59.50
+12:28:59 PM [express] GET /api/telemetry 200 in 100ms
+
+2026-06-19 15:29:07.98
+12:29:07 PM [express] GET /api/telemetry 200 in 101ms
+
+2026-06-19 15:30:41.88
+[JoinManager:b5a0c02c-d298-4988-a7e5-db0aa710d409] ▶ [W3] Slot 0: https://chat.whatsapp.com/L0b3IW89W1vCLhTLP9gxZ8
+
+
