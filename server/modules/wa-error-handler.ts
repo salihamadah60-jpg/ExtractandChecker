@@ -161,6 +161,15 @@ const STOP_JOIN_PATTERNS: RegExp[] = [
   /limit.*reached/i,
   /joining.*restricted/i,
   /group.*unavailable/i,
+  // Additional soft-block join indicators
+  /too.*many.*group/i,
+  /join.*too.*fast/i,
+  /group.*join.*limit/i,
+  /join.*limit/i,
+  /max.*group/i,
+  /exceeded.*join/i,
+  /join.*not.*allowed/i,
+  /participant.*limit/i,
 ];
 
 const STOP_ALL_PATTERNS: RegExp[] = [
@@ -173,6 +182,22 @@ const STOP_ALL_PATTERNS: RegExp[] = [
   /action.*block/i,
   /spam.*detect/i,
   /account.*locked/i,
+  // Additional account-threat patterns (soft bans, policy violations)
+  /violat.*terms/i,
+  /terms.*violat/i,
+  /suspicious.*activity/i,
+  /policy.*violation/i,
+  /abnormal.*activity/i,
+  /unusual.*activity/i,
+  /account.*flag/i,
+  /flagged.*account/i,
+  /account.*report/i,
+  /reported.*account/i,
+  /security.*restrict/i,
+  /restrict.*security/i,
+  /anti.*spam/i,
+  /automated.*behavior/i,
+  /bot.*detect/i,
 ];
 
 // ── Main classifier ────────────────────────────────────────────────────────────
@@ -236,7 +261,7 @@ export function classifyWAError(
     return {
       action:   "stop_join",
       reason:   `⛔ WhatsApp يمنع الانضمام: ${raw}`,
-      waitMs:   15 * 60_000,
+      waitMs:   30 * 60_000,
       critical: true,
     };
   }

@@ -141,7 +141,18 @@ interface JoinProgress2 {
   nextJoinAt?:   string;
   sleepUntil?:   string;
   cooldownUntil?: string;
+  threatLevel?:  "low" | "medium" | "high" | "critical";
+  dailyJoins?:   number;
   telemetry?: { avgLatencyMs: number; lastLatencyMs: number; cooldownActive: boolean; warning?: string; };
+}
+interface ThreatStatus {
+  level: "low" | "medium" | "high" | "critical";
+  rateLimitCount: number; stopJoinCount: number; kickCount: number;
+  consecutiveNetworkFail: number;
+  dailyJoins: number; sessionJoins: number;
+  dailyGreen: number; dailyYellow: number; dailyRed: number;
+  safetyModeActive: boolean; safetyModeUntil?: string;
+  events: { type: string; at: string; details?: string }[];
 }
 interface WindowRecord {
   windowNumber: number; slotsExecuted: number; joined: number; failed: number; ignored: number;
@@ -361,6 +372,11 @@ export default function Home() {
   const { data: joinConfigData, refetch: refetchJoinConfig } = useQuery<{ slotsPerWindow: number }>({
     queryKey: ["/api/join/config"],
     staleTime: 30_000,
+  });
+  const { data: threatData, refetch: refetchThreat } = useQuery<ThreatStatus>({
+    queryKey: ["/api/join/threat-level"],
+    refetchInterval: showJoinSidePanel ? 5000 : false,
+    enabled: showJoinSidePanel,
   });
   const joinSlotsPerWindow = joinConfigData?.slotsPerWindow ?? 4;
   const { data: phoneStatsData, refetch: refetchPhoneStats } = useQuery<{ phones: PhoneStat[] }>({
@@ -883,6 +899,11 @@ export default function Home() {
   const resumeJoin2Mutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/join/resume", {}),
     onSuccess: () => { toast({ title: "تم استئناف الانضمام" }); void refetchJoinProgress2(); },
+    onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
+  });
+  const safetyModeMutation = useMutation({
+    mutationFn: (activate: boolean) => apiRequest("POST", "/api/join/safety-mode", { activate, durationMin: 30 }),
+    onSuccess: () => { void refetchThreat(); toast({ title: threatData?.safetyModeActive ? "تم إلغاء وضع الأمان" : "تم تفعيل وضع الأمان 🛡 — 30 دقيقة" }); },
     onError: (err: any) => toast({ title: "خطأ", description: err.message, variant: "destructive" }),
   });
 
@@ -1434,6 +1455,84 @@ export default function Home() {
               {showJoinSidePanel && (
                 <div className="border border-primary/20 rounded-lg p-3 space-y-2 bg-primary/5">
 
+                  {/* ── Threat Level Monitor ── */}
+                  {(() => {
+                    const thr = threatData;
+                    if (!thr) return null;
+                    const lvMap = {
+                      low:      { label: "آمن",        bg: "bg-green-50 dark:bg-green-900/20",  border: "border-green-200 dark:border-green-800",  text: "text-green-700 dark:text-green-400",  dot: "bg-green-500",  icon: "🟢" },
+                      medium:   { label: "تحذير",      bg: "bg-yellow-50 dark:bg-yellow-900/20",border: "border-yellow-200 dark:border-yellow-800", text: "text-yellow-700 dark:text-yellow-400", dot: "bg-yellow-500", icon: "🟡" },
+                      high:     { label: "خطر",        bg: "bg-orange-50 dark:bg-orange-900/20",border: "border-orange-200 dark:border-orange-800", text: "text-orange-700 dark:text-orange-400", dot: "bg-orange-500", icon: "🟠" },
+                      critical: { label: "بالغ الخطورة",bg:"bg-red-50 dark:bg-red-900/20",      border: "border-red-200 dark:border-red-800",      text: "text-red-700 dark:text-red-400",      dot: "bg-red-500",    icon: "🔴" },
+                    };
+                    const lv = lvMap[thr.level];
+                    const daily = thr.dailyJoins;
+                    const dailyPct = Math.min(100, Math.round((daily / thr.dailyRed) * 100));
+                    const dailyColor = daily <= thr.dailyGreen ? "bg-green-500" : daily <= thr.dailyYellow ? "bg-yellow-500" : "bg-red-500";
+                    const dailyZone = daily <= thr.dailyGreen ? `آمن (≤${thr.dailyGreen})` : daily <= thr.dailyYellow ? `تحذير (≤${thr.dailyYellow})` : `خطر (≤${thr.dailyRed})`;
+                    return (
+                      <div className={`rounded-lg border p-2 space-y-2 ${lv.bg} ${lv.border}`}>
+                        {/* Header row */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`inline-flex w-2 h-2 rounded-full ${lv.dot}`} />
+                            <span className={`text-xs font-bold ${lv.text}`}>مستوى الأمان: {lv.icon} {lv.label}</span>
+                            {thr.safetyModeActive && (
+                              <Badge variant="outline" className="text-[9px] border-orange-400 text-orange-600">وضع الأمان مفعّل</Badge>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => safetyModeMutation.mutate(!thr.safetyModeActive)}
+                            disabled={safetyModeMutation.isPending}
+                            className={`text-[10px] flex items-center gap-1 rounded px-1.5 py-0.5 border transition-colors font-medium
+                              ${thr.safetyModeActive
+                                ? "border-green-400 text-green-700 hover:bg-green-100 bg-green-50 dark:bg-green-900/30"
+                                : "border-orange-400 text-orange-700 hover:bg-orange-100 bg-orange-50/50 dark:bg-orange-900/20"
+                              }`}
+                            title={thr.safetyModeActive ? "إلغاء وضع الأمان" : "تفعيل وضع الأمان يدوياً (30 دقيقة)"}
+                          >
+                            <Shield className="w-2.5 h-2.5" />
+                            {thr.safetyModeActive ? "إلغاء الأمان" : "وضع الأمان"}
+                          </button>
+                        </div>
+
+                        {/* Threat event counters */}
+                        {(thr.rateLimitCount > 0 || thr.stopJoinCount > 0 || thr.kickCount > 0) && (
+                          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                            {thr.rateLimitCount > 0 && <span className="bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded px-1">🚦 تقييد ×{thr.rateLimitCount}</span>}
+                            {thr.stopJoinCount  > 0 && <span className="bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 rounded px-1">⛔ حظر ×{thr.stopJoinCount}</span>}
+                            {thr.kickCount      > 0 && <span className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 rounded px-1">👢 طرد ×{thr.kickCount}</span>}
+                          </div>
+                        )}
+
+                        {/* Daily join counter */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-muted-foreground">الانضمام اليومي</span>
+                            <span className={`font-bold ${daily <= thr.dailyGreen ? "text-green-600" : daily <= thr.dailyYellow ? "text-yellow-600" : "text-red-600"}`}>
+                              {daily} / {thr.dailyRed} — {dailyZone}
+                            </span>
+                          </div>
+                          <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
+                            <div className={`h-1.5 rounded-full transition-all ${dailyColor}`} style={{ width: `${dailyPct}%` }} />
+                          </div>
+                          <div className="flex justify-between text-[9px] text-muted-foreground">
+                            <span className="text-green-600">آمن ≤{thr.dailyGreen}</span>
+                            <span className="text-yellow-600">تحذير ≤{thr.dailyYellow}</span>
+                            <span className="text-red-600">إيقاف ≥{thr.dailyRed}</span>
+                          </div>
+                        </div>
+
+                        {/* Safety mode expiry */}
+                        {thr.safetyModeActive && thr.safetyModeUntil && (
+                          <p className="text-[9px] text-orange-600 dark:text-orange-400">
+                            🛡 وضع الأمان حتى: {new Date(thr.safetyModeUntil).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {/* ── Active session (running / waiting / sleeping / cooldown / paused) ── */}
                   {joinProgress2 && ["running","waiting","sleeping","cooldown","paused"].includes(joinProgress2.status) && (
                     <div className="space-y-2">
@@ -1665,10 +1764,16 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* ── Rate info ── */}
+                  {/* ── Rate info + daily safe limits ── */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/50 rounded p-2">
                     <Shield className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                    <span>معدل آمن: <span className="font-semibold text-foreground">{joinSlotsPerWindow}</span> روابط كل 10 دقائق — نوم 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر — إيقاف/استئناف تلقائي عند انقطاع واتساب</span>
+                    <div className="space-y-0.5">
+                      <span>معدل آمن: <span className="font-semibold text-foreground">{joinSlotsPerWindow}</span> روابط كل 10 دقائق — نوم 1:30 ص – 7:30 ص — تبريد تلقائي عند أي إشارة خطر</span>
+                      <p className="text-muted-foreground">
+                        الحد اليومي الآمن: <span className="text-green-600 font-medium">🟢 ≤25</span> آمن · <span className="text-yellow-600 font-medium">🟡 ≤40</span> تحذير · <span className="text-red-600 font-medium">🔴 ≥55</span> إيقاف تلقائي
+                      </p>
+                      <p className="text-muted-foreground">تصاعد تلقائي لوقت الانتظار عند تهديد الحساب: تحذير→30د · خطر→60د · حرج→4س</p>
+                    </div>
                   </div>
                   {/* Note about Stop vs WhatsApp connection */}
                   <div className="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-blue-50 dark:bg-blue-900/20 rounded p-2">

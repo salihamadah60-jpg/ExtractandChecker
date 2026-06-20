@@ -9,6 +9,7 @@ import { checkLinksHTTP } from "./http-checker.js";
 import { coordinator, getCoordinatorFor } from "./modules/function-coordinator.js";
 import { linksRepository } from "./modules/links-repository.js";
 import { getJoinManagerFor } from "./modules/join-manager.js";
+import { threatMonitor }    from "./modules/threat-monitor.js";
 import { telemetry, getTelemetryFor } from "./modules/telemetry.js";
 import { getLeaveManagerFor } from "./modules/leave-manager.js";
 import { getPublisherFor } from "./modules/publisher.js";
@@ -1260,6 +1261,24 @@ export async function registerRoutes(
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // ── Threat level monitor ────────────────────────────────────────────────────
+  app.get("/api/join/threat-level", (req: any, res) => {
+    const wid = req.workspaceId ?? "main";
+    res.json(threatMonitor.getStatus(wid));
+  });
+
+  app.post("/api/join/safety-mode", (req: any, res) => {
+    const wid = req.workspaceId ?? "main";
+    const { activate, durationMin } = req.body ?? {};
+    if (activate) {
+      const ms = (durationMin ? Number(durationMin) * 60_000 : 30 * 60_000);
+      threatMonitor.activateSafetyMode(wid, ms);
+    } else {
+      threatMonitor.deactivateSafetyMode(wid);
+    }
+    res.json({ success: true, status: threatMonitor.getStatus(wid) });
   });
 
   app.post("/api/join/stop", (req: any, res) => {

@@ -14,6 +14,7 @@ import { linksRepository }           from "./links-repository.js";
 import { classifyWAError }           from "./wa-error-handler.js";
 import { WINDOW_DURATION_MS, SLOTS_PER_WINDOW, computeSlotOffsets, shuffle } from "./human-mimicry.js";
 import { getJoinConfigSync } from "./join-config.js";
+import { threatMonitor, DAILY_RED_LIMIT } from "./threat-monitor.js";
 import { isAdOnlyMedicalGroup }     from "../link-store.js";
 import { keywordFilter }            from "./keyword-filter.js";
 import { getLeaveManagerFor }       from "./leave-manager.js";
@@ -39,6 +40,8 @@ export interface JoinProgress {
   nextJoinAt?:     string;
   sleepUntil?:     string;
   cooldownUntil?:  string;
+  threatLevel?:    "low" | "medium" | "high" | "critical";
+  dailyJoins?:     number;
   telemetry?: {
     avgLatencyMs:  number;
     lastLatencyMs: number;
@@ -138,7 +141,7 @@ async function joinOne(
   currentPhone?: string,
   retryCount = 0,
   requiresAdminApproval = false   // pre-computed flag; passed through recursive retries
-): Promise<{ result: "joined" | "ignored" | "pending_approval" | "kicked" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean }> {
+): Promise<{ result: "joined" | "ignored" | "pending_approval" | "kicked" | "failed" | "network_failed" | "stop_all" | "stop_join"; waitMs?: number; isAd?: boolean; stopType?: "rate_limit" | "wa_block" }> {
   const s   = _st(wid);
   const tel = getTelemetryFor(wid);
 
@@ -409,7 +412,7 @@ async function joinOne(
         s.joiningCache.delete(inviteCode);
         // Return stop_join (not network_failed) so the outer loop ACTUALLY WAITS.
         // This is the same as Telegram's FloodWait — must honour the cooldown.
-        return { result: "stop_join", waitMs };
+        return { result: "stop_join", waitMs, stopType: "rate_limit" };
       }
 
       case "retry": {
@@ -555,6 +558,8 @@ function syncTelemetry(wid: string): void {
   } else {
     s.progress.cooldownUntil = undefined;
   }
+  s.progress.threatLevel = threatMonitor.getLevel(wid);
+  s.progress.dailyJoins  = threatMonitor.getStatus(wid).dailyJoins;
 }
 
 // ── Manager factory ────────────────────────────────────────────────────────────
@@ -626,6 +631,7 @@ function _createManager(wid: string) {
         return;
       }
       s.running = true;
+      threatMonitor.resetSession(wid);
 
       if (!baileysManager.isConnectedForWorkspace(wid)) {
         s.running = false;
@@ -736,6 +742,16 @@ function _createManager(wid: string) {
             continue;
           }
 
+          // Daily join limit guard
+          if (threatMonitor.isDailyLimitReached(wid)) {
+            console.log(`[JoinManager:${wid}] 🚫 الحد اليومي الآمن (${DAILY_RED_LIMIT} مجموعة) — إيقاف حتى الغد`);
+            if (s.progress) {
+              s.progress.status    = "stopped";
+              s.progress.stopReason = `🚫 تم الوصول للحد اليومي الآمن (${DAILY_RED_LIMIT} مجموعة/يوم) — يُنصح بالتوقف حتى الغد لحماية الحساب`;
+            }
+            break;
+          }
+
           // Telemetry cooldown check
           if (tel.isCoolingDown()) {
             const coolMs  = tel.cooldownRemaining();
@@ -803,29 +819,62 @@ function _createManager(wid: string) {
             const r = await joinOne(wid, slotLink, consecutiveFailures, currentPhone);
 
             if (r.result === "stop_all") {
-              if (s.progress) { s.progress.status = "stopped"; s.progress.stopReason = "⚠️ حساب تحت التهديد — تم إيقاف كل شيء"; }
+              const lv = threatMonitor.recordStopAll(wid);
+              if (s.progress) {
+                s.progress.status     = "stopped";
+                s.progress.threatLevel = lv;
+                s.progress.stopReason = "🆘 حساب تحت التهديد الحرج — تم إيقاف كل العمليات فوراً";
+              }
               windowBroken = true; break;
             }
             if (r.result === "stop_join") {
-              consecutiveFailures++;  // escalate backoff for next rate-limit window
-              const wMs = r.waitMs ?? 15 * 60_000;
+              consecutiveFailures++;
+              const isRateLimit = r.stopType === "rate_limit";
+              const lv = isRateLimit
+                ? threatMonitor.recordRateLimit(wid, "429 rate-overlimit")
+                : threatMonitor.recordStopJoin(wid, "421 resource-limit");
+              // Auto-escalate wait based on threat level
+              let wMs = r.waitMs ?? 30 * 60_000;
+              if      (lv === "critical") wMs = Math.max(wMs, 4 * 60 * 60_000);
+              else if (lv === "high")     wMs = Math.max(wMs, 60 * 60_000);
+              else if (lv === "medium")   wMs = Math.max(wMs, 30 * 60_000);
               syncTelemetry(wid);
               const mins = Math.round(wMs / 60_000);
+              const lvLabel = { low: "آمن", medium: "⚠️ تحذير", high: "🟠 خطر", critical: "🔴 حرج" }[lv];
+              if (s.progress) {
+                s.progress.threatLevel = lv;
+                s.progress.stopReason  = `${isRateLimit ? "🚦 تقييد WhatsApp" : "⛔ حظر انضمام WhatsApp"} — مستوى الخطر: ${lvLabel} — انتظار ${mins} دقيقة`;
+              }
               const outcome = await interruptibleSleep(
                 wid, wMs,
-                `🚦 واتساب يمنع الانضمام — انتظار ${mins} دقيقة ثم الاستئناف تلقائياً`,
+                `${lv === "critical" ? "🆘" : lv === "high" ? "⚠️" : "🚦"} مستوى ${lv.toUpperCase()} — انتظار ${mins} دقيقة`,
                 "cooldown"
               );
               if (outcome === "stopped") { windowBroken = true; }
               break;
             }
 
-            if (r.result === "joined")               { consecutiveFailures = 0; if (s.progress) { s.progress.joined++; if (r.isAd) s.progress.skipped_ads++; } }
-            else if (r.result === "pending_approval"){ if (s.progress) s.progress.pendingApproval++; /* NOT a failure — awaiting admin acceptance */ }
-            else if (r.result === "kicked")          { if (s.progress) s.progress.kicked++; /* removed from group — NOT a consecutive failure */ }
-            else if (r.result === "ignored")         { if (s.progress) s.progress.ignored++; /* dead link — NOT a failure */ }
-            else if (r.result === "network_failed")  { if (s.progress) s.progress.failed++; /* network — no consecutiveFailures++ */ }
-            else                                     { consecutiveFailures++; if (s.progress) s.progress.failed++; }
+            if (r.result === "joined") {
+              consecutiveFailures = 0;
+              threatMonitor.recordSuccessfulJoin(wid);
+              if (s.progress) {
+                s.progress.joined++;
+                if (r.isAd) s.progress.skipped_ads++;
+                s.progress.dailyJoins  = threatMonitor.getStatus(wid).dailyJoins;
+                s.progress.threatLevel = threatMonitor.getLevel(wid);
+              }
+            }
+            else if (r.result === "pending_approval"){ if (s.progress) s.progress.pendingApproval++; }
+            else if (r.result === "kicked") {
+              const lv = threatMonitor.recordKick(wid, slotLink.url);
+              if (s.progress) { s.progress.kicked++; s.progress.threatLevel = lv; }
+            }
+            else if (r.result === "ignored")        { if (s.progress) s.progress.ignored++; }
+            else if (r.result === "network_failed") {
+              threatMonitor.recordNetworkDrop(wid);
+              if (s.progress) s.progress.failed++;
+            }
+            else { consecutiveFailures++; if (s.progress) s.progress.failed++; }
 
             queueIdx++;
             if (s.progress) { s.progress.processed++; s.progress.currentLink = undefined; }
