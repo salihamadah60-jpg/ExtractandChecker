@@ -397,15 +397,19 @@ async function joinOne(
       }
 
       case "wait_and_retry": {
-        // Rate-limited — keep the link as Pending so it is retried in the next session.
-        // Return "network_failed" so consecutiveFailures is NOT incremented.
+        // Rate-limited by WhatsApp — the account is temporarily blocked from joining groups.
+        // CRITICAL: Do NOT continue to the next link. Stop the join window entirely and
+        // wait the full backoff period. Continuing to attempt joins while rate-limited
+        // escalates the restriction and risks a permanent account ban.
         tel.record(latency);
-        const waitMs = classified.waitMs ?? 60_000;
+        const waitMs = classified.waitMs ?? 5 * 60_000;
         console.warn(
-          `[JoinManager:${wid}] ⏳ حد المعدل — الرابط يبقى معلقاً للجلسة التالية (backoff ${Math.round(waitMs / 1000)}s): ${record.url}`
+          `[JoinManager:${wid}] 🚦 واتساب يمنع الانضمام مؤقتاً — إيقاف العملية لـ ${Math.round(waitMs / 60_000)} دقيقة: ${record.url}`
         );
         s.joiningCache.delete(inviteCode);
-        return { result: "network_failed" };
+        // Return stop_join (not network_failed) so the outer loop ACTUALLY WAITS.
+        // This is the same as Telegram's FloodWait — must honour the cooldown.
+        return { result: "stop_join", waitMs };
       }
 
       case "retry": {
@@ -665,6 +669,14 @@ function _createManager(wid: string) {
 
         console.log(`[JoinManager:${wid}] Queue: ${queue.length} links`);
 
+        // Preload existing pending-approval count from MongoDB so it isn't reset to 0
+        // each time a new join session starts. This count accumulates across sessions.
+        let priorPendingApprovals = 0;
+        try {
+          const priorList = await linksRepository.findPendingApproval(wid);
+          priorPendingApprovals = priorList.length;
+        } catch { /* non-fatal */ }
+
         s.progress = {
           status:          "waiting",
           total:           queue.length,
@@ -673,7 +685,7 @@ function _createManager(wid: string) {
           ignored:         0,
           failed:          0,
           skipped_ads:     0,
-          pendingApproval: 0,
+          pendingApproval: priorPendingApprovals,
           kicked:          0,
           startedAt:       new Date().toISOString(),
           windowNumber:    0,
@@ -795,9 +807,15 @@ function _createManager(wid: string) {
               windowBroken = true; break;
             }
             if (r.result === "stop_join") {
+              consecutiveFailures++;  // escalate backoff for next rate-limit window
               const wMs = r.waitMs ?? 15 * 60_000;
               syncTelemetry(wid);
-              const outcome = await interruptibleSleep(wid, wMs, "توقف واتساب المؤقت", "cooldown");
+              const mins = Math.round(wMs / 60_000);
+              const outcome = await interruptibleSleep(
+                wid, wMs,
+                `🚦 واتساب يمنع الانضمام — انتظار ${mins} دقيقة ثم الاستئناف تلقائياً`,
+                "cooldown"
+              );
               if (outcome === "stopped") { windowBroken = true; }
               break;
             }

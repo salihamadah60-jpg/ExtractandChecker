@@ -242,17 +242,18 @@ export function classifyWAError(
   }
 
   // ── 6. RATE LIMIT (429 rate-overlimit) ───────────────────────────────────────
-  // Exponential backoff: 1min → 2min → 4min → 8min → 15min
+  // Aggressive backoff: 5min → 10min → 20min → 60min
+  // This error means WhatsApp is actively blocking joins — must STOP, not just skip.
   if (RATE_LIMIT_PATTERNS.some((p) => p.test(msg)) || statusCode === 429) {
     const waitMs = Math.min(
-      15 * 60_000,
-      60_000 * Math.pow(2, Math.max(0, consecutiveFailures - 1)),
+      60 * 60_000,  // cap at 60 minutes
+      5 * 60_000 * Math.pow(2, Math.max(0, consecutiveFailures)),
     );
     return {
       action:   "wait_and_retry",
-      reason:   `⏳ تجاوز حد المعدل — انتظار ${Math.round(waitMs / 1000)}ث`,
+      reason:   `🚦 واتساب يمنع الانضمام مؤقتاً — انتظار ${Math.round(waitMs / 60_000)} دقيقة قبل المحاولة`,
       waitMs,
-      critical: false,
+      critical: true,
     };
   }
 
